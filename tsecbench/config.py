@@ -18,7 +18,6 @@ class Settings:
     database_path: str = "./data/tsecbench.sqlite3"
     config_path: str | None = None
     inline_config: str | None = None
-    benchmark_base_url: str | None = None
     benchmark_token: str | None = None
     max_active_challenges: int = 3
     provisioner: str = "static"
@@ -34,8 +33,6 @@ class Settings:
         database_path = str(Path(os.getenv("TSECBENCH_DB_PATH", os.getenv("TSECBENCH_DATABASE", cls.database_path))).expanduser())
         config_path = os.getenv("TSECBENCH_CONFIG")
         inline_config = os.getenv("TSECBENCH_TASKS_JSON")
-        base_url_value = os.getenv("BENCHMARK_BASE_URL", "").strip()
-        base_url = base_url_value or None
         token_value = os.getenv("BENCHMARK_TOKEN", "").strip()
         token = token_value or None
         try:
@@ -51,7 +48,6 @@ class Settings:
             database_path=database_path,
             config_path=config_path,
             inline_config=inline_config,
-            benchmark_base_url=base_url,
             benchmark_token=token,
             max_active_challenges=max_active,
             provisioner=os.getenv("TSECBENCH_PROVISIONER", "static").lower(),
@@ -70,9 +66,4 @@ class Settings:
                 raw = {**raw, "token": self.benchmark_token}
             elif isinstance(raw, list) and all(isinstance(item, dict) and "token" not in item and "benchmark_token" not in item for item in raw):
                 raw = {"token": self.benchmark_token, "challenges": raw}
-        tasks = parse_task_config(raw)
-        # A token without an external catalog still creates a valid task. This is
-        # useful for operators that provision challenge rows through Store.create_task.
-        if not tasks and self.benchmark_token:
-            tasks = (TaskDefinition(token=self.benchmark_token, challenges=()),)
-        return tasks
+        return parse_task_config(raw)

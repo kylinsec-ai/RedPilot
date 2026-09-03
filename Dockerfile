@@ -61,7 +61,6 @@ RUN pip3 install --break-system-packages -r /app/requirements.txt
 # ── 5. 复制适配器代码 ──
 COPY adapter /app/adapter
 COPY drivers /app/drivers
-COPY skills /app/skills
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 

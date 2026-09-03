@@ -1,9 +1,8 @@
-.agent.env
 .env
 __pycache__/
 *.py[cod]
-.pytest_cache/
 .venv/
+work/
 data/
 *.sqlite3
 *.sqlite3-shm
