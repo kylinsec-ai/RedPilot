@@ -1,22 +1,20 @@
 """
-TsecBench 平台接入层适配器
-面向 TsecBench 安全基准测试平台的接入适配。
-求解引擎固定为 Pi Agent，平台接入层通用化（tsecbench-http / generic）。
+TsecBench 平台接入层适配器(精简包)
+
+求解引擎固定为 Pi Agent(adapter.solver);平台接入固定 TSecBench HTTP
+(adapter.platform)。driver 经本包顶层符号即可完成装配。
 """
 
-from adapter.config import SolverConfig, ControllerConfig, LLMConfig, build_verifier_config
+from adapter.config import SolverConfig
 from adapter.task import AgentTask
-from adapter.verify import Verifier, Claim
-from adapter.solver import SolveResult, create_solver
-from adapter.stoploss import StopLoss
-from adapter.taskprompt import build_task_prompt
+from adapter.solver import SolveResult, create_solver, normalize_flag_body, touch_heartbeat
+from adapter.taskprompt import build_task_prompt, write_context_md
+from adapter.platform import Challenge, SubmitResult, create_platform
 
 __all__ = [
-    "SolverConfig", "ControllerConfig", "LLMConfig",
-    "build_verifier_config",
+    "SolverConfig",
     "AgentTask",
-    "Verifier", "Claim",
-    "SolveResult", "create_solver",
-    "StopLoss",
-    "build_task_prompt",
+    "SolveResult", "create_solver", "normalize_flag_body", "touch_heartbeat",
+    "build_task_prompt", "write_context_md",
+    "Challenge", "SubmitResult", "create_platform",
 ]

@@ -1,7 +1,7 @@
 """
-通用 OpenAPI 平台适配器
+通用 OpenAPI 平台适配器（TSecBenchHTTPBackend 的父类）
 
-不绑定任何具体平台。通过 JSON spec（文件路径或内联 dict）描述平台差异：
+不绑定任何具体平台。通过 JSON spec（内联 dict）描述平台差异：
 - 认证方式（header / bearer / query）
 - 各接口的路径模板与参数位置（query / body）
 - 业务错误码 → HTTP 状态码映射
@@ -13,9 +13,7 @@ spec 默认结构对齐 TSecBench（CHALLENGES_API.md），其他平台只需覆
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 from typing import Any, Optional
 
 import requests
@@ -102,8 +100,8 @@ def _resolve(data: dict, path: str, default: Any = None) -> Any:
 
 class GenericOpenAPIBackend(PlatformBackend):
     """
-    通用 OpenAPI 平台适配器。
-    spec 来源优先级: 构造参数 > PLATFORM_SPEC_FILE 环境变量 > 默认 tsecbench 结构。
+    spec 驱动的通用 OpenAPI 平台适配器(TSecBenchHTTPBackend 的父类)。
+    spec 来源: 构造参数 > 默认 tsecbench 结构;不再支持外部 spec 文件。
     """
 
     name = "generic-openapi"
@@ -122,12 +120,6 @@ class GenericOpenAPIBackend(PlatformBackend):
         self.token = token
         self.timeout = timeout
 
-        # spec 加载: 参数 > 环境变量文件 > 默认
-        if spec is None:
-            spec_file = os.environ.get("PLATFORM_SPEC_FILE", "")
-            if spec_file and os.path.isfile(spec_file):
-                with open(spec_file, encoding="utf-8") as f:
-                    spec = json.load(f)
         self.spec = self._merge(DEFAULT_SPEC, spec or {})
 
         self.auth = self.spec.get("auth", DEFAULT_SPEC["auth"])

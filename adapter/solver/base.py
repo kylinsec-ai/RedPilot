@@ -32,6 +32,11 @@ def flag_body(flag: str) -> str:
     return m.group(1) if m else flag
 
 
+def normalize_flag_body(flag: str) -> str:
+    """去外壳 + 去空白 + 小写：跨会话去重与提交前归一化比较"""
+    return flag_body(flag).strip().lower()
+
+
 def is_valid_flag(flag: str) -> bool:
     """校验 flag 整体合法性：外壳完整 + body 无引号/空格/命令字符"""
     body = flag_body(flag)

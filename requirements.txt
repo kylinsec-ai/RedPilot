@@ -1,3 +1,6 @@
-# TsecBench 平台接入层适配器 - Python 依赖
-# 注: kali-headless 镜像已自带 requests/httpx/pyyaml/dotenv
-openai>=1.30.0,<2.0.0
+# TSecBench 运行时依赖 — 平台 core(tsecbench/)与求解 worker(adapter/)共用
+fastapi
+uvicorn
+pydantic
+python-dotenv
+requests
