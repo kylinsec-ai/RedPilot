@@ -24,23 +24,11 @@ import subprocess
 import time
 from typing import Callable, Optional
 
-from .base import SolveResult, SolverBackend, extract_flags
+from .base import SolveResult, SolverBackend, extract_flags, touch_heartbeat
 
 log = logging.getLogger("adapter.solver.pi")
 
 DEFAULT_PROVIDER = "deepseek"
-
-# 心跳文件：docker healthcheck 据此判断 driver 是否存活
-HEARTBEAT_PATH = "/tmp/driver_heartbeat"
-
-
-def _beat() -> None:
-    """更新心跳文件 mtime（失败静默）"""
-    try:
-        with open(HEARTBEAT_PATH, "a"):
-            os.utime(HEARTBEAT_PATH, None)
-    except Exception:
-        pass
 
 
 def normalize_model(model: str) -> str:
@@ -82,20 +70,23 @@ class PiAgentBackend(SolverBackend):
     name = "pi-agent"
 
     def __init__(self, *, cmd: str = "pi", model: str = "",
-                 skills_dir: str = "", max_turns: int = 60):
+                 skills_dir: str = ""):
         self.cmd = shutil.which(cmd) or cmd
         self.model = normalize_model(model)
         self.skills_dir = skills_dir
-        self.max_turns = max_turns
 
-    def _build_cmd(self, prompt: str, api_key: str = "") -> list[str]:
+    def _build_cmd(self, prompt: str, api_key: str = "", *,
+                   model: str = "", skills_dir: str = "") -> list[str]:
+        """组装命令行；model/skills_dir 参数覆盖实例字段（供 solve 配置合并）"""
         cmd = [self.cmd, "--mode", "json", "--print", "--no-session"]
         if api_key:
             cmd += ["--api-key", api_key]
-        if self.model:
-            cmd += ["--model", self.model]
-        if self.skills_dir and os.path.isdir(self.skills_dir):
-            cmd += ["--skill", self.skills_dir]
+        model = model or self.model
+        if model:
+            cmd += ["--model", model]
+        skills = skills_dir or self.skills_dir
+        if skills and os.path.isdir(skills):
+            cmd += ["--skill", skills]
         cmd.append(prompt)
         return cmd
 
@@ -118,9 +109,7 @@ class PiAgentBackend(SolverBackend):
         skills = self.skills_dir or getattr(solver_cfg, "skills_dir", "")
         api_key = getattr(solver_cfg, "api_key", "") or os.environ.get("DEEPSEEK_API_KEY", "")
 
-        backend = PiAgentBackend(cmd=self.cmd, model=model, skills_dir=skills,
-                                 max_turns=solver_cfg.max_turns)
-        cmd = backend._build_cmd(prompt, api_key)
+        cmd = self._build_cmd(prompt, api_key, model=model, skills_dir=skills)
 
         env = {**os.environ}
         env["HOME"] = os.environ.get("HOME", "/root")
@@ -158,7 +147,6 @@ class PiAgentBackend(SolverBackend):
                     STALL_TIMEOUT = float(os.environ.get("PI_STALL_TIMEOUT", "480"))
                     stall_deadline = time.monotonic() + STALL_TIMEOUT
                     import select
-                    read_fd = proc.stdout.fileno()
                     while True:
                         ready, _, _ = select.select([proc.stdout], [], [], 30)
                         if not ready:
@@ -179,7 +167,7 @@ class PiAgentBackend(SolverBackend):
                         if not line:
                             continue
 
-                        _beat()
+                        touch_heartbeat()
 
                         if transcript_f:
                             transcript_f.write(line + "\n")
@@ -274,8 +262,6 @@ class PiAgentBackend(SolverBackend):
         result.observed_output = "\n".join(all_output_parts[-50:])
         result.turns = turns
         result.duration_s = time.monotonic() - t0
-        if all_output_parts:
-            result.final_text = all_output_parts[-1]
 
         # 从 FLAG 文件读取
         self._read_flag_files(workdir, result.flags)

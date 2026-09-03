@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 log = logging.getLogger("adapter.stoploss")
 
@@ -161,17 +160,12 @@ class StopLoss:
         elapsed = time.monotonic() - st.start_time if st.start_time else 0
         return max(0, int(budget - elapsed))
 
-    def rearm_dry_window(self, code: str) -> None:
-        """重置干旱窗口 (用于被挂起后重新恢复)"""
+    def rearm_dry(self, code: str) -> bool:
+        """若题目因连续干旱(stuck)被停则重置并放行，返回是否放行"""
         st = self._get(code)
+        if not st.stop_reason.startswith("stuck:"):
+            return False
         st.dry_sessions = 0
         st.stopped = False
         st.stop_reason = ""
-
-    def revive(self, code: str) -> None:
-        """复活一个被停止的题目"""
-        st = self._get(code)
-        st.stopped = False
-        st.stop_reason = ""
-        st.dry_sessions = 0
-        st.unreachable_visits = 0
+        return True

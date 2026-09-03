@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, Header, Query, Request
@@ -92,7 +94,24 @@ def create_app(
         normalized_tasks = parse_task_config(tasks)
     service.seed(normalized_tasks)
 
-    app = FastAPI(title="TSecBench Platform", version="1.0.0")
+    # 复用同一个客户端：代理模式下控制台每 2.5s 轮询一次，连接池复用免去每次握手。
+    # 惰性创建：本地模式（未配置 BENCHMARK_BASE_URL）与单元测试（裸 TestClient 不跑
+    # lifespan）不会遗留未关闭的客户端；重复进入 lifespan 时已关闭的客户端也会重建。
+    proxy_client: httpx.AsyncClient | None = None
+
+    def _get_proxy_client() -> httpx.AsyncClient:
+        nonlocal proxy_client
+        if proxy_client is None or proxy_client.is_closed:
+            proxy_client = httpx.AsyncClient(timeout=30, follow_redirects=False)
+        return proxy_client
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        yield
+        if proxy_client is not None:
+            await proxy_client.aclose()
+
+    app = FastAPI(title="TSecBench Platform", version="1.0.0", lifespan=lifespan)
     app.state.store = store
     app.state.service = service
     app.state.settings = settings
@@ -181,41 +200,61 @@ def create_app(
     # ---- Frontend (Range Console) ----
     static_dir = Path(__file__).resolve().parent / "static"
 
+    def _render_console_page() -> str:
+        html = (static_dir / "index.html").read_text(encoding="utf-8")
+        console_config = (
+            json.dumps(
+                {"baseUrl": settings.benchmark_base_url, "token": settings.benchmark_token},
+                ensure_ascii=False,
+            )
+            # 防止配置中嵌入 `</script>` 时逃逸出内联脚本
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+        )
+        return html.replace("__TSECBENCH_CONFIG__", console_config)
+
+    # 配置与模板在启动时即固定，组装一次避免每个请求重复替换；
+    # 文件缺失时退回按请求渲染（旧行为），避免整进程在导入期崩溃。
+    try:
+        console_page = _render_console_page()
+    except FileNotFoundError:
+        console_page = None
+
     @app.get("/", include_in_schema=False)
     def index() -> HTMLResponse:
-        html = (static_dir / "index.html").read_text(encoding="utf-8")
-        console_config = json.dumps(
-            {"baseUrl": settings.benchmark_base_url, "token": settings.benchmark_token},
-            ensure_ascii=False,
-        )
-        return HTMLResponse(html.replace("__TSECBENCH_CONFIG__", console_config))
+        if console_page is None:
+            return HTMLResponse(_render_console_page())
+        return HTMLResponse(console_page)
 
-    @app.api_route("/benchmark/{path:path}", methods=["GET", "POST", "OPTIONS"], include_in_schema=False)
-    async def benchmark_proxy(path: str, request: Request) -> Response:
+    # 单一路由同时覆盖裸路径（题目列表）与子路径：`/benchmark{path:path}` 能匹配
+    # 空路径，免去第二个路由与 Starlette 追加斜杠的 307 重定向。
+    @app.api_route("/benchmark{path:path}", methods=["GET", "POST", "OPTIONS"], include_in_schema=False)
+    async def benchmark_proxy(request: Request, path: str = "") -> Response:
         """Forward the console to the configured remote benchmark API.
 
         The browser calls this same-origin path; the proxy forwards to
         BENCHMARK_BASE_URL injecting BENCHMARK_TOKEN, dodging the remote's
         lack of CORS support.
         """
-        if not settings.benchmark_base_url:
-            return _error_response(APIError(400, "config_error", "BENCHMARK_BASE_URL 未配置"))
+        base_url = (settings.benchmark_base_url or "").strip()
+        parsed = urlparse(base_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return _error_response(APIError(400, "config_error", "BENCHMARK_BASE_URL 未配置或不是合法的 http(s) URL"))
         body = await request.body()
-        base = settings.benchmark_base_url.rstrip("/") + "/openapi/v1/challenges"
-        target = f"{base}/{path}" if path else base
+        base = base_url.rstrip("/") + "/openapi/v1/challenges"
+        target = f"{base}{path}" if path else base
+        if request.url.query:
+            target = f"{target}?{request.url.query}"
         headers = {"Content-Type": request.headers.get("content-type", "application/json")}
         token = settings.benchmark_token or request.headers.get("BENCHMARK_TOKEN")
         if token:
             headers["BENCHMARK_TOKEN"] = token
-        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
-            upstream = await client.request(request.method, target, headers=headers, content=body or None)
+        try:
+            upstream = await _get_proxy_client().request(request.method, target, headers=headers, content=body or None)
+        except httpx.HTTPError:
+            return _error_response(APIError(502, "upstream_error", "上游服务不可达"))
         media = upstream.headers.get("content-type", "application/json")
         return Response(content=upstream.content, status_code=upstream.status_code, media_type=media)
-
-    @app.api_route("/benchmark", methods=["GET", "POST", "OPTIONS"], include_in_schema=False)
-    async def benchmark_proxy_root(request: Request) -> Response:
-        # 空路径（题目列表）直接命中代理，避免 Starlette 追加斜杠的 307 重定向
-        return await benchmark_proxy("", request)
 
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 

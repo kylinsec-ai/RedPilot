@@ -13,7 +13,6 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))                      # tsecbench
@@ -22,18 +21,9 @@ sys.path.insert(0, str(PROJECT_ROOT))                      # tsecbench
 from tsecbench.errors import APIError  # noqa: E402
 from tsecbench.vpn import VPNManager  # noqa: E402
 
-from .agent import (  # noqa: E402
-    fleet_start,
-    fleet_status,
-    fleet_stop,
-    worker_logs,
-    solve_one,
-    single_status,
-)
 from .solver import SYSTEM_PROMPT, ask_llm, extract_flags  # noqa: E402
 
 from .cfg import get_cfg, remote_config  # noqa: E402
-from .session import mark_dirty  # noqa: E402
 
 
 def _remote_request(base: str, token: str, path: str, method: str = "GET", body: dict | None = None):
@@ -68,8 +58,6 @@ from tsecbench.provisioner import provisioner_for  # noqa: E402
 from tsecbench.service import ChallengeService  # noqa: E402
 from tsecbench.store import Store  # noqa: E402
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-
 settings = Settings.from_env()
 if not __import__("os").environ.get("TSECBENCH_DB_PATH"):
     settings = replace(settings, database_path=str(PROJECT_ROOT / "data" / "tsecbench.sqlite3"))
@@ -82,17 +70,13 @@ vpn = VPNManager(Path(settings.database_path).parent / "vpn")
 DEFAULT_TOKEN = settings.benchmark_token or "demo-token-001"
 
 
-def _resolve_token(session: dict) -> str:
-    return DEFAULT_TOKEN
-
-
 # ── 挑战接口 ─────────────────────────────────────────
 
 def list_challenges(session: dict):
     remote = remote_config(session)
     if remote:
         return _remote_request(remote[0], remote[1], "/openapi/v1/challenges")
-    return service.list_challenges(_resolve_token(session))
+    return service.list_challenges(DEFAULT_TOKEN)
 
 
 def start_challenge(session: dict, unique_code: str):
@@ -101,7 +85,7 @@ def start_challenge(session: dict, unique_code: str):
         return _remote_request(
             remote[0], remote[1], f"/openapi/v1/challenges/start?unique_code={unique_code}", "POST"
         )
-    return service.start(_resolve_token(session), unique_code)
+    return service.start(DEFAULT_TOKEN, unique_code)
 
 
 def get_hint(session: dict, unique_code: str):
@@ -113,9 +97,8 @@ def get_hint(session: dict, unique_code: str):
         remote_state = session.setdefault("console_remote_state", {}).setdefault(unique_code, {})
         remote_state["hint"] = result.get("hint")
         remote_state["hint_viewed"] = True
-        mark_dirty_holder = None  # 由调用方标记
         return result
-    return service.hint(_resolve_token(session), unique_code)
+    return service.hint(DEFAULT_TOKEN, unique_code)
 
 
 def submit_flag(session: dict, unique_code: str, flag: str):
@@ -125,7 +108,7 @@ def submit_flag(session: dict, unique_code: str, flag: str):
             remote[0], remote[1], "/openapi/v1/challenges/submit", "POST",
             {"unique_code": unique_code, "flag": flag},
         )
-    return service.submit(_resolve_token(session), unique_code, flag)
+    return service.submit(DEFAULT_TOKEN, unique_code, flag)
 
 
 def close_challenge(session: dict, unique_code: str):
@@ -134,7 +117,7 @@ def close_challenge(session: dict, unique_code: str):
         return _remote_request(
             remote[0], remote[1], f"/openapi/v1/challenges/close?unique_code={unique_code}", "POST"
         )
-    return service.close(_resolve_token(session), unique_code)
+    return service.close(DEFAULT_TOKEN, unique_code)
 
 
 def run_ai_auto(session: dict, code: str) -> dict:
@@ -214,8 +197,7 @@ def challenge_brief(session: dict, code: str) -> dict:
             "hint": remote_state.get("hint"),
             "hint_viewed": bool(remote_state.get("hint_viewed")),
         }
-    token = _resolve_token(session)
-    row = store.get_challenge(token, code)
+    row = store.get_challenge(DEFAULT_TOKEN, code)
     if row is None:
         raise APIError(404, "challenge_not_found", "Challenge not found")
     definition = row.definition

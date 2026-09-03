@@ -3,7 +3,7 @@
 
 核心思路（与 hxbai 的关键区别）：
 - hxbai: 11 类战术全量硬编码注入 prompt
-- 我们: Skill 渐进式披露，只注入匹配的 skill 正文 + 模板展开
+- 我们: Skill 渐进式披露，只注入匹配的 skill 正文
 
 组装流程:
 1. 写入 CLAUDE.md (工具清单) 到工作目录
@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
 
 from adapter.task import AgentTask
 
@@ -23,7 +22,6 @@ log = logging.getLogger("adapter.taskprompt")
 
 # 全局单例（延迟初始化）
 _skill_store = None
-_template_store = None
 
 
 def _get_skill_store():
@@ -32,14 +30,6 @@ def _get_skill_store():
         from adapter.skill_loader import SkillStore
         _skill_store = SkillStore()
     return _skill_store
-
-
-def _get_template_store():
-    global _template_store
-    if _template_store is None:
-        from adapter.prompt_template import TemplateStore
-        _template_store = TemplateStore()
-    return _template_store
 
 
 # ── 内网多阶段渗透编排（多 flag 题）──────────────────
@@ -123,15 +113,9 @@ def build_task_prompt(
     task: AgentTask,
     board=None,
     *,
-    hint: str = None,
     prior_memory_path: str = None,
     session_idx: int = 0,
-    current_intent: str = None,
-    tried_commands: list = None,
-    slots_note: str = "",
-    spray_alert: str = "",
     flags_submitted: int = 0,
-    **kwargs,
 ) -> str:
     """
     组装完整 prompt — 渐进式披露版
@@ -190,20 +174,11 @@ def build_task_prompt(
         # 兜底：至少告诉 Agent 有哪些 skill 可用
         sections.append(store.skill_summary_xml())
 
-    # ── 附加信息 ──
-    if slots_note:
-        sections.append(slots_note.strip())
-    if spray_alert:
-        sections.append(spray_alert.strip())
-
     # ── 已知事实 ──
     if board is not None:
         assets = board.actionable_assets()
         if assets:
             sections.append(f"## 已知事实\n{assets}")
-        goal = board.next_open_goal()
-        if goal:
-            sections.append(f"【当前目标】{goal.id}: {goal.description}")
 
     # ── 前次记忆 ──
     if prior_memory_path and os.path.isfile(prior_memory_path) and session_idx > 0:
@@ -214,22 +189,6 @@ def build_task_prompt(
                 sections.append(f"## 前次会话记忆\n{prior[:2000]}")
         except Exception:
             pass
-
-    # ── 提示 ──
-    if hint:
-        sections.append(f"## 平台提示\n{hint}")
-
-    # ── 当前意图覆盖 ──
-    if current_intent:
-        sections.append(f"【当前意图】{current_intent}")
-
-    # ── 已尝试命令 ──
-    if tried_commands and session_idx > 0:
-        recent = tried_commands[-15:]
-        sections.append(
-            "## 已尝试命令（不要重复）\n" +
-            "\n".join(f"  $ {c[:100]}" for c in recent)
-        )
 
     # ── 工作目录产物 ──
     artifacts = _reusable_artifacts(task.workdir)

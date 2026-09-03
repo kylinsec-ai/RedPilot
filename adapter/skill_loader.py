@@ -29,6 +29,8 @@ class SkillMeta:
     description: str
     path: str                    # SKILL.md 完整路径
     fingerprints: list[str] = field(default_factory=list)  # 快速匹配关键词
+    desc_bigrams: frozenset = frozenset()   # 描述字符二元组（扫描时预计算）
+    body: Optional[str] = None              # 正文（首次 load_skill 时惰性缓存）
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -55,6 +57,12 @@ def _extract_fingerprints(description: str) -> list[str]:
             "from", "into", "使用", "进行", "通过", "适用", "用于", "对于"}
     words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}|[\u4e00-\u9fff]{2,3}", description)
     return [w.lower() for w in words if w.lower() not in stop][:15]
+
+
+def _bigrams(text: str) -> frozenset:
+    """计算文本的字符二元组集合（用于描述-目标相关度匹配）"""
+    t = text or ""
+    return frozenset(t[i:i + 2].lower() for i in range(max(0, len(t) - 1)))
 
 
 class SkillStore:
@@ -119,6 +127,7 @@ class SkillStore:
                 self._skills[name] = SkillMeta(
                     name=name, description=desc,
                     path=skill_md, fingerprints=fps,
+                    desc_bigrams=_bigrams(desc),
                 )
             except Exception as e:
                 log.warning("failed to load skill %s: %s", entry, e)
@@ -131,18 +140,20 @@ class SkillStore:
                 for s in self._skills.values()]
 
     def load_skill(self, name: str) -> Optional[str]:
-        """按需加载 skill 全文"""
+        """按需加载 skill 全文（首次读文件，之后返回缓存）"""
         meta = self._skills.get(name)
         if meta is None:
             return None
-        try:
-            with open(meta.path, "r", encoding="utf-8") as f:
-                text = f.read()
-            _, body = _parse_frontmatter(text)
-            return body
-        except Exception as e:
-            log.warning("failed to load skill body %s: %s", name, e)
-            return None
+        if meta.body is None:
+            try:
+                with open(meta.path, "r", encoding="utf-8") as f:
+                    text = f.read()
+                _, body = _parse_frontmatter(text)
+                meta.body = body
+            except Exception as e:
+                log.warning("failed to load skill body %s: %s", name, e)
+                return None
+        return meta.body
 
     def match_skills(self, objective: str, targets: list[str] = None,
                      files: list[str] = None, *, top: int = 2) -> list[dict]:
@@ -171,15 +182,10 @@ class SkillStore:
                 if fp in haystack:
                     scores[name] += 1.0
 
-        # 3. 描述与目标的 bigram 交集
-        obj_bigrams = set()
-        for i in range(len(objective or "") - 1):
-            obj_bigrams.add((objective or "")[i:i+2].lower())
+        # 3. 描述与目标的 bigram 交集（描述 bigram 扫描时已预计算）
+        obj_bigrams = _bigrams(objective)
         for name, meta in self._skills.items():
-            desc_bigrams = set()
-            for i in range(len(meta.description) - 1):
-                desc_bigrams.add(meta.description[i:i+2].lower())
-            overlap = len(obj_bigrams & desc_bigrams)
+            overlap = len(obj_bigrams & meta.desc_bigrams)
             if overlap > 3:
                 scores[name] += overlap * 0.2
 

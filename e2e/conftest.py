@@ -101,9 +101,13 @@ def server_url(tmp_path) -> str:
             "TSECBENCH_CONFIG": str(tasks_file),
             "HOST": "127.0.0.1",
             "PORT": str(port),
-            # 隔离本地 e2e：禁用远程 .env 配置，让前端走本地 API
+            # 隔离本地 e2e：禁用远程 .env 配置，让前端走本地 API；
+            # 同时钉死 provisioner 与活跃上限，防止宿主机导出值（如
+            # TSECBENCH_PROVISIONER=docker）泄漏进被测服务器
             "BENCHMARK_BASE_URL": "",
             "BENCHMARK_TOKEN": "",
+            "TSECBENCH_PROVISIONER": "static",
+            "TSECBENCH_MAX_ACTIVE_CHALLENGES": "3",
         }
     )
     proc = subprocess.Popen(

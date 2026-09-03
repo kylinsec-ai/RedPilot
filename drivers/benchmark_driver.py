@@ -24,6 +24,7 @@ import re
 import sys
 import threading
 import time
+from dataclasses import replace
 
 # 确保 adapter 包可导入
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -31,14 +32,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from adapter.config import SolverConfig, ControllerConfig, build_verifier_config
 from adapter.task import AgentTask
 from adapter.verify import Verifier, flag_confidence, normalize_flag_body
-from adapter.solver import create_solver, extract_flags, SolveResult
-from adapter.blackboard import Blackboard, goals_for_category
+from adapter.solver import create_solver, touch_heartbeat
+from adapter.blackboard import Blackboard
 from adapter.stoploss import StopLoss
 from adapter.scheduler import run_fleet
 from adapter.taskprompt import build_task_prompt, write_context_md, write_memory
 from adapter.platform_client import (PlatformClient, RateLimitedClient, Challenge,
-                                     SubmitResult, InvalidState, DuplicateSubmit,
-                                     ChallengeNotFound, ResourceUnavailable, VpnCheckError)
+                                     InvalidState, APIError, ChallengeNotFound,
+                                     ResourceUnavailable, VpnCheckError)
 from adapter import observability as obs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -71,12 +72,7 @@ _STATUS_LOCK = threading.Lock()
 
 def _status_path() -> str:
     workdir = os.getenv("ADAPTER_WORKDIR", "/work")
-    wid = os.getenv("ADAPTER_WORKER_ID", "")
-    if not wid:
-        host = os.getenv("HOSTNAME", "")
-        m = re.search(r"-(\d+)$", host)
-        wid = str(int(m.group(1)) - 1) if m else "0"
-    return os.path.join(workdir, "status", f"worker-{wid}.json")
+    return os.path.join(workdir, "status", f"worker-{_worker_id()}.json")
 
 
 def _update_status(**kw) -> None:
@@ -121,23 +117,6 @@ def _prioritize(challenges: list[Challenge]) -> list[Challenge]:
     ))
 
 
-def _read_flag_file(workdir: str) -> set:
-    """读取工作目录中的 FLAG 文件"""
-    out: set = set()
-    for name in ("FLAG", "flag.txt", "FLAG.txt"):
-        p = os.path.join(workdir, name)
-        try:
-            if os.path.isfile(p):
-                with open(p, encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        v = line.strip()
-                        if "{" in v and v.endswith("}") and len(v) <= 200:
-                            out.add(v)
-        except Exception:
-            pass
-    return out
-
-
 def build_task(ch: Challenge, workdir: str, targets: list = None) -> AgentTask:
     """从 Challenge 构建 AgentTask — 对接真实 API 字段"""
     return AgentTask(
@@ -155,14 +134,13 @@ def build_task(ch: Challenge, workdir: str, targets: list = None) -> AgentTask:
 
 # ── 启动/关闭实例 ──────────────────────────────────────────
 
-def _start_with_retry(client, code: str, *, stop_event, rate_wait, retries=None):
+def _start_with_retry(client, code: str, *, stop_event, retries=None):
     """带重试的实例启动 — 对接真实 API 异常"""
     max_retries = retries or _MAX_ACTIVE_RETRIES
     for i in range(max_retries):
         _beat()
         if stop_event.is_set():
             return None, "stop"
-        rate_wait()
         try:
             return client.start_challenge(code), None
         except InvalidState as e:
@@ -183,7 +161,7 @@ def _start_with_retry(client, code: str, *, stop_event, rate_wait, retries=None)
             if i + 1 < max_retries:
                 time.sleep(5)
                 continue
-        except ChallengeNotFound as e:
+        except ChallengeNotFound:
             log.error("challenge not found: %s", code)
             return None, "not_found"
         except Exception as e:
@@ -201,7 +179,7 @@ def _close_with_retry(client, code: str, *, retries: int = 3):
         try:
             result = client.close_challenge(code)
             return result.closed if hasattr(result, 'closed') else True
-        except Exception as e:
+        except Exception:
             if i + 1 < retries:
                 time.sleep(min(2.0 * (i + 1), 6.0))
             else:
@@ -211,16 +189,9 @@ def _close_with_retry(client, code: str, *, retries: int = 3):
 
 # ── 单题求解 ──────────────────────────────────────────────
 
-HEARTBEAT_PATH = "/tmp/driver_heartbeat"
-
-
 def _beat() -> None:
-    """更新心跳文件 mtime（docker healthcheck 据此判断存活）+ 状态文件"""
-    try:
-        with open(HEARTBEAT_PATH, "a"):
-            os.utime(HEARTBEAT_PATH, None)
-    except Exception:
-        pass
+    """心跳（docker healthcheck 依据 /tmp/driver_heartbeat）+ 状态文件刷新"""
+    touch_heartbeat()
     _update_status()
 
 
@@ -237,21 +208,7 @@ def _worker_shard(challenges: list) -> list:
     if count <= 1:
         return challenges
 
-    wid_raw = os.environ.get("ADAPTER_WORKER_ID", "")
-    wid = -1
-    if wid_raw.strip() != "":
-        try:
-            wid = int(wid_raw) % count
-        except ValueError:
-            wid = -1
-    if wid < 0:
-        host = os.environ.get("HOSTNAME", "")
-        m = re.search(r"-(\d+)$", host)
-        if m:
-            wid = (int(m.group(1)) - 1) % count
-    if wid < 0:
-        wid = 0
-
+    wid = _worker_id()
     shard = [c for i, c in enumerate(challenges) if i % count == wid]
     log.info("worker %d/%d: %d challenges assigned", wid, count, len(shard))
     return shard
@@ -260,7 +217,12 @@ def _worker_shard(challenges: list) -> list:
 # ── 优先任务队列（网页「Agent 解此题」派单给舰队）──────────
 
 def _worker_id() -> int:
-    """当前 worker 序号（与 _worker_shard 推导一致）。"""
+    """当前 worker 序号 — 状态文件命名与分片都以此为准。
+
+    - ADAPTER_WORKER_ID: 本 worker 序号 0..count-1
+      未设置时从容器 hostname 尾号推导（compose --scale 场景）:
+      tsecbench-adapter-adapter-1/2/3 → id 0/1/2
+    """
     count = int(os.environ.get("ADAPTER_WORKER_COUNT", "1") or "1")
     wid_raw = os.environ.get("ADAPTER_WORKER_ID", "")
     wid = -1
@@ -405,6 +367,7 @@ def solve_one(
     stop_event: threading.Event,
     submitted: dict,
     submitted_lock: threading.Lock,
+    prio_codes: set = frozenset(),
 ) -> dict:
     """
     单题求解主逻辑。
@@ -418,19 +381,17 @@ def solve_one(
 
     # 止损检查
     stop, reason = stoploss.should_stop(code)
-    if reason.startswith("stuck:"):
-        stoploss.rearm_dry_window(code)
+    if stoploss.rearm_dry(code):
         log.info("  %s stuck readmitted — dry window rearmed", code)
         stop = False
+        reason = ""
     if stop or stop_event.is_set():
         return {"solved": False, "outcome": "dropped", "reason": reason}
 
     # 启动实例（派单题等待更耐心：槽位竞争时坚持等，不轻易轮换跳过）
-    prio_codes = _load_priority(ctrl.workdir, _worker_id())
     start_retries = 30 if code in prio_codes else None
     started, outcome = _start_with_retry(
-        client, code, stop_event=stop_event, rate_wait=lambda: None,
-        retries=start_retries)
+        client, code, stop_event=stop_event, retries=start_retries)
     if started is None:
         return {"solved": False, "outcome": outcome or "start_failed"}
 
@@ -442,8 +403,13 @@ def solve_one(
     task = build_task(ch, workdir, targets=targets)
     board = _shared_board_for(code, workdir)
     board.objective = task.objective
-    board.seed_goals(goals_for_category(task.category or ""))
     stoploss.start(code, multi_flag=task.flag_count > 1)
+
+    # 求解器后端（无状态，会话循环外创建一次）
+    solver_backend = create_solver(
+        model=os.environ.get("ADAPTER_SOLVER_MODEL", ""),
+        skills_dir=os.environ.get("ADAPTER_SKILLS_DIR", ""),
+    )
 
     log.info("round %d visit %s (flags=%d, diff=%s, visit<=%ds) targets=%s",
              round_idx + 1, code, task.flag_count,
@@ -485,7 +451,6 @@ def solve_one(
             )
 
             # 准备 solver 配置
-            from dataclasses import replace
             solver_this = replace(solver, session_seconds=max(60, sess_secs))
 
             new_facts = [0]
@@ -503,11 +468,6 @@ def solve_one(
             _beat()
 
             # 执行 Pi Agent 会话（唯一求解引擎）
-            solver_backend = create_solver(
-                model=os.environ.get("ADAPTER_SOLVER_MODEL", ""),
-                skills_dir=os.environ.get("ADAPTER_SKILLS_DIR", ""),
-                max_turns=solver.max_turns,
-            )
             result = solver_backend.solve(
                 prompt, workdir, solver_this,
                 flag_format=task.flag_format,
@@ -534,9 +494,8 @@ def solve_one(
             else:
                 stoploss.record_no_progress(code)
 
-            # 从 FLAG 文件读取候选
-            file_flags = _read_flag_file(workdir)
-            all_candidates = set(result.flags) | file_flags
+            # 候选 = 会话提取结果（pi_agent 已含 FLAG 文件补录）
+            all_candidates = set(result.flags)
 
             # 验证并提交 flag
             for flag_candidate in all_candidates:
@@ -593,10 +552,7 @@ def solve_one(
                 break
 
             # 写入记忆
-            handoff = result.handoff or ""
             mem_content = board.actionable_assets()
-            if handoff:
-                mem_content += f"\n\n{handoff}"
             if mem_content.strip():
                 write_memory(workdir, mem_content)
 
@@ -608,6 +564,7 @@ def solve_one(
         obs.emit("error", layer="driver",
                  payload={"code": code, "error": str(e)[:200]})
     finally:
+        board.flush()  # 落盘节流中未保存的事实
         # 关闭实例
         if not solved or task.flag_count <= len(accepted_flags):
             _close_with_retry(client, code)
@@ -677,16 +634,16 @@ def schedule_rounds(
         if not pending:
             break
 
-        # 优先任务队列：每轮重读派单文件——
+        # 优先任务队列（prio_codes 本轮已读一次）：
         # 1) 运行中新派单的题可能不在本 worker 列表里，先认领（claim）
         # 2) 认领回来的题再次排除已 solved/dropped（防止已通关的派单题被加回）
         # 3) 已在列表里的派单题排到最前
         if all_challenges:
-            pending = _claim_priority(pending, all_challenges, ctrl.workdir, _worker_id())
+            pending = _claim_priority(pending, all_challenges, prio_codes)
         pending = [c for c in pending
                    if c.unique_code not in solved
                    and (c.unique_code in prio_codes or c.unique_code not in dropped)]
-        pending = _apply_priority(pending, ctrl.workdir, _worker_id())
+        pending = _apply_priority(pending, prio_codes)
         if not pending:
             break
 
@@ -700,13 +657,14 @@ def schedule_rounds(
                  int(base_e * factor), int(base_m * factor), int(base_h * factor),
                  factor, time.monotonic() - t0, ctrl.total_seconds)
 
-        def _visit(ch, attempt, variant, _r=rnd):
+        def _visit(ch, _r=rnd):
             vs = int(ctrl.timebox_for_difficulty(ch.difficulty) * factors[min(_r, len(factors) - 1)])
             return solve_one(
                 client, ch, vs, _r,
                 solver=solver, ctrl=ctrl, verifier=verifier,
                 stoploss=stoploss, stop_event=stop_event,
                 submitted=submitted, submitted_lock=submitted_lock,
+                prio_codes=prio_codes,
             )
 
         results = run_fleet(
@@ -718,7 +676,7 @@ def schedule_rounds(
         )
 
         for c in pending:
-            r = (results.get(c.unique_code) or {}).get("result") or {}
+            r = results.get(c.unique_code) or {}
             if r.get("solved"):
                 solved.add(c.unique_code)
             elif r.get("outcome") == "dropped":
@@ -753,7 +711,6 @@ def main():
     # 单题模式（网页「单独自动解」触发的定向 Agent）：
     # ADAPTER_CHALLENGE_ONLY 指定只处理一道题，且不干预常驻舰队容器
     only = os.getenv("ADAPTER_CHALLENGE_ONLY", "").strip()
-    single_mode = bool(only)
 
     # 加载配置
     solver = SolverConfig.from_env()
@@ -819,10 +776,6 @@ def main():
         log.warning("VPN precheck skipped (backend %s has no vpn check): %s",
                     getattr(raw_client.backend, "name", "?"), e)
 
-    # 健康检查
-    if not raw_client.health_check():
-        log.warning("platform health check failed — proceeding anyway")
-
     # VPN 看门狗：VPN 断线（连续 3 次预检失败）→ 退出进程
     # 容器 restart: unless-stopped 会自动重启并重连 VPN，避免无限无效解题
     _start_vpn_watchdog(raw_client, interval=60, failures_before_exit=3)
@@ -830,13 +783,18 @@ def main():
     # 获取挑战列表
     try:
         challenges = client.list_challenges()
-    except Exception as e:
-        text = str(e)
+    except InvalidState:
         # 平台判定任务已结束（409 invalid_state / task already finished）：
         # 优雅退出（exit 0），避免 restart 策略反复重启空转
-        if "already finished" in text or "invalid_state" in text or "409" in text:
-            log.info("task finished on platform, exiting gracefully")
-            sys.exit(0)
+        log.info("task finished on platform, exiting gracefully")
+        sys.exit(0)
+    except APIError as e:
+        if e.status != 409:
+            log.error("failed to list challenges: %s", e)
+            sys.exit(3)
+        log.info("task finished on platform, exiting gracefully")
+        sys.exit(0)
+    except Exception as e:
         log.error("failed to list challenges: %s", e)
         sys.exit(3)
 
@@ -876,8 +834,9 @@ def main():
 
     # 优先任务队列（网页「Agent 解此题」派单）：本 worker 的优先题排最前，
     # 不在分片内的派单题强制认领
-    challenges = _claim_priority(challenges, all_challenges, ctrl.workdir, _worker_id())
-    challenges = _apply_priority(challenges, ctrl.workdir, _worker_id())
+    prio_codes = set(_load_priority(ctrl.workdir, _worker_id()))
+    challenges = _claim_priority(challenges, all_challenges, prio_codes)
+    challenges = _apply_priority(challenges, prio_codes)
     if not challenges:
         log.info("no challenges assigned to this worker, nothing to do")
         return

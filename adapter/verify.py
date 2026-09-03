@@ -13,14 +13,14 @@ Flag 校验模块 — 三重门 + 置信度分级
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import math
 import re
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 log = logging.getLogger("adapter.verify")
+
+from .solver.base import _FLAG_BODY_RX, flag_body
 
 # 占位词/诱饵特征
 _PLACEHOLDER_RX = re.compile(
@@ -28,8 +28,6 @@ _PLACEHOLDER_RX = re.compile(
     r"|^flag\{[a-f0-9]{32}\}$",  # 纯 md5 哈希
     re.IGNORECASE,
 )
-# flag body 合法字符（防命令注入 payload 误提取）
-_FLAG_BODY_RX = re.compile(r"^[A-Za-z0-9_\-.:/]{3,200}$")
 
 
 @dataclass
@@ -46,15 +44,12 @@ class Claim:
     @property
     def body(self) -> str:
         """提取 flag{} 内的主体"""
-        m = re.match(r"flag\{(.+)\}", self.flag, re.IGNORECASE)
-        return m.group(1) if m else self.flag
+        return flag_body(self.flag)
 
 
 def normalize_flag_body(flag: str) -> str:
     """标准化 flag 用于去重"""
-    m = re.match(r"flag\{(.+)\}", flag, re.IGNORECASE)
-    body = m.group(1) if m else flag
-    return body.strip().lower()
+    return flag_body(flag).strip().lower()
 
 
 def _entropy(s: str) -> float:

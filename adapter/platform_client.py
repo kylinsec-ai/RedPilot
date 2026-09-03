@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
-import time
 from typing import Optional
 
 from .platform import (
@@ -23,6 +21,7 @@ from .platform import (
     StartResult, SubmitResult, TaskNotFound, VpnCheckError, VpnCheckResult,
 )
 from .platform.factory import create_platform
+from .throttle import RateLimiter
 
 log = logging.getLogger("adapter.platform_client")
 
@@ -35,8 +34,6 @@ class PlatformClient:
       tsecbench-http / tsecbench-sdk / generic
     其余行为与旧版一致。
     """
-
-    MAX_CONCURRENT = 3  # 平台限制同时启动 3 道题
 
     def __init__(self, base_url: str, token: str, *,
                  timeout: int = 30, mode: Optional[str] = None,
@@ -83,17 +80,10 @@ class RateLimitedClient:
 
     def __init__(self, client: PlatformClient, min_interval: float = 0.5):
         self._client = client
-        self._min_interval = min_interval
-        self._lock = threading.Lock()
-        self._last_call = 0.0
+        self._limiter = RateLimiter(min_interval)
 
     def _wait(self):
-        with self._lock:
-            now = time.monotonic()
-            delta = now - self._last_call
-            if delta < self._min_interval:
-                time.sleep(self._min_interval - delta)
-            self._last_call = time.monotonic()
+        self._limiter.wait()
 
     def list_challenges(self) -> list[Challenge]:
         self._wait()

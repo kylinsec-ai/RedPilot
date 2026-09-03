@@ -62,7 +62,6 @@ RUN pip3 install --break-system-packages -r /app/requirements.txt
 COPY adapter /app/adapter
 COPY drivers /app/drivers
 COPY skills /app/skills
-COPY prompts /app/prompts
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 

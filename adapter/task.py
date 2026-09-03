@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Optional
 
 
 @dataclass
@@ -42,9 +42,6 @@ class AgentTask:
 
     # 分值
     score: int = 0
-
-    # 获取提示的回调
-    hint_fn: Optional[Callable[[], Optional[str]]] = None
 
     def target_str(self) -> str:
         """格式化目标地址为可读字符串"""

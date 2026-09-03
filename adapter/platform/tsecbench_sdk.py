@@ -123,7 +123,7 @@ class TSecBenchSDKBackend(PlatformBackend):
     def submit_flag(self, unique_code: str, flag: str) -> SubmitResult:
         try:
             r = self._get_client().submit_flag(unique_code, flag)
-        except sdk.DuplicateSubmit as e:
+        except sdk.DuplicateSubmit:
             return SubmitResult(correct=False, duplicate=True, error="duplicate")
         except Exception as e:
             raise self._map_error(e) from e
@@ -165,10 +165,3 @@ class TSecBenchSDKBackend(PlatformBackend):
             time=getattr(r, "time", ""),
             ok=bool(getattr(r, "ok", False)),
         )
-
-    def health_check(self) -> bool:
-        try:
-            self.list_challenges()
-            return True
-        except Exception:
-            return False

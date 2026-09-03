@@ -26,28 +26,18 @@ _SOLVER_PRESETS = {
     "deepseek": {
         "base_url": "https://api.deepseek.com/anthropic",
         "model": "deepseek-v4-flash",
-        "small_fast_model": "deepseek-v4-flash",
     },
     "deepseek-1m": {
         "base_url": "https://api.deepseek.com/anthropic",
         "model": "deepseek-v4-pro[1m]",
-        "small_fast_model": "deepseek-v4-flash",
-        "subagent_model": "deepseek-v4-flash",
-        "effort_level": "max",
-        "auto_compact_window": "786432",
-        "api_timeout_ms": "3000000",
     },
     "glm": {
         "base_url": "https://open.bigmodel.cn/api/anthropic",
         "model": "glm-5.3",
-        "small_fast_model": "glm-5.3",
     },
     "glm-1m": {
         "base_url": "https://open.bigmodel.cn/api/anthropic",
         "model": "glm-5.3",
-        "small_fast_model": "glm-5.3",
-        "auto_compact_window": "1000000",
-        "api_timeout_ms": "3000000",
     },
 }
 
@@ -75,14 +65,7 @@ class SolverConfig:
     base_url: str
     api_key: str
     model: str
-    small_fast_model: str
-    max_turns: int
     session_seconds: int
-    reasoning: bool
-    subagent_model: str = ""
-    effort_level: str = ""
-    auto_compact_window: str = ""
-    api_timeout_ms: str = ""
 
     @classmethod
     def from_env(cls) -> "SolverConfig":
@@ -98,14 +81,7 @@ class SolverConfig:
             base_url=base.rstrip("/"),
             api_key=key,
             model=_env("SOLVER_MODEL", preset["model"]) or preset["model"],
-            small_fast_model=_env("SOLVER_SMALL_FAST_MODEL", preset["small_fast_model"]) or preset["small_fast_model"],
-            max_turns=int(_env("SOLVER_MAX_TURNS", "60") or "60"),
             session_seconds=int(_env("SOLVER_SESSION_SECONDS", "1500") or "1500"),
-            reasoning=(_env("SOLVER_REASONING", "0") == "1"),
-            subagent_model=_env("SOLVER_SUBAGENT_MODEL", preset.get("subagent_model", "")) or "",
-            effort_level=_env("SOLVER_EFFORT", preset.get("effort_level", "")) or "",
-            auto_compact_window=_env("SOLVER_AUTO_COMPACT_WINDOW", preset.get("auto_compact_window", "")) or "",
-            api_timeout_ms=_env("SOLVER_API_TIMEOUT_MS", preset.get("api_timeout_ms", "")) or "",
         )
 
 
@@ -132,9 +108,7 @@ class LLMConfig:
     min_interval: float = 0.0
     thinking: bool = True
     reasoning_effort: str = "high"
-    fast_model: str = ""
     empty_retries: int = 2
-    max_tokens_fast: int = 3072
 
     def is_usable(self) -> bool:
         if self.provider in ("zai", "zhipu", "glm"):
@@ -161,9 +135,7 @@ def build_verifier_config(solver: SolverConfig) -> LLMConfig:
         min_interval=float(_env("LLM_MIN_INTERVAL", "0") or "0"),
         thinking=(_env("LLM_THINKING", "0") == "1"),
         reasoning_effort=_env("LLM_REASONING_EFFORT", "low") or "low",
-        max_tokens_fast=int(_env("LLM_MAX_TOKENS_FAST", "1024") or "1024"),
         empty_retries=int(_env("LLM_EMPTY_RETRIES", "2") or "2"),
-        fast_model=_env("LLM_FAST_MODEL", preset["model"]) or preset["model"],
     )
 
 
@@ -184,14 +156,9 @@ class ControllerConfig:
     per_challenge_seconds: int
     max_sessions_per_challenge: int
     dry_facts_cutoff: int
-    use_hints: bool
     skeptic_votes: int
     min_request_interval: float
-    round_timeboxes: list
     total_seconds: int
-    secs_per_turn: float
-    keepalive_max: int
-    platform_mode: str = "tsecbench-http"   # 平台接入模式: tsecbench-http / tsecbench-sdk / generic
     timebox_easy: int = 240
     timebox_medium: int = 480
     timebox_hard: int = 900
@@ -208,10 +175,6 @@ class ControllerConfig:
 
     @classmethod
     def from_env(cls) -> "ControllerConfig":
-        rounds_raw = (_env("ADAPTER_ROUND_TIMEBOXES", "480,820,1500,2000")
-                      or "480,820,1500,2000")
-        timeboxes = [int(x) for x in rounds_raw.split(",")
-                     if x.strip().isdigit()] or [480, 820, 1500, 2000]
         return cls(
             workdir=_env("ADAPTER_WORKDIR", "/work") or "/work",
             max_concurrency=max(1, int(_env("ADAPTER_MAX_CONCURRENCY", "3") or "3")),
@@ -219,14 +182,9 @@ class ControllerConfig:
             per_challenge_seconds=int(_env("ADAPTER_PER_CHALLENGE_SECONDS", "4000") or "4000"),
             max_sessions_per_challenge=int(_env("ADAPTER_MAX_SESSIONS", "8") or "8"),
             dry_facts_cutoff=int(_env("ADAPTER_DRY_FACTS_CUTOFF", "3") or "3"),
-            use_hints=(_env("ADAPTER_USE_HINTS", "0") == "1"),
             skeptic_votes=max(1, int(_env("SKEPTIC_VOTES", "1") or "1")),
             min_request_interval=float(_env("ADAPTER_MIN_REQUEST_INTERVAL", "0.4") or "0.4"),
-            round_timeboxes=timeboxes,
             total_seconds=int(_env("ADAPTER_TOTAL_SECONDS", "21300") or "21300"),
-            secs_per_turn=float(_env("ADAPTER_SECS_PER_TURN", "5") or "5"),
-            keepalive_max=max(0, int(_env("ADAPTER_KEEPALIVE_MAX", "2") or "2")),
-            platform_mode=_env("ADAPTER_PLATFORM", "tsecbench-http") or "tsecbench-http",
             timebox_easy=int(_env("ADAPTER_TIMEBOX_EASY", str(_DEFAULT_TIMEBOX["easy"])) or _DEFAULT_TIMEBOX["easy"]),
             timebox_medium=int(_env("ADAPTER_TIMEBOX_MEDIUM", str(_DEFAULT_TIMEBOX["medium"])) or _DEFAULT_TIMEBOX["medium"]),
             timebox_hard=int(_env("ADAPTER_TIMEBOX_HARD", str(_DEFAULT_TIMEBOX["hard"])) or _DEFAULT_TIMEBOX["hard"]),

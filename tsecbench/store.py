@@ -350,6 +350,15 @@ class Store:
                 (token, unique_code),
             )
 
+    def delete_challenge(self, token: str, unique_code: str) -> bool:
+        """删除题目行（提交记录随外键 ON DELETE CASCADE 级联删除）"""
+        with self._lock:
+            cur = self._connection.execute(
+                "DELETE FROM challenges WHERE task_token = ? AND unique_code = ?",
+                (token, unique_code),
+            )
+        return cur.rowcount > 0
+
     def submissions(self, token: str, unique_code: str) -> tuple[SubmissionRow, ...]:
         with self._lock:
             rows = self._connection.execute(

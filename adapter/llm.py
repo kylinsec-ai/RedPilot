@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+
+from .throttle import RateLimiter
 
 log = logging.getLogger("adapter.llm")
 
@@ -29,7 +30,7 @@ class LLMClient:
     def __init__(self, cfg):
         self.cfg = cfg
         self._client = None
-        self._last_call = 0.0
+        self._limiter = RateLimiter(cfg.min_interval)
         self._init_client()
 
     def _init_client(self):
@@ -68,14 +69,6 @@ class LLMClient:
                 log.info("zhipuai not installed, using openai-compatible for glm")
                 self._init_openai()
 
-    def _rate_limit(self):
-        if self.cfg.min_interval > 0:
-            now = time.monotonic()
-            delta = now - self._last_call
-            if delta < self.cfg.min_interval:
-                time.sleep(self.cfg.min_interval - delta)
-            self._last_call = time.monotonic()
-
     def chat(self, messages: list, *, max_tokens: int = None,
              thinking: bool = None, model: str = None) -> _LLMResponse:
         """
@@ -83,7 +76,7 @@ class LLMClient:
 
         返回 _LLMResponse 包含 text 和 reasoning_text。
         """
-        self._rate_limit()
+        self._limiter.wait()
         _model = model or self.cfg.model
         _max = max_tokens or self.cfg.max_tokens
         _thinking = thinking if thinking is not None else self.cfg.thinking

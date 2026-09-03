@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, Optional
+from typing import Callable
 
 log = logging.getLogger("adapter.scheduler")
 
@@ -30,7 +30,7 @@ def run_fleet(
 
     参数:
         challenges: 挑战列表 (需有 unique_code 属性)
-        visit_fn: 单次访问函数 (challenge, attempt, variant) -> result
+        visit_fn: 单次访问函数 (challenge) -> result
         is_success: 判断结果是否成功的函数
         max_concurrent: 最大并发数
         best_of: 每题最多尝试次数
@@ -42,15 +42,15 @@ def run_fleet(
         code = ch.unique_code
         for attempt in range(best_of):
             try:
-                result = visit_fn(ch, attempt, 0)
+                result = visit_fn(ch)
                 with lock:
-                    results[code] = {"result": result, "attempt": attempt}
+                    results[code] = result
                 if is_success and is_success(result):
                     break
             except Exception as e:
                 log.error("fleet execution error on %s attempt %d: %s", code, attempt, e)
                 with lock:
-                    results[code] = {"result": {"error": str(e)}, "attempt": attempt}
+                    results[code] = {"error": str(e)}
 
     with ThreadPoolExecutor(max_workers=max_concurrent) as pool:
         futures = {pool.submit(_execute, ch): ch for ch in challenges}

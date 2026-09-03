@@ -10,8 +10,13 @@ import re
 
 from playwright.sync_api import Page, expect
 
-TOKEN = "e2e-token"
-WEB = "web_sql_injection_01"
+try:
+    # pytest 默认 prepend 模式：e2e/ 在 sys.path 上，conftest 以顶层模块导入
+    from conftest import CHALLENGES, TOKEN
+except ModuleNotFoundError:  # pragma: no cover — --import-mode=importlib 等运行方式
+    from e2e.conftest import CHALLENGES, TOKEN
+
+WEB = CHALLENGES[0]["unique_code"]
 
 
 def connect(page: Page, server_url: str) -> None:

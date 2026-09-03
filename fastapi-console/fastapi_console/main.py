@@ -6,15 +6,14 @@ API: 挑战 / VPN / AI 解题 / 舰队控制 / 派单
 
 from __future__ import annotations
 
-import json
+import functools
 import sys
 from pathlib import Path
-from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -22,24 +21,18 @@ from pydantic import BaseModel, Field
 from tsecbench.errors import APIError
 
 from . import services as svc
+from .agent import fleet_start, fleet_status, fleet_stop, single_status, solve_one, worker_logs
 from .cfg import get_cfg, remote_config, save_cfg
 from .session import SessionMiddleware, mark_dirty
 from .services import (
-    challenge_brief,
     close_challenge,
-    fleet_start,
-    fleet_status,
-    fleet_stop,
     get_hint,
     list_challenges,
     run_ai_auto,
     run_ai_round,
-    single_status,
-    solve_one,
     start_challenge,
     submit_flag,
     vpn,
-    worker_logs,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -55,6 +48,19 @@ def _error(error: APIError) -> JSONResponse:
         status_code=error.status_code,
         content={"code": error.code, "message": error.message, "detail": getattr(error, "detail", {})},
     )
+
+
+def _api(fn):
+    """API handler 包装：把 APIError 归一为 JSON 错误响应（替代逐个 try/except）"""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except APIError as exc:
+            return _error(exc)
+
+    return wrapper
 
 
 def _page_context(request: Request, *, title: str, kicker: str) -> dict:
@@ -184,29 +190,23 @@ def settings_test_llm(request: Request):
 # ── 挑战 API ─────────────────────────────────────────
 
 @app.get("/api/v1/challenges")
+@_api
 def api_list_challenges(request: Request):
-    try:
-        return list_challenges(request.state.session)
-    except APIError as exc:
-        return _error(exc)
+    return list_challenges(request.state.session)
 
 
 @app.post("/api/v1/challenges/start")
+@_api
 def api_start_challenge(request: Request, unique_code: str = ""):
-    try:
-        return start_challenge(request.state.session, unique_code)
-    except APIError as exc:
-        return _error(exc)
+    return start_challenge(request.state.session, unique_code)
 
 
 @app.get("/api/v1/challenges/hint")
+@_api
 def api_get_hint(request: Request, unique_code: str = ""):
-    try:
-        result = get_hint(request.state.session, unique_code)
-        mark_dirty(request)
-        return result
-    except APIError as exc:
-        return _error(exc)
+    result = get_hint(request.state.session, unique_code)
+    mark_dirty(request)
+    return result
 
 
 class SubmitPayload(BaseModel):
@@ -215,19 +215,15 @@ class SubmitPayload(BaseModel):
 
 
 @app.post("/api/v1/challenges/submit")
+@_api
 def api_submit_flag(request: Request, payload: SubmitPayload):
-    try:
-        return submit_flag(request.state.session, payload.unique_code, payload.flag)
-    except APIError as exc:
-        return _error(exc)
+    return submit_flag(request.state.session, payload.unique_code, payload.flag)
 
 
 @app.post("/api/v1/challenges/close")
+@_api
 def api_close_challenge(request: Request, unique_code: str = ""):
-    try:
-        return close_challenge(request.state.session, unique_code)
-    except APIError as exc:
-        return _error(exc)
+    return close_challenge(request.state.session, unique_code)
 
 
 # ── VPN API ──────────────────────────────────────────
@@ -242,22 +238,19 @@ class VPNConfigPayload(BaseModel):
 
 
 @app.post("/api/v1/vpn/config")
+@_api
 def api_vpn_upload(payload: VPNConfigPayload):
-    try:
-        return vpn.as_dict(vpn.save_config(payload.content))
-    except APIError as exc:
-        return _error(exc)
+    return vpn.as_dict(vpn.save_config(payload.content))
 
 
 @app.post("/api/v1/vpn/start")
+@_api
 def api_vpn_start():
-    try:
-        return vpn.as_dict(vpn.start())
-    except APIError as exc:
-        return _error(exc)
+    return vpn.as_dict(vpn.start())
 
 
 @app.post("/api/v1/vpn/stop")
+@_api
 def api_vpn_stop():
     return vpn.as_dict(vpn.stop())
 
@@ -269,65 +262,51 @@ class AiPayload(BaseModel):
 
 
 @app.post("/api/v1/ai/round")
+@_api
 def api_ai_round(request: Request, payload: AiPayload):
-    try:
-        result = run_ai_round(request.state.session, payload.unique_code)
-        mark_dirty(request)
-        return result
-    except APIError as exc:
-        return _error(exc)
+    result = run_ai_round(request.state.session, payload.unique_code)
+    mark_dirty(request)
+    return result
 
 
 @app.post("/api/v1/ai/auto")
+@_api
 def api_ai_auto(request: Request, payload: AiPayload):
-    try:
-        result = run_ai_auto(request.state.session, payload.unique_code)
-        mark_dirty(request)
-        return result
-    except APIError as exc:
-        return _error(exc)
+    result = run_ai_auto(request.state.session, payload.unique_code)
+    mark_dirty(request)
+    return result
 
 
 # ── Agent 舰队 ───────────────────────────────────────
 
 @app.get("/api/v1/agent/status")
+@_api
 def api_agent_status():
-    try:
-        return fleet_status()
-    except APIError as exc:
-        return _error(exc)
+    return fleet_status()
 
 
 @app.post("/api/v1/agent/start")
+@_api
 def api_agent_start():
-    try:
-        return fleet_start()
-    except APIError as exc:
-        return _error(exc)
+    return fleet_start()
 
 
 @app.post("/api/v1/agent/stop")
+@_api
 def api_agent_stop():
-    try:
-        return fleet_stop()
-    except APIError as exc:
-        return _error(exc)
+    return fleet_stop()
 
 
 @app.get("/api/v1/agent/logs")
+@_api
 def api_agent_logs(worker: str = "tsecbench-worker-1", tail: int = 200):
-    try:
-        return {"worker": worker, "logs": worker_logs(worker, max(1, min(500, tail)))}
-    except APIError as exc:
-        return _error(exc)
+    return {"worker": worker, "logs": worker_logs(worker, max(1, min(500, tail)))}
 
 
 @app.post("/api/v1/agent/solve-one")
+@_api
 def api_agent_solve_one(request: Request, payload: AiPayload):
-    try:
-        return solve_one(payload.unique_code)
-    except APIError as exc:
-        return _error(exc)
+    return solve_one(payload.unique_code)
 
 
 @app.get("/api/v1/agent/single-status")
@@ -338,25 +317,15 @@ def api_agent_single_status(request: Request, unique_code: str = ""):
 # ── 管理后台 API ─────────────────────────────────────
 
 @app.post("/api/v1/admin/delete-challenge")
+@_api
 def api_admin_delete_challenge(request: Request, payload: AiPayload):
-    """删除题目（远端/本地）：删除提交记录 + 题目行。"""
+    """删除题目（远端/本地）：提交记录随外键级联删除。"""
     code = payload.unique_code
-    try:
-        session = request.state.session
-        remote = remote_config(session)
-        if remote:
-            raise APIError(400, "remote_mode", "远端模式不支持删除，请在平台侧操作")
-        import sqlite3
-
-        conn = sqlite3.connect(svc.store.database_path)
-        with conn:
-            conn.execute("DELETE FROM submissions WHERE task_token = ? AND unique_code = ?",
-                         (svc.DEFAULT_TOKEN, code))
-            cur = conn.execute("DELETE FROM challenges WHERE task_token = ? AND unique_code = ?",
-                               (svc.DEFAULT_TOKEN, code))
-        return {"ok": True, "message": f"已删除 {code}（删除行数 {cur.rowcount}）"}
-    except APIError as exc:
-        return _error(exc)
+    remote = remote_config(request.state.session)
+    if remote:
+        raise APIError(400, "remote_mode", "远端模式不支持删除，请在平台侧操作")
+    deleted = svc.store.delete_challenge(svc.DEFAULT_TOKEN, code)
+    return {"ok": True, "message": f"已删除 {code}" if deleted else f"{code} 不存在（或已删除）"}
 
 
 # ── 状态 ─────────────────────────────────────────────

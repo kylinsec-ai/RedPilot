@@ -86,12 +86,12 @@ def _parse_worker_stats_from_logs(worker: str) -> dict[str, Any]:
     flags_found: list[str] = []
     total = 0
     solved_codes: set[str] = set()
-    for m in re.finditer(r"FLAG CORRECT on ([^\s:]+):.*?\(([+-]?\d+) pts, total (\d+)\)", logs):
-        code, cum = m.group(1), int(m.group(3))
-        flag_m = re.search(r"FLAG CORRECT on %s: ([^\s]+)" % re.escape(code), logs)
-        if flag_m and flag_m.group(1) not in flags_found:
-            flags_found.append(flag_m.group(1))
-        total = cum
+    # 单遍扫描：一次匹配出 code + flag（原实现对每个 code 重复全量 re.search）
+    for m in re.finditer(r"FLAG CORRECT on ([^\s:]+): ([^\s]+) \(([+-]?\d+) pts, total (\d+)\)", logs):
+        code, flag = m.group(1), m.group(2)
+        if flag not in flags_found:
+            flags_found.append(flag)
+        total = int(m.group(4))
         solved_codes.add(code)
     current = ""
     cur_m = re.findall(r"round \d+ visit ([^\s]+)", logs)
@@ -127,7 +127,13 @@ def _aggregate_events() -> dict[str, Any]:
     events: list[dict] = []
     if path.exists():
         try:
-            for line in path.read_text(encoding="utf-8").splitlines()[-1000:]:
+            # 状态页高频轮询：只读文件尾部（~256KB，覆盖最后 1000+ 行），不整读全量
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - 256 * 1024))
+                tail = f.read().decode("utf-8", errors="ignore")
+            for line in tail.splitlines()[-1000:]:
                 line = line.strip()
                 if line:
                     try:
@@ -171,14 +177,22 @@ def fleet_status() -> dict[str, Any]:
     """容器状态 + worker 状态文件 + 事件流聚合 + 单题定向容器列表。"""
     events = _aggregate_events()
     workers: list[dict[str, Any]] = []
+    # 一次批量 inspect 三个容器（.Name 前缀区分）；缺失的容器不在输出中 → absent
+    result = _run(["docker", "inspect", *WORKER_NAMES, "--format",
+                   "{{.Name}}|{{.State.Status}}|{{.State.Health.Status}}|{{.State.ExitCode}}|{{.State.Running}}"],
+                  timeout=30)
+    inspected: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        parts = line.strip().split("|")
+        if len(parts) == 5:
+            inspected[parts[0].lstrip("/")] = line.strip()
     for name in WORKER_NAMES:
-        status = _run(["docker", "inspect", name, "--format",
-                       "{{.State.Status}}|{{.State.Health.Status}}|{{.State.ExitCode}}|{{.State.Running}}"])
-        if status.returncode != 0:
+        row = inspected.get(name)
+        if row is None:
             workers.append({"name": name, "container": "absent", "running": False,
                             "health": "", "exit_code": None, "state": {}})
             continue
-        fields = status.stdout.strip().split("|")
+        fields = row.split("|")[1:]
         running = fields[3] == "true"
         health = fields[1] if len(fields) > 1 and fields[1] else ("" if running else "")
         exit_code = int(fields[2]) if len(fields) > 2 and fields[2].isdigit() else None
@@ -312,20 +326,14 @@ def worker_logs(worker: str, tail: int = 200) -> str:
 
 def _platform_challenge(env: dict[str, str], code: str) -> dict[str, Any] | None:
     """轻量查询平台题目状态（供派单预检）。"""
-    import urllib.error
-    import urllib.request
+    # 延迟导入：services 顶层依赖 agent，避免循环
+    from .services import _remote_request
 
     base = (env.get("BENCHMARK_BASE_URL") or "").rstrip("/")
     token = env.get("BENCHMARK_TOKEN", "")
-    req = urllib.request.Request(
-        base + "/openapi/v1/challenges",
-        headers={"BENCHMARK_TOKEN": token},
-        method="GET",
-    )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            rows = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        rows = _remote_request(base, token, "/openapi/v1/challenges")
+    except (APIError, ValueError):
         return None
     return next((c for c in rows if c.get("unique_code") == code), None)
 

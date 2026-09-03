@@ -9,11 +9,12 @@ Agent 能力层 — Pi Agent 求解器适配器
 上层只依赖 SolveResult 与 solve() 接口。
 """
 
-from .base import SolveResult, CCResult, SolverBackend, extract_flags, is_valid_flag
+from .base import (SolveResult, SolverBackend, extract_flags,
+                   is_valid_flag, touch_heartbeat)
 from .pi_agent import PiAgentBackend
 from .factory import create_solver
 
 __all__ = [
-    "SolveResult", "CCResult", "SolverBackend", "extract_flags", "is_valid_flag",
-    "PiAgentBackend", "create_solver",
+    "SolveResult", "SolverBackend", "extract_flags", "is_valid_flag",
+    "PiAgentBackend", "create_solver", "touch_heartbeat",
 ]

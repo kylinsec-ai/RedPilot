@@ -26,12 +26,16 @@ _FINAL_ANSWER_RX = re.compile(r"<FinalAnswer>(.*?)</FinalAnswer>", re.DOTALL)
 _FLAG_BODY_RX = re.compile(r"^[A-Za-z0-9_\-.:/]{3,200}$")
 
 
+def flag_body(flag: str) -> str:
+    """提取 flag{} 内主体；无完整外壳时原样返回"""
+    m = re.match(r"flag\{(.+)\}", flag, re.IGNORECASE)
+    return m.group(1) if m else flag
+
+
 def is_valid_flag(flag: str) -> bool:
     """校验 flag 整体合法性：外壳完整 + body 无引号/空格/命令字符"""
-    m = re.match(r"flag\{(.+)\}", flag, re.IGNORECASE)
-    if not m:
-        return False
-    return bool(_FLAG_BODY_RX.match(m.group(1)))
+    body = flag_body(flag)
+    return body != flag and bool(_FLAG_BODY_RX.match(body))
 
 
 def extract_flags(text: str) -> list[str]:
@@ -54,9 +58,6 @@ def extract_flags(text: str) -> list[str]:
 class SolveResult:
     """Agent 会话执行结果（各后端统一输出）"""
     flags: list[str] = field(default_factory=list)
-    final_answer: str = ""
-    final_text: str = ""
-    handoff: str = ""
     tool_outputs: list = field(default_factory=list)
     observed_output: str = ""
     error: str = ""
@@ -69,8 +70,18 @@ class SolveResult:
         return bool(self.flags)
 
 
-# 兼容旧名
-CCResult = SolveResult
+# ── 心跳文件 ─────────────────────────────────────────────
+
+HEARTBEAT_PATH = "/tmp/driver_heartbeat"
+
+
+def touch_heartbeat() -> None:
+    """更新心跳文件 mtime（失败静默）— driver 与 solver 会话共用"""
+    try:
+        with open(HEARTBEAT_PATH, "a"):
+            os.utime(HEARTBEAT_PATH, None)
+    except Exception:
+        pass
 
 
 class SolverBackend(ABC):
@@ -97,6 +108,7 @@ class SolverBackend(ABC):
 
     @staticmethod
     def _read_flag_files(workdir: str, flags: list[str]) -> list[str]:
+
         """从工作目录的标准 flag 文件补录候选"""
         for name in ("FLAG", "flag.txt", "FLAG.txt"):
             p = os.path.join(workdir, name)
