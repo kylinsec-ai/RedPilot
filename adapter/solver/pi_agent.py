@@ -17,8 +17,10 @@ Pi Agent CLI 求解器适配器
 
 from __future__ import annotations
 
+import codecs
 import json
 import logging
+import math
 import os
 import select
 import shutil
@@ -133,7 +135,7 @@ class PiAgentBackend(SolverBackend):
         all_output_parts = []
         turns = 0
         text_buf = ""      # 助手文本累积（text_delta 是增量）
-        thinking_buf = ""  # 思考流（忽略，不进入 observed_output）
+        thinking_len = 0   # 思考流长度（只用长度，累积原文会无界增长）
 
         def _emit(kind: str, payload: dict | None = None) -> None:
             """非侵入观测：on_event 只读，异常吞掉不影响求解"""
@@ -144,11 +146,11 @@ class PiAgentBackend(SolverBackend):
             except Exception as e:
                 log.warning("on_event callback error: %s", e)
 
-        # PI_STALL_TIMEOUT 启动时解析一次:空串/垃圾值 fail-fast 回退,不进重试循环
+        # PI_STALL_TIMEOUT 启动时解析一次:空串/垃圾值/inf/nan fail-fast 回退,不进重试循环
         try:
             STALL_TIMEOUT = float((os.environ.get("PI_STALL_TIMEOUT", "480") or "480").strip() or "480")
-            if STALL_TIMEOUT <= 0:
-                raise ValueError("non-positive")
+            if not math.isfinite(STALL_TIMEOUT) or STALL_TIMEOUT <= 0:
+                raise ValueError("non-positive-or-infinite")
         except ValueError:
             log.warning("bad PI_STALL_TIMEOUT=%r, using 480", os.environ.get("PI_STALL_TIMEOUT"))
             STALL_TIMEOUT = 480.0
@@ -207,6 +209,14 @@ class PiAgentBackend(SolverBackend):
                     last_progress_emit = 0.0  # tool_execution_update 节流：最多 1/s
                     last_hb = 0.0  # 心跳/落盘节流:行级突发不再 syscall 风暴
                     last_flush = 0.0
+                    # 增量行读取器:stdout 切非阻塞,攒整行再处理。readline() 在
+                    # 半行(无换行)输出上会永久阻塞,绕过 stall 看门狗与 deadline,
+                    # 故用 os.read 攒 buffer;只有完整行(或 EOF 残余)才进入处理。
+                    out_buf = ""
+                    out_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                    stdout_fd = proc.stdout.fileno()
+                    os.set_blocking(stdout_fd, False)
+                    eof_seen = False
                     while True:
                         ready, _, _ = select.select([proc.stdout], [], [], 30)
                         if not ready:
@@ -234,11 +244,41 @@ class PiAgentBackend(SolverBackend):
                                 stall_deadline = time.monotonic() + STALL_TIMEOUT
                                 break
                             continue
-                        line = proc.stdout.readline()
-                        if not line:
+                        # 有数据分支同样执行 stall 检查:纯空行滴答让 select 持续
+                        # 可读、从不进入上面的无输出分支,不在这里查就永远查不到
+                        if time.monotonic() > stall_deadline:
+                            log.warning("pi session stalled %ds (no output) — killing and retrying",
+                                        STALL_TIMEOUT)
+                            _emit("system", {"phase": "stalled", "detail": f"no output {STALL_TIMEOUT:.0f}s"})
+                            proc.kill()
+                            proc.wait(timeout=10)
+                            result.error = "stalled_no_output"
+                            need_retry = True
+                            stall_deadline = time.monotonic() + STALL_TIMEOUT
                             break
+                        try:
+                            chunk = os.read(stdout_fd, 65536)
+                        except BlockingIOError:
+                            chunk = None
+                        if chunk:
+                            out_buf += out_decoder.decode(chunk)
+                            # 只有含实质内容的字节才喂狗:纯换行/空白输出不重置,
+                            # 否则卡死的 pi 靠空行即可绕过 stalled_no_output
+                            if chunk.strip():
+                                stall_deadline = time.monotonic() + STALL_TIMEOUT
+                        elif chunk is not None and not eof_seen:
+                            eof_seen = True
+                            out_buf += out_decoder.decode(b"", final=True)
+                        if "\n" in out_buf:
+                            line, out_buf = out_buf.split("\n", 1)
+                        elif eof_seen:
+                            # EOF:残余半行作为最后一行;耗尽后退出循环
+                            if not out_buf.strip():
+                                break
+                            line, out_buf = out_buf, ""
+                        else:
+                            continue
                         line = line.strip()
-                        stall_deadline = time.monotonic() + STALL_TIMEOUT
                         if not line:
                             continue
 
@@ -320,10 +360,10 @@ class PiAgentBackend(SolverBackend):
                                     last_progress_emit = now
                                     _emit("text", {"preview": tail_text(text_buf, ASSISTANT_PREVIEW_MAX)})
                             elif mtype == "thinking_delta" and delta:
-                                thinking_buf += delta
+                                thinking_len += len(delta)
                                 if now - last_progress_emit >= 1.0:
                                     last_progress_emit = now
-                                    _emit("thinking", {"length": len(thinking_buf)})
+                                    _emit("thinking", {"length": thinking_len})
 
                         # ── 终态 ──
                         elif event_type in ("agent_end", "turn_end"):

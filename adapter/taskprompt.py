@@ -84,10 +84,11 @@ def _reusable_artifacts(workdir: str) -> str:
     return ", ".join(artifacts) if artifacts else ""
 
 
-def build_task_prompt(task: AgentTask, *, flags_submitted: int = 0) -> str:
+def build_task_prompt(task: AgentTask, *, flags_submitted: int = 0, hint: str | None = None) -> str:
     """
-    组装单会话 prompt:角色 + 任务信息 + (内网编排) + 工作目录产物 + 工作指令
+    组装单会话 prompt:角色 + 任务信息 + (内网编排) + (平台提示) + 工作目录产物 + 工作指令
     flags_submitted 仅用于多 flag 题提示剩余进度。
+    hint 为平台提示原文(查看提示已按平台规则扣减本题得分,仍要求独立完成)。
     """
     sections = []
 
@@ -114,6 +115,14 @@ def build_task_prompt(task: AgentTask, *, flags_submitted: int = 0) -> str:
     if task.difficulty:
         task_lines.append(f"- 难度: {task.difficulty}")
     sections.append("\n".join(task_lines))
+
+    # ── 平台提示（每题 start 后无条件获取；查看已扣分，仅作兜底参考）──
+    if hint:
+        sections.append(
+            "## 平台提示\n"
+            f"{hint}\n"
+            "（查看该提示已按平台规则扣减本题得分——请先独立尝试，仅在受阻时参考此提示。）"
+        )
 
     # ── 内网多阶段编排（仅多 flag 题注入，节省 token）──
     if task.flag_count > 1:

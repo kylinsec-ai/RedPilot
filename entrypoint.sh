@@ -75,17 +75,14 @@ fi
 # ── 创建工作目录 ──
 mkdir -p "${ADAPTER_WORKDIR:-/work}"
 
-# ── 验证平台连通性 ──
-echo "[adapter] testing platform API connectivity..."
-http_code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' \
-  -H "BENCHMARK_TOKEN: ${BENCHMARK_TOKEN}" \
-  "${BENCHMARK_BASE_URL}/openapi/v1/challenges" 2>/dev/null) || http_code="000"
-echo "[adapter] platform API response: HTTP ${http_code}"
-
-if [[ "${http_code}" == "000" ]]; then
-  echo "[adapter] WARNING: cannot reach platform API"
-elif [[ "${http_code}" == "404" ]]; then
-  echo "[adapter] WARNING: token may be invalid (404)"
+# ── 验证平台连通性（tsec-run 冒烟:官方 SDK CLI,只读 list;非致命,仅告警）──
+echo "[adapter] testing platform API connectivity via tsec-run..."
+if TSEC_BASE_URL="${BENCHMARK_BASE_URL}" TSEC_TOKEN="${BENCHMARK_TOKEN}" tsec-run > /tmp/tsec-run.log 2>&1; then
+  echo "[adapter] platform API reachable"
+  head -5 /tmp/tsec-run.log
+else
+  echo "[adapter] WARNING: platform unreachable / bad token (see /tmp/tsec-run.log)" >&2
+  head -20 /tmp/tsec-run.log >&2 2>/dev/null || true
 fi
 
 echo "[adapter] starting benchmark driver..."

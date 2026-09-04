@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
 """
-TSecBench 极简求解驱动 — 单 worker 串行刷题
+TSecBench 极简求解驱动 — 单 worker 串行刷题(异步直调官方 tsec-benchmark SDK)
 
 形态: 一个带 VPN 的容器,常驻、一次开一道题、单会话求解、逐 flag 直接提交、
 刷完轮询待命。多 flag 题未全解出时留待下一轮冷启动再试(无记忆续接)。
 
 主循环:
-  list_challenges(平台为完成状态唯一权威)
+  TSecBenchmarkAsync(入口 VPN 预检;list 平台为完成状态唯一权威)
     → 未完成题按 难度升序/分值降序 排列
-    → 逐题 solve_one(start → 1 次 pi 会话 → 候选 flag 去重直提 → close)
+    → 逐题 solve_one(start → hint(每题无条件取,平台规则会扣分) → 1 次 pi 会话
+                    → 候选去重直提 → close)
     → 全部刷完 sleep 后重新列题(新题自动纳入)
 
-闸门只有: flag 格式候选 + 平台判分/幂等(duplicate)。无轮次/熔断/止损/
+闸门只有: flag 格式候选 + 平台判分/幂等(SDK 抛 DuplicateSubmit)。无轮次/熔断/止损/
 黑板记忆/验证器 LLM —— 那些机制已随 MVP 精简移除。
 
-失败语义: 平台任务结束(409)或列表失败按旧行为退出,由容器 restart 策略拉起;
-单题启动/提交失败只记日志,不 panic。
+失败语义: SDK 入口 VPN 预检失败 exit 4;平台任务结束(409)exit 0;列表失败 exit 3;
+均退出由容器 restart 策略拉起;单题启动/提交失败只记日志,不 panic。
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -27,6 +29,16 @@ import re
 import sys
 import threading
 import time
+
+from tsec_benchmark import (
+    Challenge,
+    ChallengeNotFound,
+    DuplicateSubmit,
+    InvalidState,
+    ResourceUnavailable,
+    TSecBenchmarkAsync,
+    VpnCheckError,
+)
 
 # 确保 adapter 包可导入(容器内 /app 下运行时 cwd 为 /app,无需此句;宿主机直跑需要)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -44,11 +56,8 @@ from adapter.live import (
 )
 from adapter.task import AgentTask
 from adapter.taskprompt import build_task_prompt, write_context_md
-from adapter.solver import create_solver, normalize_flag_body, touch_heartbeat
-from adapter.solver.base import extract_flags
-from adapter.platform import (
-    Challenge, ChallengeNotFound, InvalidState, ResourceUnavailable, create_platform,
-)
+from adapter.solver import create_solver, touch_heartbeat
+from adapter.solver.base import extract_flags, is_valid_flag
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("adapter.driver")
@@ -59,6 +68,8 @@ CYCLE_SLEEP = 30          # 一轮刷完后的等待(秒)
 IDLE_SLEEP = 60           # 无待解题时的轮询间隔(秒)
 START_MAX_RETRIES = 8     # 单题启动重试(平台并发槽位竞争)
 CLOSE_RETRIES = 3
+
+
 def _parse_status_port() -> int:
     """STATUS_PORT 安全解析:import 期绝不抛;空串=禁用(0),垃圾值回退 8080 并告警"""
     raw = os.getenv("STATUS_PORT", "8080")
@@ -83,8 +94,10 @@ _BUS: LiveBus | None = None
 _FLUSH_KINDS = {"tool_end", "turn_done", "error", "system", "lifecycle"}
 
 
-def _live_set(kind: str = "lifecycle", _immediate: bool = True, **fields) -> None:
-    """update+publish 一行式；_LIVE 为 None 时无操作；异常吞掉不影响求解"""
+def _live_set(kind: str = "lifecycle", _immediate: bool = False, **fields) -> None:
+    """update+publish 一行式；_LIVE 为 None 时无操作；异常吞掉不影响求解。
+    默认 _immediate=False：update 节流保存，需要落盘的边界事件由下方
+    kind 命中 _FLUSH_KINDS 的一次强制 flush 完成，恰好一次落盘。"""
     try:
         if _LIVE is None:
             return
@@ -183,52 +196,54 @@ def build_task(ch: Challenge, workdir: str, targets: list) -> AgentTask:
 
 # ── 实例启动/关闭 ───────────────────────────────────────────
 
-def _start_with_retry(client, code: str) -> object | None:
+async def _start_with_retry(client: TSecBenchmarkAsync, code: str):
     """带重试的实例启动;失败返回 None(平台槽位满时退避等待)"""
     for i in range(START_MAX_RETRIES):
         touch_heartbeat()
         try:
-            return client.start_challenge(code)
+            return await client.start_challenge(code)
         except InvalidState as e:
             # 409: 活跃实例达上限或任务已结束
             msg = getattr(e, "message", "") or str(e)
             if any(t in msg for t in ("上限", "active", "max")):
                 wait = min(3.0 * (i + 1), 20.0)
                 log.warning("max active on %s; waiting %.0fs (%d/%d)", code, wait, i + 1, START_MAX_RETRIES)
-                time.sleep(wait)
+                await asyncio.sleep(wait)
                 continue
             log.error("task ended (invalid_state) on %s: %s", code, msg)
             return None
         except ResourceUnavailable:
             log.warning("resource unavailable on %s, retry", code)
-            time.sleep(5)
+            await asyncio.sleep(5)
         except ChallengeNotFound:
             log.error("challenge not found: %s", code)
             return None
         except Exception as e:
             log.error("start_challenge failed on %s: %s", code, e)
             if i + 1 < START_MAX_RETRIES:
-                time.sleep(3)
+                await asyncio.sleep(3)
     log.error("giving up starting %s after %d tries", code, START_MAX_RETRIES)
     return None
 
 
-def _close_with_retry(client, code: str) -> bool:
-    """带重试的实例关闭"""
+async def _close_with_retry(client: TSecBenchmarkAsync, code: str) -> bool:
+    """带重试的实例关闭;SDK 对已关/任务已停(404/409)视为已关闭返回 False"""
     for i in range(CLOSE_RETRIES):
         try:
-            return client.close_challenge(code).closed
+            return (await client.close_challenge(code)).closed
+        except (ChallengeNotFound, InvalidState):
+            return False
         except Exception:
             if i + 1 < CLOSE_RETRIES:
-                time.sleep(min(2.0 * (i + 1), 6.0))
+                await asyncio.sleep(min(2.0 * (i + 1), 6.0))
     log.error("FAILED to close %s after %d tries", code, CLOSE_RETRIES)
     return False
 
 
 # ── 单题求解 ────────────────────────────────────────────────
 
-def solve_one(
-    client,
+async def solve_one(
+    client: TSecBenchmarkAsync,
     ch: Challenge,
     *,
     cfg: SolverConfig,
@@ -236,7 +251,8 @@ def solve_one(
     submitted: dict[str, set[str]],
 ) -> tuple[bool, list[str]]:
     """
-    单题单会话求解: start → 工作目录 → 单会话 pi → 候选去重直提 → close。
+    单题单会话求解: start → hint(每题无条件取,平台规则扣分) → 工作目录 →
+    单会话 pi(经 to_thread,避免阻塞事件循环) → 候选去重直提 → close。
     返回 (solved, 本轮正确的 flag 列表)。
     """
     code = ch.unique_code
@@ -244,13 +260,24 @@ def solve_one(
               started_at=time.time(), turns=0, error="",
               current_tool="", last_output_tail="",
               assistant_preview="", flags_found=0, accepted=0)
-    started = _start_with_retry(client, code)
+    started = await _start_with_retry(client, code)
     if started is None:
         _live_set(phase="idle", error="start failed")
         return False, []
 
     accepted: list[str] = []
     try:
+        # hint:start 后无条件取。平台规则:查看提示(永久 mark_hint_viewed)后本题
+        # 后续 flag 均按比例扣分——用户已确认接受。失败只告警,不阻塞求解。
+        hint: str | None = None
+        try:
+            hint = (await client.get_hint(code)).hint or None
+        except Exception as e:
+            log.warning("hint unavailable on %s: %s", code, e)
+        if hint:
+            log.info("hint fetched on %s (%d chars); challenge score discounted per platform rule",
+                     code, len(hint))
+
         workdir = os.path.join(WORKDIR, _safe_code(code))
         os.makedirs(workdir, exist_ok=True)
         write_context_md(workdir)
@@ -260,28 +287,39 @@ def solve_one(
                  ch.difficulty or "?", task.target_str())
 
         # 单会话求解：实时 hooks -> LiveState/SSE + transcript 落盘（pi 本体零改动）
-        prompt = build_task_prompt(task, flags_submitted=ch.correct_flag_count)
+        prompt = build_task_prompt(task, flags_submitted=ch.correct_flag_count, hint=hint)
         transcript_path = os.path.join(workdir, "transcript.jsonl")
         on_fact, on_event = _make_hooks()
         _live_set(phase="solving", challenge_code=code,
                   transcript_path=transcript_path,
                   model=getattr(cfg, "model", ""))
-        result = solver_backend.solve(prompt, workdir, cfg, flag_format=FLAG_FORMAT,
-                                      on_fact=on_fact, on_event=on_event,
-                                      transcript_path=transcript_path)
+        # pi 会话同步阻塞可达 ~1500s:必须放线程,禁止直接 await
+        result = await asyncio.to_thread(solver_backend.solve, prompt, workdir, cfg,
+                                         flag_format=FLAG_FORMAT, on_fact=on_fact,
+                                         on_event=on_event, transcript_path=transcript_path)
 
-        # 候选去重后逐个直接提交;平台 correct/duplicate 响应即唯一闸门
+        # 候选去重后逐个直接提交;平台 correct/duplicate 响应即唯一闸门。
+        # 去重键用原文精确匹配(平台按原文哈希判分,大小写敏感;归一化键会误杀)；
+        # 仅在收到平台响应后标记（异常未触达平台的不标记，下一轮可重试）；
+        # 非法候选（含 prompt 占位符 flag{...}）直接跳过。
         for cand in result.flags:
-            norm = normalize_flag_body(cand)
-            if norm in submitted.setdefault(code, set()):
+            if not is_valid_flag(cand):
                 continue
-            submitted[code].add(norm)
+            if cand in submitted.setdefault(code, set()):
+                continue
             _live_set(phase="submitting")
             try:
-                r = client.submit_flag(code, cand)
+                r = await client.submit_flag(code, cand)
+            except DuplicateSubmit:
+                # 平台已收该 flag(幂等,本会话外可能已提交过):记入去重集,避免
+                # 本轮后续/下轮冷启动重复重提刷屏
+                submitted[code].add(cand)
+                log.info("duplicate flag on %s (already accepted)", code)
+                continue
             except Exception as e:
                 log.error("submit failed on %s: %s", code, e)
                 continue
+            submitted[code].add(cand)
             if r.correct:
                 log.info("FLAG CORRECT on %s: %s (+%d pts, cumulative %d)",
                          code, cand[:40], r.awarded, r.cumulative_score)
@@ -292,8 +330,6 @@ def solve_one(
                     _live_set(phase="done", accepted=len(accepted),
                               flags_found=len(result.flags), error="")
                     return True, accepted
-            elif r.duplicate:
-                log.info("duplicate flag on %s (already accepted)", code)
             else:
                 log.info("flag INCORRECT on %s: %s", code, cand[:40])
 
@@ -309,11 +345,58 @@ def solve_one(
     finally:
         # 单会话结束即释放实例(多 flag 剩题由下一轮重新 start 冷启动)
         _live_set(phase="closing")
-        if not _close_with_retry(client, code):
+        if not await _close_with_retry(client, code):
             log.warning("challenge %s left running on platform", code)
 
 
 # ── 主循环 ──────────────────────────────────────────────────
+
+async def amain(base_url: str, token: str, cfg: SolverConfig) -> None:
+    """异步主循环:SDK 入口 VPN 预检 → list/start/hint/solve/submit/close 串行刷题。"""
+    solver_backend = create_solver()
+    submitted: dict[str, set[str]] = {}
+    solved_ever: set[str] = set()
+    try:
+        async with TSecBenchmarkAsync(base_url=base_url, token=token) as client:
+            while True:
+                # 拉取题目;平台 is_completed 为完成状态的唯一权威
+                try:
+                    challenges = await client.list_challenges()
+                except InvalidState:
+                    log.info("task finished on platform, exiting")
+                    sys.exit(0)
+                except Exception as e:
+                    log.error("failed to list challenges: %s", e)
+                    sys.exit(3)  # 容器 restart 策略拉起(重连 VPN/API)
+
+                pending = [c for c in challenges if not c.is_completed and c.unique_code not in solved_ever]
+                if not pending:
+                    log.info("no pending challenges, polling again in %ds", IDLE_SLEEP)
+                    await asyncio.sleep(IDLE_SLEEP)
+                    continue
+
+                for ch in _prioritize(pending):
+                    try:
+                        solved, accepted = await solve_one(client, ch, cfg=cfg,
+                                                           solver_backend=solver_backend,
+                                                           submitted=submitted)
+                    except KeyboardInterrupt:
+                        raise
+                    except Exception:
+                        log.exception("unexpected error on %s", ch.unique_code)
+                        solved, accepted = False, []
+                    if solved:
+                        solved_ever.add(ch.unique_code)
+                        log.info("=== solved %s (%d flag(s)) ===", ch.unique_code, len(accepted))
+
+                log.info("=== pass done: %d pending, %d solved this run, polling in %ds ===",
+                         len(pending), len(solved_ever), CYCLE_SLEEP)
+                await asyncio.sleep(CYCLE_SLEEP)
+    except VpnCheckError as e:
+        # SDK 入口 VPN 预检失败:快速失败;容器 restart 策略在 VPN 恢复后拉起
+        log.error("VPN pre-check failed: %s", e)
+        sys.exit(4)
+
 
 def main() -> None:
     base_url = os.getenv("BENCHMARK_BASE_URL", "").strip()
@@ -353,46 +436,8 @@ def main() -> None:
 
     threading.Thread(target=_heartbeat_loop, daemon=True, name="heartbeat").start()
 
-    client = create_platform(base_url, token)
-    solver_backend = create_solver()
-    submitted: dict[str, set[str]] = {}
-    solved_ever: set[str] = set()
     log.info("tsecbench-adapter starting: model=%s base=%s", cfg.model, base_url)
-
-    while True:
-        # 拉取题目;平台 is_completed 为完成状态的唯一权威
-        try:
-            challenges = client.list_challenges()
-        except InvalidState:
-            log.info("task finished on platform, retrying later")
-            time.sleep(IDLE_SLEEP)
-            continue
-        except Exception as e:
-            log.error("failed to list challenges: %s", e)
-            sys.exit(3)  # 容器 restart 策略拉起(重连 VPN/API)
-
-        pending = [c for c in challenges if not c.is_completed and c.unique_code not in solved_ever]
-        if not pending:
-            log.info("no pending challenges, polling again in %ds", IDLE_SLEEP)
-            time.sleep(IDLE_SLEEP)
-            continue
-
-        for ch in _prioritize(pending):
-            try:
-                solved, accepted = solve_one(client, ch, cfg=cfg, solver_backend=solver_backend,
-                                             submitted=submitted)
-            except KeyboardInterrupt:
-                raise
-            except Exception:
-                log.exception("unexpected error on %s", ch.unique_code)
-                solved, accepted = False, []
-            if solved:
-                solved_ever.add(ch.unique_code)
-                log.info("=== solved %s (%d flag(s)) ===", ch.unique_code, len(accepted))
-
-        log.info("=== pass done: %d pending, %d solved this run, polling in %ds ===",
-                 len(pending), len(solved_ever), CYCLE_SLEEP)
-        time.sleep(CYCLE_SLEEP)
+    asyncio.run(amain(base_url, token, cfg))
 
 
 if __name__ == "__main__":

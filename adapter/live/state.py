@@ -54,6 +54,9 @@ def summarize_args(args, max_len: int = ARGS_SUMMARY_MAX) -> str:
     except Exception:
         s = str(args)
     if isinstance(args, str):
+        # 大字符串先截断再跑正则:含嵌套量词的 _SECRET_PAIR_RX 扫全量 MB 级文本会卡住求解线程
+        if len(args) > 65536:
+            args = args[:65536] + "…"
         try:
             s = _SECRET_PAIR_RX.sub(r'\1"***"', s)
         except Exception:

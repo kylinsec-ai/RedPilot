@@ -1,63 +1,429 @@
-<title>TsecBench Worker Live</title>
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TSecBench 态势台</title>
+<link rel="icon" href="data:,">
 <style>
-:root{--bg:#f6f6f4;--card:#fff;--ink:#1a1a1a;--mut:#6b6b6b;--ok:#1a7f37;--run:#0969da;--err:#cf222e;--line:#e3e3e0}
-@media(prefers-color-scheme:dark){:root{--bg:#111;--card:#1c1c1e;--ink:#eee;--mut:#999;--line:#333}}
-body{background:var(--bg);color:var(--ink);font:14px system-ui;margin:0;padding:20px;max-width:900px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
-.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--mut);margin-right:6px}
-.dot.solving{background:var(--run)}.dot.done{background:var(--ok)}.dot.error{background:var(--err)}
-pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:10px;overflow-x:auto;white-space:pre-wrap;max-height:300px;overflow-y:auto}
-.row{display:flex;gap:16px;flex-wrap:wrap}.row div{min-width:140px}
-.mut{color:var(--mut)}.mono{font-family:ui-monospace,monospace}
-#conn{font-size:12px}
+:root{
+  --bg:#0d1220; --panel:#131a2b; --panel2:#182136; --line:#223052; --line2:#2c3c63;
+  --ink:#e6ebf5; --mut:#8b98b3; --dim:#5d6b87;
+  --amber:#e8a33d; --green:#35c07a; --red:#e5534b; --blue:#5aa2ff; --cyan:#4ec9c2;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,"Liberation Mono",monospace;
+  --sans:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",system-ui,-apple-system,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--blue);text-decoration:none}
+a:hover{text-decoration:underline}
+.mono{font-family:var(--mono);font-size:12.5px}
+.mut{color:var(--mut)} .dim{color:var(--dim)}
+.wrap{max-width:1180px;margin:0 auto;padding:0 20px 80px}
+header.top{position:sticky;top:0;z-index:5;background:rgba(13,18,32,.93);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line)}
+.topbar{max-width:1180px;margin:0 auto;padding:10px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.brand{font-weight:700;letter-spacing:.4px}
+.brand small{color:var(--dim);font-weight:400;margin-left:8px}
+.livechip{display:flex;align-items:center;gap:8px;font-size:13px;flex-wrap:wrap}
+.livechip .mut{color:var(--mut)}
+.livechip b{color:var(--ink);font-weight:600}
+.spacer{flex:1}
+#conn{font-size:12px;color:var(--dim)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--dim);flex:none;display:inline-block}
+.dot.solving{background:var(--amber);animation:pulse 2.2s infinite}
+.dot.done{background:var(--green)} .dot.error{background:var(--red)}
+.dot.ok{background:var(--green)} .dot.bad{background:var(--red)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(232,163,61,.45)}70%{box-shadow:0 0 0 7px rgba(232,163,61,0)}100%{box-shadow:0 0 0 0 rgba(232,163,61,0)}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+h1{font-size:18px;margin:0 0 4px} h2{font-size:14px;margin:0 0 10px;font-weight:600}
+.banner{margin:0 0 12px;padding:9px 14px;border-radius:8px;font-size:13px;border:1px solid}
+.banner.warn{background:rgba(232,163,61,.09);border-color:rgba(232,163,61,.4);color:#f2c879}
+.banner.err{background:rgba(229,83,75,.09);border-color:rgba(229,83,75,.45);color:#f0928c}
+.banner.info{background:rgba(90,162,255,.06);border-color:rgba(90,162,255,.35);color:#a9c9f7}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:16px 0 14px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 16px}
+.stat .n{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.15}
+.stat .n small{font-size:13px;color:var(--mut);font-weight:400}
+.stat .l{font-size:12px;color:var(--dim);margin-top:2px}
+.n.g{color:var(--green)} .n.a{color:var(--amber)} .n.r{color:var(--red)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{color:var(--dim);font-weight:600;text-align:left;padding:7px 10px;border-bottom:1px solid var(--line2);
+  font-size:12px;white-space:nowrap;cursor:pointer;user-select:none}
+th.sorted{color:var(--ink)}
+td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+tbody tr{cursor:pointer}
+tbody tr:hover{background:var(--panel2)}
+tbody tr.solved .code{color:var(--green)}
+.code{font-family:var(--mono);font-weight:600;white-space:nowrap}
+.diff{font-size:12px;padding:1px 8px;border-radius:20px;border:1px solid var(--line2);white-space:nowrap}
+.diff.easy{color:#8ce0b2;border-color:rgba(53,192,122,.45)}
+.diff.medium{color:#f2c879;border-color:rgba(232,163,61,.45)}
+.diff.hard{color:#f0928c;border-color:rgba(229,83,75,.45)}
+.chip{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:4px;border:1px solid var(--line2);
+  color:var(--mut);margin-right:5px;white-space:nowrap;font-family:var(--mono)}
+.chip.flag{color:var(--green);border-color:rgba(53,192,122,.5)}
+.chip.crash{color:var(--red);border-color:rgba(229,83,75,.55)}
+.chip.sess{color:var(--cyan);border-color:rgba(78,201,194,.45)}
+.chip.art{color:var(--blue);border-color:rgba(90,162,255,.45)}
+.chip.live{color:#f2c879;border-color:rgba(232,163,61,.5)}
+.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.activity{font-size:12px;color:var(--dim);white-space:nowrap}
+.localonly{color:var(--amber);font-size:11px}
+.back{display:inline-block;margin:4px 0 12px;font-size:13px}
+.dhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:2px}
+.dhead h1{margin:0}
+.dmeta{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:12px}
+.dmeta .k{font-size:11.5px;color:var(--dim)}
+.dmeta .v{font-size:13.5px;margin-top:1px;word-break:break-all}
+.desc-body{margin-top:8px;color:var(--mut);font-size:13.5px;white-space:pre-wrap;word-break:break-word}
+details.desc summary{cursor:pointer;color:var(--blue);font-size:13px;padding:2px 0}
+.flagrow{display:flex;align-items:center;gap:10px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:6px;padding:6px 10px;width:fit-content;max-width:100%;margin:0 0 6px}
+.flagrow .f{font-family:var(--mono);font-size:13px;color:var(--green);word-break:break-all}
+.copy{border:1px solid var(--line2);background:none;color:var(--mut);border-radius:5px;padding:2px 8px;
+  font-size:12px;cursor:pointer;font-family:var(--sans);flex:none}
+.copy:hover{color:var(--ink);border-color:var(--blue)}
+.tl{margin-top:4px}
+.tlsession{display:flex;align-items:baseline;gap:10px;margin:18px 0 0}
+.tlsession .t{font-size:14px;font-weight:700}
+.tlsession .s{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+.seg{border-left:1px solid var(--line2);margin:2px 0 0 9px;padding:0 0 4px 16px}
+.turnrow{display:flex;align-items:baseline;gap:10px;margin:13px 0 2px}
+.turnrow .t{font-weight:700}
+.turnmeta{font-size:11.5px;color:var(--dim);font-family:var(--mono)}
+.attempt{font-size:12.5px;color:var(--amber);margin:8px 0 0}
+.note{font-size:12.5px;color:var(--mut);margin:6px 0}
+.ts{font-family:var(--mono);font-size:11.5px;color:var(--dim);margin-right:6px}
+.tool{margin:7px 0;border:1px solid var(--line);border-left-width:3px;border-radius:7px;background:var(--panel2)}
+.tool.ok{border-left-color:var(--green)} .tool.err{border-left-color:var(--red)}
+.tool .cmdline{display:flex;gap:8px;align-items:flex-start;padding:6px 10px;cursor:pointer}
+.tool .cmdline .arrow{color:var(--dim);font-family:var(--mono);font-size:12px;margin-top:1px}
+.tool .cmd{font-family:var(--mono);font-size:12.5px;word-break:break-all;flex:1;min-width:0}
+.tool .st{font-size:11px;font-family:var(--mono);white-space:nowrap;margin-top:2px}
+.tool .st.err{color:var(--red)} .tool .st.ok{color:var(--green)}
+.tool pre{display:none;margin:0;padding:8px 12px 10px;border-top:1px dashed var(--line);
+  font-family:var(--mono);font-size:12px;color:#c9d3e5;white-space:pre-wrap;word-break:break-word;
+  max-height:320px;overflow-y:auto}
+.tool.open pre{display:block}
+.msg{margin:8px 0;color:var(--ink);background:rgba(90,162,255,.06);border-left:2px solid rgba(90,162,255,.5);
+  border-radius:0 6px 6px 0;padding:8px 12px;white-space:pre-wrap;word-break:break-word}
+.empty{padding:26px 8px;text-align:center;color:var(--dim);font-size:13.5px}
+.meta-line{font-size:12px;color:var(--dim);margin:2px 0}
+details.raw summary{cursor:pointer;font-size:12.5px;color:var(--dim);padding:4px 0}
+details.raw pre{max-height:340px;overflow:auto;background:#0a0f1b;border:1px solid var(--line);
+  border-radius:7px;padding:10px;font:11.5px/1.5 var(--mono);white-space:pre-wrap;word-break:break-all;color:#9fb0cd}
+@media (max-width:720px){ .wrap{padding:0 10px 60px}.topbar{padding:10px}
+  .tool .cmdline{flex-wrap:wrap} .stats{grid-template-columns:repeat(2,1fr)} }
+@media (prefers-reduced-motion:reduce){.dot.solving{animation:none}}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 </style>
-<div class="card">
-<h2 style="margin:0 0 8px"><span id="dot" class="dot"></span><span id="title">worker — waiting…</span></h2>
-<div class="row mut">
-<div>phase <b id="phase" class="mono">idle</b></div>
-<div>challenge <b id="chal" class="mono">—</b></div>
-<div>elapsed <b id="elapsed" class="mono">0s</b></div>
-<div>turns <b id="turns" class="mono">0</b></div>
-<div>flags <b id="flags" class="mono">0/0</b></div>
-<div id="conn">● connecting…</div>
-</div>
-</div>
-<div class="card"><b>current tool</b> <span id="tool" class="mono mut">—</span>
-<pre id="args" class="mut">—</pre>
-<b>last output</b><pre id="out">—</pre>
-<b>assistant</b><pre id="assist">—</pre>
-<div id="err" style="color:var(--err)"></div></div>
-<div class="card"><details id="trace"><summary><b>full trace</b> <span class="mut">(loads transcript tail on open)</span></summary>
-<pre id="tracePre">open to load…</pre></details></div>
+<header class="top"><div class="topbar">
+  <div class="brand">TSecBench<small>worker 态势台</small></div>
+  <div class="livechip"><span id="ldot" class="dot"></span><span id="lstate" class="mut">连接中…</span></div>
+  <div class="spacer"></div>
+  <div id="conn">● connecting…</div>
+</div></header>
+<div class="wrap" id="viewroot"></div>
 <script>
-const $=id=>document.getElementById(id);
-let last={};
-function render(s){
-last=s;$('phase').textContent=s.phase||'idle';
-$('chal').textContent=s.challenge_code||'—';
-$('elapsed').textContent=(s.elapsed_s||0)+'s';
-$('turns').textContent=s.turns??0;
-$('flags').textContent=(s.flags_found??0)+'/'+(s.accepted??0);
-$('title').textContent=(s.worker_id||'worker')+' — '+(s.challenge_code||'idle');
-$('dot').className='dot '+((s.phase==='error')?'error':(s.phase==='done'?'done':(s.phase&&s.phase!=='idle'?'solving':'')));
-$('tool').textContent=s.current_tool||s.last_tool||'—';
-$('args').textContent=s.current_args_summary||'—';
-$('out').textContent=s.last_output_tail||'—';
-$('assist').textContent=s.assistant_preview||'—';
-$('err').textContent=s.error||'';
+"use strict";
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmtClock=ms=>{if(!ms)return"";const d=new Date(ms),p=n=>String(n).padStart(2,"0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;};
+const fmtRel=ts=>{if(!ts)return"—";const s=Date.now()/1000-ts;
+  if(s<5)return"刚刚";if(s<60)return Math.floor(s)+" 秒前";if(s<3600)return Math.floor(s/60)+" 分钟前";
+  if(s<86400)return Math.floor(s/3600)+" 小时前";return Math.floor(s/86400)+" 天前";};
+const fmtMB=b=>b>=1048576?(b/1048576).toFixed(1)+" MB":(b||0)+" B";
+const DIFF={easy:["简单","easy"],medium:["中等","medium"],hard:["困难","hard"]};
+const STOP={toolUse:"调用了工具",end_turn:"回合结束",max_tokens:"token 触顶",stop:"停止"};
+const stopZh=s=>STOP[s]||s||"";
+const ACTIVE_PHASES=["starting","solving","submitting","closing"];
+
+let livePhase="idle",liveCode="";
+const S={view:null,roster:null,sortKey:null,sortAsc:true,
+  code:null,tlEntries:[],nextSeq:0,meta:null,ch:null};
+const escSeq=id=>String(id).replace(/[^0-9a-zA-Z_-]/g,"");
+
+async function j(url){const r=await fetch(url);if(!r.ok)throw new Error(url+" HTTP "+r.status);return r.json();}
+
+/* ════ 顶栏实时态（SSE） ════ */
+function connectSSE(){
+  const es=new EventSource("/api/events");
+  es.onopen=()=>{$("#conn").textContent="● 实时连接";};
+  es.onerror=()=>{$("#conn").textContent="● 重连中…";try{es.close()}catch(e){}setTimeout(connectSSE,3000);};
+  es.onmessage=ev=>{try{paintLive(JSON.parse(ev.data));}catch(e){}};
 }
-async function loadTrace(){
-if(!last.challenge_code)return;
-try{const r=await fetch('/api/transcript?code='+encodeURIComponent(last.challenge_code)+'&tail=200');
-const j=await r.json();$('tracePre').textContent=(j.lines||[]).join('\n')||'(empty)';}catch(e){$('tracePre').textContent='load failed: '+e;}
+function paintLive(s){
+  if(!s)return;
+  livePhase=s.phase||"idle";liveCode=s.challenge_code||"";
+  const dot=$("#ldot"),st=$("#lstate");
+  dot.className="dot "+(livePhase==="error"?"error":livePhase==="done"?"done":
+    ACTIVE_PHASES.includes(livePhase)?"solving":"");
+  const busy=ACTIVE_PHASES.includes(livePhase);
+  st.innerHTML=busy
+    ?`<span class="mut">求解中：</span><b class="mono">${esc(liveCode)}</b>`+
+     ` <span class="mut">· ${esc(livePhase)}${s.turns?" · "+s.turns+" 轮":""}</span>`
+    :"<span class='mut'>待命轮询</span>";
+  dot.style.background=busy?"var(--amber)":livePhase==="error"?"var(--red)":
+    livePhase==="done"?"var(--green)":"var(--dim)";
 }
-$('trace').addEventListener('toggle',e=>{if(e.target.open)loadTrace();});
-let es;
-function connect(){
-es=new EventSource('/api/events');
-es.onopen=()=>$('conn').textContent='● live';
-es.onerror=()=>{$('conn').textContent='● reconnecting…';try{es.close()}catch(e){}setTimeout(connect,3000);};
-es.onmessage=ev=>{try{render(JSON.parse(ev.data))}catch(e){}};
+
+/* ════ 总览 ════ */
+async function paintOverview(){
+  const host=$("#viewroot");
+  let ok=true;
+  try{S.roster=await j("/api/roster");}catch(e){ok=false;}
+  if(!ok){host.innerHTML="<div class='banner err'>无法读取题目总览（/api/roster 不可达）。服务是否在运行？</div>";return;}
+  host.innerHTML=overviewHtml(S.roster);
+  host.querySelectorAll("th[data-k]").forEach(th=>th.addEventListener("click",()=>{
+    const k=th.dataset.k;
+    if(S.sortKey===k)S.sortAsc=!S.sortAsc;else{S.sortKey=k;S.sortAsc=true;}
+    paintOverview();}));
+  host.querySelectorAll("tbody tr[data-code]").forEach(tr=>{
+    tr.addEventListener("click",()=>{location.hash="#/c/"+encodeURIComponent(tr.dataset.code);});
+    tr.addEventListener("keydown",e=>{if(e.key==="Enter"&&location.hash!=="#/c/"+encodeURIComponent(tr.dataset.code))
+      location.hash="#/c/"+encodeURIComponent(tr.dataset.code);});});
 }
-connect();
+function overviewHtml(r){
+  const rows=Object.values(r.challenges||{}).filter(x=>x&&x.unique_code);
+  const n=rows.length,comp=rows.filter(x=>x.is_completed).length,
+        flags=rows.reduce((a,x)=>a+(x.correct_flag_count||0),0),
+        lf=rows.filter(x=>x.local&&x.local.flag).length;
+  const diffRank=d=>d==="easy"?0:d==="hard"?2:1;
+  const keyOf=x=>S.sortKey==="code"?x.unique_code:S.sortKey==="score"?(x.total_score||0):
+    S.sortKey==="prog"?(x.correct_flag_count||0):S.sortKey==="act"?
+    (x.local&&x.local.last_activity||0):"";
+  const list=rows.slice().sort((a,b)=>{
+    if(S.sortKey){const ka=keyOf(a),kb=keyOf(b);
+      if(typeof ka==="string"&&typeof kb==="string"){const c=ka.localeCompare(kb);return S.sortAsc?c:-c;}
+      return S.sortAsc?ka-kb:kb-ka;}
+    if((a.is_completed?1:0)!==(b.is_completed?1:0))return a.is_completed?1:-1;
+    if(diffRank(a.difficulty)!==diffRank(b.difficulty))return diffRank(a.difficulty)-diffRank(b.difficulty);
+    return (b.total_score||0)-(a.total_score||0);});
+  const th=(k,txt)=>`<th data-k="${k}" class="${S.sortKey===k?"sorted":""}">${txt}${S.sortKey===k?(S.sortAsc?" ▲":" ▼"):""}</th>`;
+  let banner="";
+  if(r.platform_disabled)banner=`<div class="banner info">平台轮询已禁用（缺 BENCHMARK_* 或 SDK 不可用）——下表仅含本地有痕迹的题。</div>`;
+  else if(r.platform_error)banner=`<div class="banner warn">平台数据暂不可用：${esc(r.platform_error)}。正在显示 ${fmtRel(r.fetched_at)}的缓存，本地痕迹照常刷新。</div>`;
+  else if(r.fetched_at)banner=`<div class="meta-line" style="margin-bottom:8px">平台数据 ${fmtRel(r.fetched_at)}更新 · 共 ${n} 题</div>`;
+  const TR=tr=>`<tr tabindex="0" data-code="${esc(tr.unique_code)}" class="${tr.is_completed?"solved":""}">`;
+  return `
+  <h1>任务总览</h1>
+  <div class="stats">
+    <div class="stat"><div class="n">${n}</div><div class="l">题目总数</div></div>
+    <div class="stat"><div class="n g">${comp}</div><div class="l">已完成</div></div>
+    <div class="stat"><div class="n">${n-comp}</div><div class="l">待解</div></div>
+    <div class="stat"><div class="n">${flags}<small> 个</small></div><div class="l">已确认 flag</div></div>
+    <div class="stat"><div class="n a">${lf}</div><div class="l">本地留痕（FLAG 文件）</div></div>
+  </div>
+  ${banner}
+  <div class="panel"><table>
+    <thead><tr>${th("code","题号")}<th class="nosort">难度</th>${th("score","分值")}${th("prog","flag 进度")}
+      <th class="nosort">本地痕迹</th>${th("act","最近活动")}<th class="nosort"></th></tr></thead>
+    <tbody>
+    ${list.map(x=>{
+      const d=DIFF[x.difficulty]||[x.difficulty||"—",""];
+      const chips=[];
+      if(x.local&&x.local.flag)chips.push(`<span class="chip flag">FLAG ✓</span>`);
+      if(x.local&&x.local.crashed)chips.push(`<span class="chip crash">core</span>`);
+      if(x.local&&x.local.transcript_bytes)chips.push(`<span class="chip sess">会话</span>`);
+      const arts=(x.local&&x.local.artifacts||[]).length;
+      if(arts)chips.push(`<span class="chip art">产物 ${arts}</span>`);
+      return `${TR(x)}
+        <td class="code">${esc(x.unique_code)}${x.local_only?` <span class="localonly">仅本地</span>`:""}</td>
+        <td><span class="diff ${d[1]}">${esc(d[0])}</span></td>
+        <td class="num">${x.total_score??"—"}</td>
+        <td class="num">${x.correct_flag_count||0}/${x.flag_count||0}${x.is_completed?" ✓":""}</td>
+        <td>${chips.join("")||"<span class='dim' style='font-size:11.5px'>—</span>"}</td>
+        <td class="activity">${x.local&&x.local.last_activity?fmtRel(x.local.last_activity):"—"}</td>
+        <td class="mut" style="font-size:12px">查看 →</td></tr>`;}).join("")}
+    </tbody></table>
+    ${rows.length?"":"<div class='empty'>还没有题目数据——worker 首次轮询平台后自动出现。</div>"}
+  </div>`;
+}
+
+/* ════ 题目详情 ════ */
+async function paintDetail(){
+  const host=$("#viewroot"),code=S.code;
+  try{
+    const ch=await j("/api/challenge?code="+encodeURIComponent(code));
+    const tl=await j("/api/timeline?code="+encodeURIComponent(code)+"&after="+S.nextSeq);
+    S.ch=ch;S.meta=tl.meta;
+    tl.entries.forEach(en=>S.tlEntries.push(en));
+    S.nextSeq=tl.next_seq;
+  }catch(e){
+    if(!S.ch)host.innerHTML=`<div class="banner err">加载失败：${esc(String(e))}</div>`;
+    return;
+  }
+  const liveHere=liveCode===code&&ACTIVE_PHASES.includes(livePhase);
+  const m=S.meta||{};
+  // 保留展开态：工具输出行(按 seq)、原始 transcript、题目描述
+  const openTools=new Set([...host.querySelectorAll(".tool.open")].map(t=>t.dataset.idx));
+  const rawOpen=!!host.querySelector("details.raw.open");
+  const descOpen=!!host.querySelector("details.desc")?.open;
+  const nearBottom=()=>{const tl=$("#tlroot");return !tl||tl.getBoundingClientRect().bottom-window.innerHeight<320;};
+  const stick=rawOpen||(!m.live&&!nearBottom());  // 用户在读旧内容时不强行滚动
+  host.innerHTML=detailShell(S.ch,code,m,liveHere,descOpen);
+  bindDetail(host,code);
+  openTools.forEach(seq=>{const el=host.querySelector('.tool[data-idx="'+escSeq(seq)+'"]');if(el)el.classList.add("open");});
+  if(rawOpen){const raw=host.querySelector("details.raw");if(raw)raw.open=true;refreshRaw(code);}
+  if(m.live&&!stick&&!document.hidden){const tl=$("#tlroot");if(tl)tl.scrollIntoView({block:"end"});}
+  armDetailTimer(liveHere);
+}
+let detailTimer=null;
+function armDetailTimer(liveHere){
+  clearTimeout(detailTimer);
+  detailTimer=setTimeout(()=>{if(!document.hidden&&S.view==="challenge")paintDetail();},liveHere?2000:4000);
+}
+function detailShell(ch,code,m,liveHere,descOpen){
+  const d=DIFF[ch.difficulty]||[ch.difficulty||"—",""];
+  const loc=ch.local||{};
+  const flags=(ch.flags||[]).map(f=>`<div class="flagrow"><span class="f">${esc(f)}</span>
+    <button class="copy" data-flag="${esc(f)}">复制</button></div>`).join("");
+  const arts=(loc.artifacts||[]).map(a=>`<span class="chip art">${esc(a)}</span>`).join("")
+    ||"<span class='dim' style='font-size:12px'>（无）</span>";
+  const segOpen=descOpen?" open":"";
+  return `
+  <a class="back" href="#/">← 返回题目总览</a>
+  <div class="panel">
+    <div class="dhead"><h1 class="mono">${esc(ch.unique_code)}</h1>
+      <span class="diff ${d[1]}">${esc(d[0])}</span>
+      ${liveHere?`<span class="chip live">● 求解中</span>`:""}
+      ${ch.is_completed?`<span class="chip flag">已完成</span>`:""}
+      ${ch.local_only?`<span class="localonly">仅本地痕迹</span>`:""}</div>
+    ${ch.description?`<details class="desc"${segOpen}><summary>题目描述</summary>
+      <div class="desc-body">${esc(ch.description)}</div></details>`:""}
+    <div class="dmeta">
+      <div class=""><div class="k">flag 进度</div><div class="v num"><b>${ch.correct_flag_count||0}</b> / ${ch.flag_count||0}</div></div>
+      <div class=""><div class="k">分值</div><div class="v num">${ch.total_score??"—"}</div></div>
+      <div class=""><div class="k">等级</div><div class="v num">${ch.level??"—"}</div></div>
+      <div class=""><div class="k">容器</div><div class="v">${esc(ch.container_status||"—")}</div></div>
+      <div class=""><div class="k">地址</div><div class="v mono">${esc((ch.container_addr||[]).join("、")||"—")}</div></div>
+    </div>
+  </div>
+  <div id="dbands">${bandsHtml(ch,m,liveHere)}</div>
+  <div class="panel">
+    <h2>本地已解 flag</h2>
+    ${flags||(ch.is_completed?"<div class='mut' style='font-size:13px'>平台标记已完成，但本机没有 FLAG 文件（旧会话产物，见右侧会话留痕）。</div>":
+      "<div class='mut' style='font-size:13px'>本机还没有解出记录。</div>")}
+    <div class="meta-line" style="margin-top:10px">
+      ${loc.transcript_bytes?`<span class="chip sess">transcript ${fmtMB(loc.transcript_bytes)}</span>`:""}
+      ${loc.crashed?`<span class="chip crash">core dump</span>`:""}
+      ${arts}
+    </div>
+    <div class="meta-line">最后活动：${loc.last_activity?new Date(loc.last_activity*1000).toLocaleString(): "—"}
+      ${loc.transcript_mtime?" · transcript 更新于 "+new Date(loc.transcript_mtime*1000).toLocaleTimeString():""}</div>
+  </div>
+  <div class="panel">
+    <h2>会话时间线
+      <span class="dim" style="font-weight:400;font-size:12px">${m.sessions!=null?`· ${m.sessions} 个会话 · ${S.tlEntries.length} 条摘要 · ${m.live?"实时追加中":""}`:""}</span></h2>
+    <div id="tlroot" class="tl">${tlHtml()}</div>
+  </div>
+  <details class="raw"><summary>原始 transcript 尾部（JSONL，调试用）</summary><pre>加载中…</pre></details>`;
+}
+function bandsHtml(ch,m,liveHere){
+  let b="";
+  if(ch.local&&ch.local.crashed)b+=`<div class="banner err">⚠ 目录下有 core dump——上次求解进程崩溃（时间线戛然而止）。</div>`;
+  else if(m.abrupt)b+=`<div class="banner warn">⚠ 上次会话异常终止，时间线没有正常结束标记。</div>`;
+  if(m.truncated)b+=`<div class="banner info">transcript 曾因体积轮换被清空——这里只保留最近一段历史。</div>`;
+  if(liveHere)b+=`<div class="banner info">正在实时求解——时间线每 2 秒追加，可随时点开工具行看完整输出。</div>`;
+  else if(m.live)b+=`<div class="banner info">时间线随文件追加而增长。</div>`;
+  return b;
+}
+let lastShownTs=0;
+function tlHtml(){
+  const list=S.tlEntries;
+  if(!list.length)return "<div class='empty'>还没有会话记录——worker 还没碰过这题。</div>";
+  let out="";
+  for(const e of list){
+    const t=new Date(e.t||Date.now());
+    const showT=!e.t||e.t-lastShownTs>15000;
+    if(e.t)lastShownTs=e.t;
+    const ts=showT?`<span class="ts">${fmtClock(e.t)}</span>`:"";
+    if(e.kind==="session"){
+      out+=`<div class="tlsession"><span class="t">会话开始</span>
+        <span class="s">${fmtClock(e.t)||""}${e.sid?" · id "+esc(e.sid):""}</span></div><div class="seg">`;
+      if(e.note)out+=`<div class="note mono">${esc(e.note)}</div>`;
+    }else if(e.kind==="turn"){
+      out+=`<div class="turnrow"><span class="t">第 ${e.n} 轮</span>
+        <span class="turnmeta">${e.stop?esc(stopZh(e.stop)):""}${e.tokens?" · "+e.tokens+" tokens":""}</span></div>`;
+    }else if(e.kind==="attempt"){
+      out+=`<div class="attempt">${ts}↻ 重试第 ${e.n??0} 次（stall/超时后自动重启会话）</div>`;
+    }else if(e.kind==="tool"){
+      out+=`<div class="tool ${e.err?"err":"ok"}" data-idx="${e.seq}"><div class="cmdline" tabindex="0">
+        <span class="arrow">▶</span><span class="cmd">${esc(e.tool||"tool")} ${esc(e.cmd||"")}</span>
+        <span class="st ${e.err?"err":"ok"}">${e.err?"✖ 出错":"✔ 完成"}${e.out_len!=null?" · "+e.out_len+" 字符":""}</span></div>
+        ${e.out?`<pre>${esc(e.out)}</pre>`:""}</div>`;
+    }else if(e.kind==="text"){
+      out+=`<div class="msg">${esc(e.text||"")}${e.more?"…":""}</div>`;
+    }else if(e.kind==="note"){
+      out+=`<div class="note">${esc(e.note||"")}</div>`;
+    }else if(e.kind==="error"){
+      out+=`<div class="banner err">${esc(e.note||"错误")}</div>`;
+    }
+  }
+  return out;
+}
+async function refreshRaw(code){
+  // 注意：await 之后才取 pre——时间线每 2-4s 重建，先取会写到已脱离文档的旧节点
+  let jd=null,err=null;
+  try{jd=await j("/api/transcript?code="+encodeURIComponent(code)+"&tail=200");}
+  catch(e){err=e;}
+  const pre=$("#viewroot details.raw pre");
+  if(!pre)return;
+  pre.textContent=err?("加载失败："+err):((jd.lines||[]).join("\n")||"(空)");
+}
+function bindDetail(host,code){
+  if(host.dataset.bound)return;   // 只绑一次（委托，innerHTML 重建不重绑）
+  host.dataset.bound="1";
+  host.addEventListener("click",async ev=>{
+    const b=ev.target.closest("button.copy");
+    if(b){const v=b.dataset.flag;
+      try{await navigator.clipboard.writeText(v);b.textContent="已复制";
+        setTimeout(()=>b.textContent="复制",1200);}catch(e){}}
+    const row=ev.target.closest(".tool .cmdline");
+    if(row){row.parentElement.classList.toggle("open");}
+    const raw=ev.target.closest("details.raw");
+    if(raw){
+      // summary 的展开是 click 默认行为，默认行为在事件监听之后执行——
+      // 此刻 raw.open 还是旧值，需等默认行为完成后再判定并加载
+      setTimeout(()=>{if(raw.open)refreshRaw(code);},0);
+    }
+  });
+  host.addEventListener("keydown",ev=>{
+    if(ev.key==="Enter"||ev.key===" "){
+      const row=ev.target.closest?.(".tool .cmdline");
+      if(row){ev.preventDefault();row.parentElement.classList.toggle("open");}}});
+}
+
+/* ════ 路由与轮询 ════ */
+function parseHash(){
+  const m=(location.hash||"#/").match(/^#\/c\/([A-Za-z0-9_-]{1,64})$/);
+  return m?{view:"challenge",code:m[1]}:{view:"overview"};
+}
+function showView(){
+  const v=parseHash();
+  clearTimeout(detailTimer);
+  S.view=v.view;
+  const host=$("#viewroot");
+  if(v.view==="overview"){
+    S.code=null;host.dataset.bound="";host.innerHTML="<div class='empty'>加载中…</div>";
+    paintOverview();
+  }else{
+    S.code=v.code;S.tlEntries=[];S.nextSeq=0;S.meta=null;S.ch=null;
+    host.dataset.bound="";
+    host.innerHTML="<div class='empty'>加载题目 "+esc(v.code)+"…</div>";
+    paintDetail();
+  }
+}
+window.addEventListener("hashchange",showView);
+
+/* ════ 首屏 ════ */
+connectSSE();
+showView();
+setInterval(()=>{if(!document.hidden&&S.view==="overview")paintOverview();},10000);
+setInterval(async()=>{   // SSE 断线兜底：15s 拉一次 status
+  if(document.hidden)return;
+  try{const s=await j("/api/status");paintLive({...s,kind:"poll"});}catch(e){}
+},15000);
 </script>

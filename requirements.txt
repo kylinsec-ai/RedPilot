@@ -3,4 +3,5 @@ fastapi
 uvicorn
 pydantic
 python-dotenv
-requests
+# 平台接入官方 SDK（worker 直调;httpx 为其传递依赖，不单列）
+tsec-benchmark

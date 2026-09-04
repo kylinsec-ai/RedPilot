@@ -45,8 +45,9 @@ services:
       # ── 运行 ──
       ADAPTER_WORKDIR: /work
       ADAPTER_FLAG_FORMAT: ${ADAPTER_FLAG_FORMAT:-flag{...}}
-      # ── 实时监视（只读 SSE + 摘要页；STATUS_PORT=0 禁用求解器内服务。
-      #    注意: 0 仍会保留下方一条端口映射(无监听),彻底取消请注释 ports 段）──
+      # ── 人读态势台（只读 :8080；STATUS_PORT=0 禁用求解器内服务，
+      #    但 0 不能出现在下方 ports 映射里（compose 校验直接失败，容器起不来），
+      #    禁用时请一并注释掉整个 ports 段）──
       STATUS_PORT: ${STATUS_PORT:-8080}
       WORKER_ID: ${WORKER_ID:-worker-1}
       # ── VPN 配置路径 (容器内, entrypoint 读取;文件不存在则跳过) ──
@@ -59,8 +60,9 @@ services:
       - ./vpn:/vpn:ro
       # 可选: 自定义 pi 注册/凭据(models.json/auth.json,官方格式;镜像不再内置,按需启用)
       # - ./pi:/root/.pi/agent:ro
-      # 挂载宿主最新 driver/adapter(免重建镜像)
+      # 挂载宿主最新 driver/adapter/web(免重建镜像;status_server 按 mtime 热更 index.html)
       - ./drivers:/app/drivers:ro
       - ./adapter:/app/adapter:ro
+      - ./web:/app/web:ro
 
 # worker 解题产物 bind-mount 到宿主机 ./work(不入库)

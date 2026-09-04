@@ -12,7 +12,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8
 
 # ── 1. 配置国内镜像源 (pip) ──
-RUN printf '[global]\nindex-url = https://mirrors.bfsu.edu.cn/pypi/web/simple\ntimeout = 120\n[install]\ntrusted-host = mirrors.bfsu.edu.cn\n' \
+# extra-index-url 兜底 pypi.org:BFSU 对 tsec-benchmark(2026-07 新包)的 simple 索引
+# 对 pip 返回空列表(实测 curl 有文件、pip 解析为 none),需官方源补位
+RUN printf '[global]\nindex-url = https://mirrors.bfsu.edu.cn/pypi/web/simple\nextra-index-url = https://pypi.org/simple\ntimeout = 120\n[install]\ntrusted-host = mirrors.bfsu.edu.cn\n' \
         > /etc/pip.conf
 
 # ── 2. 安装 Node.js + Pi Agent ──

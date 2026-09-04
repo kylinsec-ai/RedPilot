@@ -24,6 +24,8 @@ _FLAG_RX = re.compile(r"flag\{[^}]{1,200}\}", re.IGNORECASE)
 _FINAL_ANSWER_RX = re.compile(r"<FinalAnswer>(.*?)</FinalAnswer>", re.DOTALL)
 # flag body 合法字符：字母数字 + 常见分隔符（防命令注入 payload 误提取）
 _FLAG_BODY_RX = re.compile(r"^[A-Za-z0-9_\-.:/]{3,200}$")
+# 占位符/省略号 body（如 prompt 模板里的 flag{...}）必须含至少一个字母数字
+_ALNUM_RX = re.compile(r"[A-Za-z0-9]")
 
 
 def flag_body(flag: str) -> str:
@@ -38,9 +40,9 @@ def normalize_flag_body(flag: str) -> str:
 
 
 def is_valid_flag(flag: str) -> bool:
-    """校验 flag 整体合法性：外壳完整 + body 无引号/空格/命令字符"""
+    """校验 flag 整体合法性：外壳完整 + body 无引号/空格/命令字符 + 非纯标点占位符"""
     body = flag_body(flag)
-    return body != flag and bool(_FLAG_BODY_RX.match(body))
+    return body != flag and bool(_FLAG_BODY_RX.match(body)) and bool(_ALNUM_RX.search(body))
 
 
 def extract_flags(text: str) -> list[str]:
@@ -124,7 +126,7 @@ class SolverBackend(ABC):
                         for line in f:
                             v = line.strip()
                             if v and "{" in v and v.endswith("}") and len(v) <= 200:
-                                if v not in flags:
+                                if v not in flags and is_valid_flag(v):
                                     flags.append(v)
             except Exception:
                 pass

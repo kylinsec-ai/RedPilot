@@ -41,5 +41,17 @@ class SolverConfig:
             )
         return cls(
             model=model,
-            session_seconds=int(_env("SOLVER_SESSION_SECONDS", "1500")),
+            session_seconds=_session_seconds(),
         )
+
+
+def _session_seconds() -> int:
+    """SOLVER_SESSION_SECONDS 须为正整数秒数；垃圾值/非正数 fail-fast（driver exit 2）"""
+    raw = _env("SOLVER_SESSION_SECONDS", "1500")
+    try:
+        val = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ValueError(f"SOLVER_SESSION_SECONDS 须为正整数秒数,当前: {raw!r}")
+    if val <= 0:
+        raise ValueError(f"SOLVER_SESSION_SECONDS 须为正整数秒数,当前: {raw!r}")
+    return val

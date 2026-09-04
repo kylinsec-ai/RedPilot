@@ -12,7 +12,7 @@
 
 - **平台 core** (`tsecbench/` + `main.py`):FastAPI 服务,管理跑分任务生命周期 —— 列题、起停题目实例(static/docker 供给)、可选 hint(扣分)、flag 提交判分(SHA-256,明文不落库)。状态持久化 SQLite。**无任何网页/控制台,worker 是唯一客户端**。
 - **求解 worker** (`adapter/` + `drivers/benchmark_driver.py` + compose):单个带 VPN 的容器,一次开一道题、单会话 Pi Agent 求解、候选 flag 直接提交(平台判分/幂等即唯一闸门),刷完轮询待命。无多 worker 分片、无记忆/黑板/止损/skeptic 验证等重机制。
-- 接口契约见 [`CHALLENGES_API.md`](CHALLENGES_API.md);内部结构见 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
+- worker 平台接入直调官方 SDK `tsec-benchmark`(异步 `TSecBenchmarkAsync`,入口自带 VPN 预检;用法见 [`SDK_API.md`](SDK_API.md));平台服务端契约见 [`CHALLENGES_API.md`](CHALLENGES_API.md)。
 
 ## 运行平台 core
 
@@ -94,7 +94,9 @@ provider 只需三处:
 ## 目录
 
 - `tsecbench/` — 平台 core(纯 REST)
-- `adapter/` — worker 侧组件库:config/task/taskprompt + `platform/`(HTTP 后端)+ `solver/`(Pi Agent)
-- `drivers/benchmark_driver.py` — 串行求解主循环(唯一编排者)
+- `adapter/` — worker 侧组件库:config/task/taskprompt + `solver/`(Pi Agent)
+- `drivers/benchmark_driver.py` — 串行求解主循环(唯一编排者,异步直调官方 SDK)
+- `drivers/status_server.py` + `drivers/roster.py` + `web/` — 人读态势台(:8080):任务总览/
+  每题历史时间线/实时求解,只读
 - `entrypoint.sh` / `Dockerfile` / `docker-compose.yaml` — worker 镜像与编排
-- `CHALLENGES_API.md` / `ARCHITECTURE.md` — 平台接口契约 / 内部结构
+- `CHALLENGES_API.md` / `SDK_API.md` — 平台服务端接口契约 / 官方 SDK 接入文档

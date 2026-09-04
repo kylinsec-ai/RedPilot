@@ -24,6 +24,8 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from drivers.roster import RosterPoller, TranscriptDigest, challenge_detail, scan_local
+
 log = logging.getLogger("adapter.status")
 
 _VALID_RX = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -45,12 +47,29 @@ def _map_code(code: str) -> str:
         from drivers.benchmark_driver import _safe_code
         return _safe_code(code)
     except Exception:
-        return re.sub(r"[^A-Za-z0-9_-]+", "-", str(code)).strip("-")[:64] or "chal"
+        # 回退必须与 _safe_code 逐字一致（含 hash 后缀），否则查到错误目录
+        import hashlib
+        raw = str(code)
+        safe = re.sub(r"[^A-Za-z0-9_-]+", "-", raw).strip("-")[:64] or "chal"
+        return safe if safe == raw else f"{safe}-{hashlib.sha1(raw.encode()).hexdigest()[:6]}"
 
 
-def _make_handler(live, bus, workdir: str, web_dir: str):
+def _make_handler(live, bus, workdir: str, web_dir: str,
+                  poller: RosterPoller | None = None,
+                  digest: TranscriptDigest | None = None):
     """handler 工厂：per-server 配置走实例属性，不污染类状态"""
     index_cache: dict = {"mtime": 0.0, "body": b""}
+
+    def _live_code_phases() -> tuple[str, bool]:
+        """当前是否正在求解某题（用于 timeline 的 live 判定：进行中的题不标 abrupt）"""
+        try:
+            if live is None:
+                return "", False
+            snap = live.snapshot()
+            code = snap.get("challenge_code") or ""
+            return code, snap.get("phase") in ("starting", "solving", "submitting", "closing")
+        except Exception:
+            return "", False
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "TsecBenchStatus/1"
@@ -78,6 +97,12 @@ def _make_handler(live, bus, workdir: str, web_dir: str):
                     self._sse()
                 elif u.path == "/api/transcript":
                     self._transcript(parse_qs(u.query))
+                elif u.path == "/api/roster":
+                    self._roster()
+                elif u.path == "/api/challenge":
+                    self._challenge(parse_qs(u.query))
+                elif u.path == "/api/timeline":
+                    self._timeline(parse_qs(u.query))
                 elif u.path in ("/", "/index.html"):
                     self._index()
                 else:
@@ -107,7 +132,12 @@ def _make_handler(live, bus, workdir: str, web_dir: str):
                     log.exception("index read failed")
                     self.send_error(500, "read failed")
                     return
-            self._send_bytes(index_cache["body"], "text/html; charset=utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(index_cache["body"])))
+            self.send_header("Cache-Control", "no-store")  # 开发期热更：禁止浏览器缓存 index
+            self.end_headers()
+            self.wfile.write(index_cache["body"])
 
         def _sse(self) -> None:
             self.send_response(200)
@@ -175,6 +205,70 @@ def _make_handler(live, bus, workdir: str, web_dir: str):
                 log.exception("transcript read failed")
                 self.send_error(500, "read failed")
 
+        def _roster(self) -> None:
+            """题目总览：poller 快照（平台+本地）；异常时回退一次本地扫描，绝不让页面空"""
+            try:
+                snap = dict(poller.snapshot()) if poller else {
+                    "fetched_at": 0.0, "stale": True, "platform_error": "",
+                    "platform_disabled": True, "challenges": {}}
+            except Exception:
+                log.exception("roster snapshot failed")
+                snap = {"fetched_at": 0.0, "stale": True, "platform_error": "",
+                        "platform_disabled": True, "challenges": {}}
+            if not snap.get("challenges"):
+                try:
+                    local = scan_local(workdir)
+                    if local:
+                        rows = {}
+                        for code, lc in local.items():
+                            rows[code] = {"unique_code": code, "local_only": True,
+                                          "difficulty": "", "total_score": 0, "flag_count": 0,
+                                          "correct_flag_count": 0, "is_completed": False,
+                                          "container_status": "", "container_addr": [],
+                                          "level": 0, "description": "", "local": lc}
+                        snap = dict(snap, challenges=rows)
+                except Exception:
+                    log.exception("roster local fallback failed")
+            self._send_json(snap)
+
+        def _challenge(self, qs: dict) -> None:
+            code = (qs.get("code") or [""])[0]
+            if not _valid_code(code):
+                mapped = _map_code(code)
+                if not (mapped != code and _valid_rel(mapped)):
+                    self.send_error(400, "bad code")
+                    return
+            try:
+                platform_row = {}
+                if poller is not None:
+                    platform_row = (poller.snapshot().get("challenges") or {}).get(code) or {}
+                self._send_json(challenge_detail(workdir, code, platform_row))
+            except Exception:
+                log.exception("challenge detail failed")
+                self.send_error(500, "read failed")
+
+        def _timeline(self, qs: dict) -> None:
+            code = (qs.get("code") or [""])[0]
+            if not _valid_code(code):
+                mapped = _map_code(code)
+                if not (mapped != code and _valid_rel(mapped)):
+                    self.send_error(400, "bad code")
+                    return
+            try:
+                after = max(0, int((qs.get("after") or ["0"])[0]))
+            except ValueError:
+                after = 0
+            if digest is None:
+                self._send_json({"next_seq": 0, "meta": {}, "entries": []})
+                return
+            live_code, live_phase = _live_code_phases()
+            try:
+                out = digest.timeline(code, after=after, live=(live_code == code and live_phase))
+                self._send_json(out)
+            except Exception:
+                log.exception("timeline digest failed")
+                self.send_error(500, "digest failed")
+
     return Handler
 
 
@@ -190,8 +284,22 @@ def serve_forever_in_thread(live, bus, port: int, *,
     if web_dir is None:
         web_dir = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                 "..", "web"))
+    # 监视台数据层：题目总览轮询 + transcript 合流 digest（各自失败隔离，不起服务不阻塞）
+    poller = digest = None
     try:
-        srv = ThreadingHTTPServer(("0.0.0.0", port), _make_handler(live, bus, workdir, web_dir))
+        poller = RosterPoller(workdir)
+        poller.start()
+    except Exception:
+        log.exception("roster poller start failed (dashboard shows local-only)")
+        poller = None
+    try:
+        digest = TranscriptDigest(workdir)
+    except Exception:
+        log.exception("digest init failed (timeline unavailable)")
+        digest = None
+    try:
+        srv = ThreadingHTTPServer(
+            ("0.0.0.0", port), _make_handler(live, bus, workdir, web_dir, poller, digest))
     except Exception:
         log.exception("status server bind :%d failed (solving continues)", port)
         return None
