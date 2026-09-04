@@ -14,3 +14,6 @@ pi/
 *.ovpn
 *Zone.Identifier
 vpn/
+
+# Claude worktrees
+.claude/worktrees/
