@@ -8,12 +8,24 @@ echo "[adapter] BENCHMARK_BASE_URL=${BENCHMARK_BASE_URL:-<unset>}"
 : "${BENCHMARK_TOKEN:?BENCHMARK_TOKEN must be provided}"
 : "${BENCHMARK_BASE_URL:?BENCHMARK_BASE_URL must be provided}"
 
-if [[ -z "${SOLVER_API_KEY:-}" ]]; then
-  echo "[adapter] WARNING: no SOLVER_API_KEY set — Pi Agent cannot authenticate." >&2
+# LLM 凭据由 pi 自行解析(官方 env 名,其次 ~/.pi/agent/auth.json)。
+# 空字符串的 *_API_KEY 视为未设后 unset(避免空值歧义;provider 凭据 env 名
+# 以 _API_KEY 结尾是 pi 官方惯例,见 https://pi.dev/docs/latest/providers)。
+have_key=0
+if [[ -n "${SOLVER_API_KEY:-}" ]]; then
+  echo "[adapter] WARNING: SOLVER_API_KEY 已废弃且不会被 pi 读取——请改用 pi 官方 env 名(如 DEEPSEEK_API_KEY,见 README 凭据说明)。" >&2
 fi
-
-# Pi Agent (models.json) 通过 DEEPSEEK_API_KEY 读取密钥
-export DEEPSEEK_API_KEY="${SOLVER_API_KEY:-}"
+while IFS= read -r k; do
+  case "$k" in
+    # 废弃别名不计入 have_key(上已告警),避免“有旧 key、无真凭据”时误报安全
+    SOLVER_API_KEY) ;;
+    *_API_KEY)
+      if [[ -n "${!k}" ]]; then have_key=1; else unset "$k"; fi ;;
+  esac
+done < <(compgen -e)
+if [[ $have_key -eq 0 && ! -s "${HOME:-/root}/.pi/agent/auth.json" ]]; then
+  echo "[adapter] WARNING: 未检测到 *_API_KEY 凭据且无 ~/.pi/agent/auth.json,pi 可能无法鉴权(见 README 凭据说明)。" >&2
+fi
 
 cd /app 2>/dev/null || true
 

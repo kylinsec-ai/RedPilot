@@ -97,12 +97,12 @@ drivers/benchmark_driver.py  main()
 
 ### 4.3 env(worker 侧,全部无 CLI)
 
-`BENCHMARK_TOKEN`、`BENCHMARK_BASE_URL`(平台,必填)、`SOLVER_PROVIDER/API_KEY/MODEL/SESSION_SECONDS`、`ADAPTER_WORKDIR`、`ADAPTER_FLAG_FORMAT`、`ADAPTER_VPN_CONFIG`(entrypoint)、`PI_STALL_TIMEOUT`(pi 内)、`WATCHDOG_MAX_IDLE_SECONDS`(compose 插值)。
+`BENCHMARK_TOKEN`、`BENCHMARK_BASE_URL`(平台,必填)、`DEEPSEEK_API_KEY`(及同族 provider 键,见 README/pi 文档——**pi 官方 env 名直通,仓库零读写/零映射**,pi 解析顺序 auth.json > env,key 不经 CLI argv)、`SOLVER_MODEL/SESSION_SECONDS`、`PI_STALL_TIMEOUT`(pi_agent 消费)、`ADAPTER_WORKDIR`、`ADAPTER_FLAG_FORMAT`、`ADAPTER_VPN_CONFIG`(entrypoint)、`WATCHDOG_MAX_IDLE_SECONDS`(compose 插值)。
 
 ## 5. 编排与目录约定
 
 - **docker-compose.yaml**:单 `worker` 服务 —— 镜像 `tsecbench-adapter`、healthcheck 看 `/tmp/driver_heartbeat` 新鲜度、`cap_add NET_ADMIN,NET_RAW` + `/dev/net/tun`、`ADAPTER_VPN_CONFIG=/vpn/client.ovpn`、`./drivers`、`./adapter`、`./work`、`./vpn` 挂载(热更新/产物落宿主)。
-- **entrypoint.sh**:校验必填 env → 起 OpenVPN(可选)→ 连通性测试(非致命)→ `exec benchmark_driver.py`。
+- **entrypoint.sh**:校验必填 env → 空值 `*_API_KEY` 清理 + 缺省 provider key 的 WARN(不做任何 provider→env 映射)→ 起 OpenVPN(可选)→ 连通性测试(非致命)→ `exec benchmark_driver.py`。
 - **`work/`**:worker 解题产物目录(每题 `<code>/` 子目录 + CLAUDE.md/FLAG 等),bind-mount 到宿主 `./work`,不入库。
 
 ## 6. 测试与验证

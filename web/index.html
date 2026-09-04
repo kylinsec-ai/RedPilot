@@ -1,0 +1,63 @@
+<title>TsecBench Worker Live</title>
+<style>
+:root{--bg:#f6f6f4;--card:#fff;--ink:#1a1a1a;--mut:#6b6b6b;--ok:#1a7f37;--run:#0969da;--err:#cf222e;--line:#e3e3e0}
+@media(prefers-color-scheme:dark){:root{--bg:#111;--card:#1c1c1e;--ink:#eee;--mut:#999;--line:#333}}
+body{background:var(--bg);color:var(--ink);font:14px system-ui;margin:0;padding:20px;max-width:900px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--mut);margin-right:6px}
+.dot.solving{background:var(--run)}.dot.done{background:var(--ok)}.dot.error{background:var(--err)}
+pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:10px;overflow-x:auto;white-space:pre-wrap;max-height:300px;overflow-y:auto}
+.row{display:flex;gap:16px;flex-wrap:wrap}.row div{min-width:140px}
+.mut{color:var(--mut)}.mono{font-family:ui-monospace,monospace}
+#conn{font-size:12px}
+</style>
+<div class="card">
+<h2 style="margin:0 0 8px"><span id="dot" class="dot"></span><span id="title">worker — waiting…</span></h2>
+<div class="row mut">
+<div>phase <b id="phase" class="mono">idle</b></div>
+<div>challenge <b id="chal" class="mono">—</b></div>
+<div>elapsed <b id="elapsed" class="mono">0s</b></div>
+<div>turns <b id="turns" class="mono">0</b></div>
+<div>flags <b id="flags" class="mono">0/0</b></div>
+<div id="conn">● connecting…</div>
+</div>
+</div>
+<div class="card"><b>current tool</b> <span id="tool" class="mono mut">—</span>
+<pre id="args" class="mut">—</pre>
+<b>last output</b><pre id="out">—</pre>
+<b>assistant</b><pre id="assist">—</pre>
+<div id="err" style="color:var(--err)"></div></div>
+<div class="card"><details id="trace"><summary><b>full trace</b> <span class="mut">(loads transcript tail on open)</span></summary>
+<pre id="tracePre">open to load…</pre></details></div>
+<script>
+const $=id=>document.getElementById(id);
+let last={};
+function render(s){
+last=s;$('phase').textContent=s.phase||'idle';
+$('chal').textContent=s.challenge_code||'—';
+$('elapsed').textContent=(s.elapsed_s||0)+'s';
+$('turns').textContent=s.turns??0;
+$('flags').textContent=(s.flags_found??0)+'/'+(s.accepted??0);
+$('title').textContent=(s.worker_id||'worker')+' — '+(s.challenge_code||'idle');
+$('dot').className='dot '+((s.phase==='error')?'error':(s.phase==='done'?'done':(s.phase&&s.phase!=='idle'?'solving':'')));
+$('tool').textContent=s.current_tool||s.last_tool||'—';
+$('args').textContent=s.current_args_summary||'—';
+$('out').textContent=s.last_output_tail||'—';
+$('assist').textContent=s.assistant_preview||'—';
+$('err').textContent=s.error||'';
+}
+async function loadTrace(){
+if(!last.challenge_code)return;
+try{const r=await fetch('/api/transcript?code='+encodeURIComponent(last.challenge_code)+'&tail=200');
+const j=await r.json();$('tracePre').textContent=(j.lines||[]).join('\n')||'(empty)';}catch(e){$('tracePre').textContent='load failed: '+e;}
+}
+$('trace').addEventListener('toggle',e=>{if(e.target.open)loadTrace();});
+let es;
+function connect(){
+es=new EventSource('/api/events');
+es.onopen=()=>$('conn').textContent='● live';
+es.onerror=()=>{$('conn').textContent='● reconnecting…';try{es.close()}catch(e){}setTimeout(connect,3000);};
+es.onmessage=ev=>{try{render(JSON.parse(ev.data))}catch(e){}};
+}
+connect();
+</script>

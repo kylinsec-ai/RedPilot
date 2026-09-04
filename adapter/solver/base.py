@@ -108,6 +108,7 @@ class SolverBackend(ABC):
         on_fact: Optional[Callable] = None,
         transcript_path: Optional[str] = None,
         max_retries: int = 2,
+        on_event: Optional[Callable] = None,
     ) -> SolveResult:
         """执行一次解题会话，返回统一结果"""
 

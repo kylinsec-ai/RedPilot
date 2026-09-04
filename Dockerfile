@@ -23,36 +23,10 @@ RUN set -eux; arch="$(uname -m)"; case "$arch" in x86_64) NA=x64;; aarch64|arm64
     npm install -g --ignore-scripts @earendil-works/pi-coding-agent; \
     pi --version || true
 
-# ── 3. Pi Agent 模型配置 (DeepSeek OpenAI 兼容) ──
-RUN mkdir -p /root/.pi/agent && \
-    printf '%s\n' \
-    '{' \
-    '  "providers": {' \
-    '    "deepseek": {' \
-    '      "baseUrl": "https://api.deepseek.com",' \
-    '      "api": "openai-completions",' \
-    '      "apiKey": "$DEEPSEEK_API_KEY",' \
-    '      "models": [' \
-    '        {' \
-    '          "id": "deepseek-v4-flash",' \
-    '          "name": "DeepSeek V4 Flash",' \
-    '          "contextWindow": 1000000,' \
-    '          "maxTokens": 384000,' \
-    '          "input": ["text"],' \
-    '          "reasoning": true,' \
-    '          "compat": {' \
-    '            "requiresReasoningContentOnAssistantMessages": true,' \
-    '            "thinkingFormat": "deepseek",' \
-    '            "reasoningEffortMap": {' \
-    '              "minimal": "high", "low": "high", "medium": "high", "high": "high", "xhigh": "max"' \
-    '            }' \
-    '          }' \
-    '        }' \
-    '      ]' \
-    '    }' \
-    '  }' \
-    '}' \
-    > /root/.pi/agent/models.json
+# ── 3. Pi Agent 模型: 内置 provider 目录,不烤 models.json ──
+# 凭据以 pi 官方 env 名提供(DEEPSEEK_API_KEY 等,见 entrypoint/compose/README);
+# 自定义/覆盖 provider 时以卷挂载 ~/.pi/agent/models.json(官方格式),勿烤进镜像。
+# 内置目录条目数计入下述 BUILD_SELFCHECK(非门禁,超时 5s)。
 
 # ── 4. Python 依赖 ──
 COPY requirements.txt /app/requirements.txt
@@ -61,6 +35,7 @@ RUN pip3 install --break-system-packages -r /app/requirements.txt
 # ── 5. 复制适配器代码 ──
 COPY adapter /app/adapter
 COPY drivers /app/drivers
+COPY web /app/web
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
@@ -70,6 +45,7 @@ RUN set -eu; mkdir -p /opt/tools; log=/opt/tools/BUILD_SELFCHECK.txt; : > "$log"
         if command -v "$b" >/dev/null 2>&1; then echo "OK   $b" >>"$log"; \
         else echo "MISS $b" >>"$log"; missing="$missing $b"; fi; done; \
     echo "==== SELF-CHECK ====" >>"$log"; \
+    echo "pi builtin models: $(timeout 5 pi --list-models 2>/dev/null | wc -l) entries" >>"$log"; \
     if [ -n "$missing" ]; then echo "MISSING:$missing" >>"$log"; cat "$log"; \
         echo "!!! BUILD WARNING: tools missing:$missing"; fi; \
     echo "BUILD OK" >>"$log"; cat "$log"

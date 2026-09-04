@@ -43,8 +43,14 @@ container_port?, docker_network?}]}]}`,或直接传对象/数组;`TSECBENCH_TASK
 
 前置:core 已起;`.env` 填好平台地址/凭据与模型 key;VPN 配置文件放在 `./vpn/client.ovpn`。
 
+首次先构建基础镜像(自包含 kali-linux-headless + pi 环境;`tsecbench/kali:latest` 已存在则跳过):
+
 ```bash
-cp .env.example .env        # 填 BENCHMARK_TOKEN/BASE_URL/SOLVER_API_KEY
+docker build -f Dockerfile.base -t tsecbench/kali:latest .
+```
+
+```bash
+cp .env.example .env        # 填 BENCHMARK_TOKEN/BASE_URL/DEEPSEEK_API_KEY
 docker compose up -d --build
 docker compose logs -f      # 观察刷题进度
 ```
@@ -52,15 +58,38 @@ docker compose logs -f      # 观察刷题进度
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
 | `BENCHMARK_TOKEN` / `BENCHMARK_BASE_URL` | — | 平台凭据(必填) |
-| `SOLVER_PROVIDER` | `deepseek` | 模型供应商预设(deepseek-1m/glm/glm-1m) |
-| `SOLVER_API_KEY` | — | Pi Agent 模型密钥(必填) |
-| `SOLVER_MODEL` | 预设模型 | 模型名覆盖 |
+| `DEEPSEEK_API_KEY` | — | LLM 凭据(默认 provider deepseek 时必填;pi 官方 env 名,仓库零读写) |
+| `SOLVER_MODEL` | `deepseek/deepseek-v4-flash` | 完整 `[provider/]model`,逐字透传(缺省值见 `adapter/config.py`) |
 | `SOLVER_SESSION_SECONDS` | `1500` | 单会话时长上限 |
+| `PI_STALL_TIMEOUT` | `480` | pi 无输出判定卡死的秒数 |
 | `ADAPTER_WORKDIR` | `/work` | 解题工作目录根(compose 已设) |
 | `ADAPTER_FLAG_FORMAT` | `flag{...}` | 提示词中的 flag 格式说明 |
 | `ADAPTER_VPN_CONFIG` | `/vpn/client.ovpn` | VPN 配置(entrypoint 读取,无则跳过) |
-| `PI_STALL_TIMEOUT` | `480` | pi 无输出判定卡死的秒数 |
 | `WATCHDOG_MAX_IDLE_SECONDS` | `300` | 心跳容忍(compose healthcheck) |
+
+### 更换 provider / 模型(pi 官方凭据机制)
+
+LLM 凭据遵循 pi 官方机制(<https://pi.dev/docs/latest/providers>):key 以 provider
+官方 env 名直通容器,由 pi 自行解析鉴权(解析顺序:`auth.json` > env);仓库代码不做
+任何映射/别名。默认 provider 为 deepseek(env 名 `DEEPSEEK_API_KEY`)。换内置
+provider 只需三处:
+
+1. `docker-compose.yaml`:加一行同名 env 转发(如 `OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}`);
+2. 宿主 `.env`:提供同键名的官方 env 值;
+3. 设 `SOLVER_MODEL=provider/model`(完整 id,推荐写全)。
+
+| provider | pi 官方 env 名 |
+|---|---|
+| deepseek(默认) | `DEEPSEEK_API_KEY` |
+| opencode-go | `OPENCODE_API_KEY` |
+| xiaomi | `XIAOMI_API_KEY` |
+| 其余 | <https://pi.dev/docs/latest/providers> |
+
+其他说明:
+
+- `SOLVER_MODEL` 为完整 `[provider/]model`(如 `opencode-go/gpt-5.1`),逐字透传;裸 id(如 `deepseek-v4-flash`)不再自动补前缀,解析归 pi。
+- 目录外模型/自定义 provider:`./pi/` 下放 `models.json`(官方格式)并启用 compose 中注释的卷挂载;`auth.json`(0600,优先于 env)同理;不要烤进镜像。
+- 宿主直跑 driver(不走 compose)需自行 `export DEEPSEEK_API_KEY=...`(worker 侧 Python 不加载 `.env`)。
 
 ## 目录
 

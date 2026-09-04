@@ -32,9 +32,20 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from adapter.config import SolverConfig
+from adapter.live import (
+    ASSISTANT_PREVIEW_MAX,
+    ERROR_HEAD_MAX,
+    OUTPUT_TAIL_MAX,
+    LiveBus,
+    LiveState,
+    head_text,
+    summarize_args,
+    tail_text,
+)
 from adapter.task import AgentTask
 from adapter.taskprompt import build_task_prompt, write_context_md
 from adapter.solver import create_solver, normalize_flag_body, touch_heartbeat
+from adapter.solver.base import extract_flags
 from adapter.platform import (
     Challenge, ChallengeNotFound, InvalidState, ResourceUnavailable, create_platform,
 )
@@ -48,6 +59,94 @@ CYCLE_SLEEP = 30          # 一轮刷完后的等待(秒)
 IDLE_SLEEP = 60           # 无待解题时的轮询间隔(秒)
 START_MAX_RETRIES = 8     # 单题启动重试(平台并发槽位竞争)
 CLOSE_RETRIES = 3
+def _parse_status_port() -> int:
+    """STATUS_PORT 安全解析:import 期绝不抛;空串=禁用(0),垃圾值回退 8080 并告警"""
+    raw = os.getenv("STATUS_PORT", "8080")
+    text = (raw or "").strip()
+    if not text:
+        return 0
+    try:
+        return int(text)
+    except ValueError:
+        log.warning("bad STATUS_PORT=%r, falling back to 8080", raw)
+        return 8080
+
+
+STATUS_PORT = _parse_status_port()
+WORKER_ID = os.getenv("WORKER_ID", "worker-1").strip() or "worker-1"
+
+# ── 实时监视单例（main() 初始化；None 时求解照常，仅无推送）──
+_LIVE: LiveState | None = None
+_BUS: LiveBus | None = None
+
+# 边界事件：立即落地快照文件（高频 progress/text 只走内存+SSE）
+_FLUSH_KINDS = {"tool_end", "turn_done", "error", "system", "lifecycle"}
+
+
+def _live_set(kind: str = "lifecycle", _immediate: bool = True, **fields) -> None:
+    """update+publish 一行式；_LIVE 为 None 时无操作；异常吞掉不影响求解"""
+    try:
+        if _LIVE is None:
+            return
+        snap = _LIVE.update(_immediate=_immediate, **fields)
+        if _BUS is not None and _BUS.has_subscribers():
+            _BUS.publish({**snap, "kind": kind})
+        if kind in _FLUSH_KINDS:
+            _LIVE.flush()
+    except Exception:
+        pass
+
+
+def _make_hooks():
+    """on_fact（tool_end，接口契约）+ on_event（表驱动分发）-> LiveState/Bus"""
+    found: list[str] = []  # 会话内已见 flag(去重计数,供 flags_found 实时展示)
+
+    def on_fact(tool_name: str, args, out: str) -> None:
+        for f in extract_flags(out or ""):
+            if f not in found:
+                found.append(f)
+        # _immediate=False:update 节流 + 下方 kind 命中 _FLUSH_KINDS 的一次强制 flush,
+        # 恰好一次落盘(原默认 True 会 double-persist)
+        _live_set("tool_end", _immediate=False,
+                  last_tool=tool_name or "",
+                  last_output_tail=tail_text(out or "", OUTPUT_TAIL_MAX),
+                  current_tool="",
+                  flags_found=len(found))
+
+    def on_event(kind: str, payload: dict) -> None:
+        p = payload or {}
+        fn = _EVENT_TABLE.get(kind)
+        if fn is None:
+            log.debug("unknown pi event kind dropped: %s", kind)
+            return
+        _live_set(kind, _immediate=False, **fn(p))
+
+    return on_fact, on_event
+
+
+def _ev_tool_start(p: dict) -> dict:
+    return {"phase": "solving", "current_tool": p.get("tool", ""),
+            "current_args_summary": summarize_args(p.get("args") or {}),
+            "_turns_inc": 1}
+
+
+def _ev_system(p: dict) -> dict:
+    # pi 内部相位(stalled/timeout/stderr)归一化为 error,web 红点才能点亮;
+    # 原始相位仍保留在 error 文案里
+    phase = str(p.get("phase", "system"))
+    return {"phase": "error" if phase in ("stalled", "timeout", "stderr") else phase,
+            "error": head_text(str(p.get("detail", "")), ERROR_HEAD_MAX)}
+
+
+_EVENT_TABLE = {
+    "tool_start": _ev_tool_start,
+    "tool_progress": lambda p: {"last_output_tail": tail_text(p.get("preview", "") or "", OUTPUT_TAIL_MAX)},
+    "text": lambda p: {"assistant_preview": tail_text(p.get("preview", "") or "", ASSISTANT_PREVIEW_MAX)},
+    "thinking": lambda p: {"thinking_len": int(p.get("length", 0) or 0)},
+    "turn_done": lambda p: {"current_tool": ""},
+    "error": lambda p: {"phase": "error", "error": head_text(str(p.get("error", "")), ERROR_HEAD_MAX)},
+    "system": _ev_system,
+}
 
 
 # ── 排序与任务构建 ──────────────────────────────────────────
@@ -141,8 +240,13 @@ def solve_one(
     返回 (solved, 本轮正确的 flag 列表)。
     """
     code = ch.unique_code
+    _live_set(phase="starting", challenge_code=code,
+              started_at=time.time(), turns=0, error="",
+              current_tool="", last_output_tail="",
+              assistant_preview="", flags_found=0, accepted=0)
     started = _start_with_retry(client, code)
     if started is None:
+        _live_set(phase="idle", error="start failed")
         return False, []
 
     accepted: list[str] = []
@@ -155,9 +259,16 @@ def solve_one(
                  code, task.flag_count, ch.correct_flag_count,
                  ch.difficulty or "?", task.target_str())
 
-        # 单会话求解: 无 on_fact/transcript —— 候选 = pi 输出事件 + 工作目录 FLAG 文件
+        # 单会话求解：实时 hooks -> LiveState/SSE + transcript 落盘（pi 本体零改动）
         prompt = build_task_prompt(task, flags_submitted=ch.correct_flag_count)
-        result = solver_backend.solve(prompt, workdir, cfg, flag_format=FLAG_FORMAT)
+        transcript_path = os.path.join(workdir, "transcript.jsonl")
+        on_fact, on_event = _make_hooks()
+        _live_set(phase="solving", challenge_code=code,
+                  transcript_path=transcript_path,
+                  model=getattr(cfg, "model", ""))
+        result = solver_backend.solve(prompt, workdir, cfg, flag_format=FLAG_FORMAT,
+                                      on_fact=on_fact, on_event=on_event,
+                                      transcript_path=transcript_path)
 
         # 候选去重后逐个直接提交;平台 correct/duplicate 响应即唯一闸门
         for cand in result.flags:
@@ -165,6 +276,7 @@ def solve_one(
             if norm in submitted.setdefault(code, set()):
                 continue
             submitted[code].add(norm)
+            _live_set(phase="submitting")
             try:
                 r = client.submit_flag(code, cand)
             except Exception as e:
@@ -177,6 +289,8 @@ def solve_one(
                 if r.correct_flag_count >= r.total_flag_count:
                     log.info("solved %s (%d/%d flags)", code,
                              r.correct_flag_count, r.total_flag_count)
+                    _live_set(phase="done", accepted=len(accepted),
+                              flags_found=len(result.flags), error="")
                     return True, accepted
             elif r.duplicate:
                 log.info("duplicate flag on %s (already accepted)", code)
@@ -185,12 +299,16 @@ def solve_one(
 
         log.info("session done on %s: %d turns, %.0fs, %d candidate(s), %d accepted",
                  code, result.turns, result.duration_s, len(result.flags), len(accepted))
+        _live_set(phase="done", accepted=len(accepted),
+                  flags_found=len(result.flags),
+                  error=head_text(result.error) if result.error else "")
         return False, accepted
     except Exception:
         log.exception("solve_one error on %s", code)
         return False, accepted
     finally:
         # 单会话结束即释放实例(多 flag 剩题由下一轮重新 start 冷启动)
+        _live_set(phase="closing")
         if not _close_with_retry(client, code):
             log.warning("challenge %s left running on platform", code)
 
@@ -204,11 +322,25 @@ def main() -> None:
         log.error("BENCHMARK_BASE_URL and BENCHMARK_TOKEN must be set")
         sys.exit(2)
 
-    cfg = SolverConfig.from_env()
-    if not cfg.api_key:
-        log.warning("no SOLVER_API_KEY set — Pi Agent cannot authenticate")
+    try:
+        cfg = SolverConfig.from_env()
+    except ValueError as e:
+        # 裸 SOLVER_MODEL/垃圾 SESSION_SECONDS 等:明示退出码,不进 restart 闷循环
+        log.error("bad solver config: %s", e)
+        sys.exit(2)
     os.makedirs(WORKDIR, exist_ok=True)
     touch_heartbeat()
+
+    # 实时监视：LiveState（原子文件 /work/.live/<worker>.json）+ SSE 广播线程
+    global _LIVE, _BUS
+    _LIVE = LiveState(worker_id=WORKER_ID,
+                      state_path=os.path.join(WORKDIR, ".live", f"{WORKER_ID}.json"))
+    _BUS = LiveBus()
+    try:
+        from drivers.status_server import serve_forever_in_thread
+        serve_forever_in_thread(_LIVE, _BUS, STATUS_PORT, workdir=WORKDIR)
+    except Exception:
+        log.exception("status server failed to start (solving continues)")
 
     # 独立心跳线程: 进程存活即刷新 /tmp/driver_heartbeat(compose healthcheck 依据)
     def _heartbeat_loop():
@@ -225,8 +357,7 @@ def main() -> None:
     solver_backend = create_solver()
     submitted: dict[str, set[str]] = {}
     solved_ever: set[str] = set()
-    log.info("tsecbench-adapter starting: provider=%s model=%s base=%s",
-             cfg.provider, cfg.model, base_url)
+    log.info("tsecbench-adapter starting: model=%s base=%s", cfg.model, base_url)
 
     while True:
         # 拉取题目;平台 is_completed 为完成状态的唯一权威

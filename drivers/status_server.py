@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""只读监视服务 — stdlib 无依赖：摘要快照 + SSE 推送 + transcript 尾部。
+
+路由：
+  GET /               -> web/index.html（无则 404 说明）
+  GET /api/status     -> 最新 LiveState 快照 JSON
+  GET /api/events     -> text/event-stream（连接即写快照首帧，15s 心跳）
+  GET /api/transcript?code=<id>&tail=<n> -> transcript.jsonl 尾部
+
+失败隔离：本线程任何异常只记日志，绝不影响 driver 求解循环。
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import queue
+import re
+import socket
+import threading
+import time
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+log = logging.getLogger("adapter.status")
+
+_VALID_RX = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _valid_code(code: str) -> bool:
+    return bool(_VALID_RX.match(code or ""))
+
+
+def _valid_rel(name: str) -> bool:
+    """映射后目录名的遍历守卫:_safe_code 产物(含 hash 后缀,超 64 字符)放行"""
+    return bool(name) and "/" not in name and "\\" not in name \
+        and "\x00" not in name and name not in (".", "..")
+
+
+def _map_code(code: str) -> str:
+    """与 driver 一致的 code->目录映射（sanitize+hash 后缀）；失败回退 sanitize 值"""
+    try:
+        from drivers.benchmark_driver import _safe_code
+        return _safe_code(code)
+    except Exception:
+        return re.sub(r"[^A-Za-z0-9_-]+", "-", str(code)).strip("-")[:64] or "chal"
+
+
+def _make_handler(live, bus, workdir: str, web_dir: str):
+    """handler 工厂：per-server 配置走实例属性，不污染类状态"""
+    index_cache: dict = {"mtime": 0.0, "body": b""}
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "TsecBenchStatus/1"
+
+        def log_message(self, fmt, *args):  # 降噪：走 logging
+            log.debug(fmt, *args)
+
+        def _send_bytes(self, body: bytes, content_type: str, code: int = 200) -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _send_json(self, obj, code: int = 200) -> None:
+            self._send_bytes(json.dumps(obj, ensure_ascii=False).encode("utf-8"),
+                             "application/json; charset=utf-8", code)
+
+        def do_GET(self) -> None:  # noqa: N802
+            try:
+                u = urlparse(self.path)
+                if u.path == "/api/status":
+                    self._send_json(live.snapshot() if live else {})
+                elif u.path == "/api/events":
+                    self._sse()
+                elif u.path == "/api/transcript":
+                    self._transcript(parse_qs(u.query))
+                elif u.path in ("/", "/index.html"):
+                    self._index()
+                else:
+                    self.send_error(404, "not found")
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception:
+                log.exception("status_server handler error")
+                try:
+                    self.send_error(500, "internal error")
+                except Exception:
+                    pass
+
+        def _index(self) -> None:
+            p = os.path.join(web_dir, "index.html")
+            try:
+                mtime = os.path.getmtime(p)
+            except OSError:
+                self.send_error(404, "web/index.html not baked (see Dockerfile COPY web)")
+                return
+            if mtime != index_cache["mtime"]:
+                try:
+                    with open(p, "rb") as f:
+                        index_cache["body"] = f.read()
+                    index_cache["mtime"] = mtime
+                except OSError:
+                    log.exception("index read failed")
+                    self.send_error(500, "read failed")
+                    return
+            self._send_bytes(index_cache["body"], "text/html; charset=utf-8")
+
+        def _sse(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            q = bus.subscribe() if bus else queue.Queue()
+            try:
+                # 读端超时:慢/死的 SSE 订阅者最多占线程 60s,随后 finally 释放订阅
+                try:
+                    self.request.settimeout(60)
+                except Exception:
+                    pass
+                if live:  # 首帧快照永不空白；bus 本身无 replay
+                    snap = live.snapshot()
+                    snap["kind"] = "snapshot"
+                    snap.setdefault("ts", time.time())
+                    self.wfile.write(f"data: {json.dumps(snap, ensure_ascii=False)}\n\n".encode())
+                    self.wfile.flush()
+                while True:
+                    try:
+                        ev = q.get(timeout=15)
+                        self.wfile.write(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode())
+                    except queue.Empty:
+                        self.wfile.write(b": heartbeat\n\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except socket.timeout:
+                pass
+            finally:
+                if bus:
+                    try:
+                        bus.unsubscribe(q)
+                    except Exception:
+                        pass
+
+        def _transcript(self, qs: dict) -> None:
+            code = (qs.get("code") or [""])[0]
+            try:
+                tail = max(1, min(int((qs.get("tail") or ["200"])[0]), 2000))
+            except ValueError:
+                tail = 200
+            # 与 driver 同映射：合法 code 查精确目录；其余只查 sanitize 映射目录
+            # (400 仅当两种查法都不可能时返回,点/冒号题不再误杀)
+            cands = []
+            if _valid_code(code):
+                cands.append(os.path.join(workdir, code, "transcript.jsonl"))
+            mapped = _map_code(code)
+            if mapped != code and _valid_rel(mapped):
+                cands.append(os.path.join(workdir, mapped, "transcript.jsonl"))
+            if not cands:
+                self.send_error(400, "bad code")
+                return
+            path = next((p for p in cands if os.path.isfile(p)), None)
+            if path is None:
+                self._send_json({"code": code, "lines": []})
+                return
+            try:
+                with open(path, encoding="utf-8", errors="ignore") as f:
+                    lines = list(deque(f, maxlen=tail))
+                self._send_json({"code": code, "lines": [ln.rstrip("\n") for ln in lines]})
+            except Exception:
+                log.exception("transcript read failed")
+                self.send_error(500, "read failed")
+
+    return Handler
+
+
+def serve_forever_in_thread(live, bus, port: int, *,
+                            workdir: str | None = None,
+                            web_dir: str | None = None) -> threading.Thread | None:
+    """起守护线程服务；port<=0 则禁用（回归：求解不受影响）。"""
+    if not port or port <= 0:
+        log.info("status server disabled (STATUS_PORT=%s)", port)
+        return None
+
+    workdir = workdir or os.getenv("ADAPTER_WORKDIR", "/work")
+    if web_dir is None:
+        web_dir = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                "..", "web"))
+    try:
+        srv = ThreadingHTTPServer(("0.0.0.0", port), _make_handler(live, bus, workdir, web_dir))
+    except Exception:
+        log.exception("status server bind :%d failed (solving continues)", port)
+        return None
+
+    t = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 1},
+                         daemon=True, name="status-server")
+    t.start()
+    log.info("status server on :%d (web + SSE)", port)
+    return t

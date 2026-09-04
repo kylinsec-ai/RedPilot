@@ -1,8 +1,10 @@
 """
 配置管理 — 最小求解配置
 
-环境变量驱动，支持 deepseek / glm 预设。
-只保留 Pi Agent 求解引擎所需；调度/止损/验证器配置已随机制移除。
+环境变量驱动。模型经 SOLVER_MODEL 以完整 provider/model 逐字透传
+(缺省 DEFAULT_MODEL);provider 由模型前缀决定。
+API 凭据由 pi 按官方 env 名(或 ~/.pi/agent/auth.json,优先于 env)自行解析,
+仓库代码零映射、零别名、不读不改 key。
 """
 
 from __future__ import annotations
@@ -10,24 +12,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-_SOLVER_PRESETS = {
-    "deepseek": {
-        "base_url": "https://api.deepseek.com/anthropic",
-        "model": "deepseek-v4-flash",
-    },
-    "deepseek-1m": {
-        "base_url": "https://api.deepseek.com/anthropic",
-        "model": "deepseek-v4-pro[1m]",
-    },
-    "glm": {
-        "base_url": "https://open.bigmodel.cn/api/anthropic",
-        "model": "glm-5.3",
-    },
-    "glm-1m": {
-        "base_url": "https://open.bigmodel.cn/api/anthropic",
-        "model": "glm-5.3",
-    },
-}
+# 默认模型(完整 provider/id,须存在于 pi 内置目录;以 `pi --list-models` 核对为准)
+DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -41,23 +27,19 @@ def _env(name: str, default: str | None = None) -> str | None:
 class SolverConfig:
     """Pi Agent 求解引擎配置"""
 
-    provider: str
-    base_url: str
-    api_key: str
     model: str
     session_seconds: int
 
     @classmethod
     def from_env(cls) -> "SolverConfig":
-        provider = (_env("SOLVER_PROVIDER") or "deepseek").lower()
-        preset = _SOLVER_PRESETS.get(provider, _SOLVER_PRESETS["deepseek"])
-        base = _env("SOLVER_BASE_URL", preset["base_url"]) or preset["base_url"]
-        key = (_env("SOLVER_API_KEY") or _env("ANTHROPIC_AUTH_TOKEN")
-               or _env("ANTHROPIC_API_KEY") or "")
+        model = _env("SOLVER_MODEL", DEFAULT_MODEL)
+        # 早失败: 须为完整 provider/model,否则只是把 typo 推迟到 pi 运行时
+        if "/" not in model or model.startswith("/") or model.endswith("/"):
+            raise ValueError(
+                "SOLVER_MODEL 须为完整 [provider/]model"
+                f"(如 deepseek/deepseek-v4-flash),当前: {model!r}"
+            )
         return cls(
-            provider=provider,
-            base_url=base.rstrip("/"),
-            api_key=key,
-            model=_env("SOLVER_MODEL", preset["model"]) or preset["model"],
-            session_seconds=int(_env("SOLVER_SESSION_SECONDS", "1500") or "1500"),
+            model=model,
+            session_seconds=int(_env("SOLVER_SESSION_SECONDS", "1500")),
         )

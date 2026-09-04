@@ -6,5 +6,6 @@ __pycache__/
 .remember/
 work/
 data/
+pi/
 *.log
 .env

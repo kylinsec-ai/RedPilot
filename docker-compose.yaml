@@ -33,18 +33,32 @@ services:
       # ── 平台凭据 (必填, 跑分任务下发) ──
       BENCHMARK_TOKEN: ${BENCHMARK_TOKEN}
       BENCHMARK_BASE_URL: ${BENCHMARK_BASE_URL}
-      # ── 模型 (Pi Agent) ──
-      SOLVER_API_KEY: ${SOLVER_API_KEY}
+      # ── LLM 凭据: pi 官方 provider env 名直通容器(仓库代码不读不改;
+      #    pi 解析顺序: auth.json > env;默认 provider: deepseek;
+      #    换 provider 在此加一行同名转发,env 名对照表见 README) ──
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
+      # ── 模型/会话 (SOLVER_MODEL 为完整 [provider/]model,缺省值见 adapter/config.py) ──
       SOLVER_MODEL: ${SOLVER_MODEL:-}
       SOLVER_SESSION_SECONDS: ${SOLVER_SESSION_SECONDS:-1500}
+      PI_STALL_TIMEOUT: ${PI_STALL_TIMEOUT:-480}
       # ── 运行 ──
       ADAPTER_WORKDIR: /work
       ADAPTER_FLAG_FORMAT: ${ADAPTER_FLAG_FORMAT:-flag{...}}
+      # ── 实时监视（只读 SSE + 摘要页；STATUS_PORT=0 禁用求解器内服务。
+      #    注意: 0 仍会保留下方一条端口映射(无监听),彻底取消请注释 ports 段）──
+      STATUS_PORT: ${STATUS_PORT:-8080}
+      WORKER_ID: ${WORKER_ID:-worker-1}
       # ── VPN 配置路径 (容器内, entrypoint 读取;文件不存在则跳过) ──
       ADAPTER_VPN_CONFIG: /vpn/client.ovpn
+    ports:
+      # 容器侧端口与 STATUS_PORT 保持一致(旧写法固定 8080,改 STATUS_PORT 会失联)
+      - "${STATUS_PORT:-8080}:${STATUS_PORT:-8080}"
     volumes:
       - ./work:/work
       - ./vpn:/vpn:ro
+      # 可选: 自定义 pi 注册/凭据(models.json/auth.json,官方格式;镜像不再内置,按需启用)
+      # - ./pi:/root/.pi/agent:ro
       # 挂载宿主最新 driver/adapter(免重建镜像)
       - ./drivers:/app/drivers:ro
       - ./adapter:/app/adapter:ro

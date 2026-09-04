@@ -7,5 +7,5 @@ from .pi_agent import PiAgentBackend
 
 
 def create_solver() -> SolverBackend:
-    """创建 Pi Agent 求解器后端（模型/API key 在 solve() 时从 SolverConfig 合并）"""
+    """创建 Pi Agent 求解器后端（模型在 solve() 时从 SolverConfig.model 合并，全量 provider/id）"""
     return PiAgentBackend()

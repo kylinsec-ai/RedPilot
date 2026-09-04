@@ -1,0 +1,61 @@
+# ══════════════════════════════════════════════════════════
+# TsecBench Kali 基础镜像 — 自包含可移植环境
+# kali-linux-headless + Node.js + Pi Agent(官方 npm 包)
+#
+# 构建(一次性,耗时较长):
+#   docker build -f Dockerfile.base -t tsecbench/kali:latest .
+# 之后 worker 镜像(docker-compose.yaml / Dockerfile)直接 FROM 本 tag。
+# 可 docker save/load 或推送到任意仓库,随处运行。
+# ══════════════════════════════════════════════════════════
+
+FROM kalilinux/kali-rolling
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    NODE_VERSION=20.18.1
+
+# ── 1. apt 国内镜像源(kali-rolling,单一源) ──
+# 官方镜像用 deb822 格式 /etc/apt/sources.list.d/kali.sources(/etc/apt/sources.list 为空);
+# 直接覆写之。走 http: 镜像 HTTPS 证书在容器内校验失败,而 apt 对包做 Release 签名验证,
+# http 传输仍然安全。USTC 不可达时可换 URIs(如 https://mirrors.tuna.tsinghua.edu.cn/kali/)。
+RUN cat > /etc/apt/sources.list.d/kali.sources <<'EOF'
+Types: deb
+URIs: http://mirrors.ustc.edu.cn/kali/
+Suites: kali-rolling
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/kali-archive-keyring.gpg
+EOF
+RUN apt-get update
+
+# ── 2. Kali headless 工具集 + worker 运行时依赖 ──
+# kali-linux-headless: 无 GUI 默认工具集(含 nmap/hydra/socat/ncat/sqlmap 等题面常用工具)
+# git/curl/wget/python3/pip: worker Dockerfile(自检与 pip 安装)需要;openvpn: entrypoint 需要
+RUN apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+        kali-linux-headless \
+        git curl wget ca-certificates python3 python3-pip openvpn && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ── 3. Node.js 20 + Pi Agent(npm 全局,官方文档安装方式,非交互) ──
+# xz-utils: 基础镜像缺 xz(tar 解 .tar.xz 需要);独立小层避免重建上面的 apt 大层
+RUN apt-get update && apt-get install -y --no-install-recommends xz-utils \
+    && rm -rf /var/lib/apt/lists/* && \
+    set -eux; arch="$(uname -m)"; case "$arch" in x86_64) NA=x64;; aarch64|arm64) NA=arm64;; *) NA=x64;; esac; \
+    curl -fsSL --retry 5 -o /tmp/node.tar.xz \
+        "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NA}.tar.xz"; \
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1; \
+    rm -f /tmp/node.tar.xz; \
+    npm install -g --ignore-scripts @earendil-works/pi-coding-agent; \
+    pi --version || true
+
+# ── 3b. 补充工具(独立小层;ncat 是 kali 独立包,被 --no-install-recommends 裁掉) ──
+RUN apt-get update && apt-get install -y --no-install-recommends ncat \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── 4. 自检(非门禁,仅留痕) ──
+RUN set -eu; mkdir -p /opt/tools; log=/opt/tools/BUILD_BASE_SELFCHECK.txt; : > "$log"; missing=""; \
+    for b in node npm pi python3 pip3 git curl wget openvpn nmap sqlmap hydra socat ncat; do \
+        if command -v "$b" >/dev/null 2>&1; then echo "OK   $b" >>"$log"; \
+        else echo "MISS $b" >>"$log"; missing="$missing $b"; fi; done; \
+    if [ -n "$missing" ]; then echo "MISSING:$missing" >>"$log"; \
+        echo "!!! BUILD WARNING: tools missing:$missing"; fi; \
+    echo "BUILD OK" >>"$log"; cat "$log"
