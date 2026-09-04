@@ -91,12 +91,30 @@ provider 只需三处:
 - 目录外模型/自定义 provider:`./pi/` 下放 `models.json`(官方格式)并启用 compose 中注释的卷挂载;`auth.json`(0600,优先于 env)同理;不要烤进镜像。
 - 宿主直跑 driver(不走 compose)需自行 `export DEEPSEEK_API_KEY=...`(worker 侧 Python 不加载 `.env`)。
 
+## 构建/开发态势台前端
+
+`web/` 是构建产物、`frontend/` 是源码——改 UI 后需重新构建并提交产物
+(镜像 `COPY web` 与宿主机 bind-mount 都只认 `web/`,后端零改动):
+
+```bash
+cd frontend && npm ci && npm run build   # svelte-check + vite build → ../web/
+```
+
+- 依赖全部在 `devDependencies`,运行时无任何 JS 依赖;产物已在浏览器端就绪。
+- 本地开发:`npm run dev`(Vite :5173)会把 `/api` 代理到 `127.0.0.1:8080`(跑着的
+  worker 容器),含 SSE 流式直通。
+- 版本注意:typescript 必须锁 6.x(`svelte-check` 不支持 7.x Go 版);package-lock.json
+  已锁定,装依赖用 `npm ci`。
+
 ## 目录
 
 - `tsecbench/` — 平台 core(纯 REST)
 - `adapter/` — worker 侧组件库:config/task/taskprompt + `solver/`(Pi Agent)
 - `drivers/benchmark_driver.py` — 串行求解主循环(唯一编排者,异步直调官方 SDK)
-- `drivers/status_server.py` + `drivers/roster.py` + `web/` — 人读态势台(:8080):任务总览/
-  每题历史时间线/实时求解,只读
+- `drivers/status_server.py` + `drivers/roster.py` — 人读态势台(:8080)的只读数据层
+  (stdlib-only HTTP:页面/资产/API/SSE 同源)
+- `frontend/` — 态势台前端源码(Svelte 5 + TypeScript + Tailwind v4 + Vite)
+- `web/` — 前端**构建产物**(提交入库):`web/index.html` + `web/assets/*`,被镜像
+  COPY 与 bind-mount,status_server 按 mtime 热更
 - `entrypoint.sh` / `Dockerfile` / `docker-compose.yaml` — worker 镜像与编排
 - `CHALLENGES_API.md` / `SDK_API.md` — 平台服务端接口契约 / 官方 SDK 接入文档

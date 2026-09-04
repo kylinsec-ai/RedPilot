@@ -30,6 +30,21 @@ log = logging.getLogger("adapter.status")
 
 _VALID_RX = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
+# ── 前端构建产物 (vite 多文件 dist → web/assets/*) ──
+# 名字只允许 URL 安全平铺名(vite 只发 <hash>.js/.css),杜绝路径穿越
+_ASSET_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".map": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".woff2": "font/woff2",
+}
+_ASSET_RX = re.compile(r"[A-Za-z0-9._-]{1,120}")
+
 
 def _valid_code(code: str) -> bool:
     return bool(_VALID_RX.match(code or ""))
@@ -59,6 +74,7 @@ def _make_handler(live, bus, workdir: str, web_dir: str,
                   digest: TranscriptDigest | None = None):
     """handler 工厂：per-server 配置走实例属性，不污染类状态"""
     index_cache: dict = {"mtime": 0.0, "body": b""}
+    assets_cache: dict[str, dict] = {}  # 绝对路径 -> {"mtime": float, "body": bytes}
 
     def _live_code_phases() -> tuple[str, bool]:
         """当前是否正在求解某题（用于 timeline 的 live 判定：进行中的题不标 abrupt）"""
@@ -105,6 +121,8 @@ def _make_handler(live, bus, workdir: str, web_dir: str,
                     self._timeline(parse_qs(u.query))
                 elif u.path in ("/", "/index.html"):
                     self._index()
+                elif u.path.startswith("/assets/"):
+                    self._asset(u.path)
                 else:
                     self.send_error(404, "not found")
             except (BrokenPipeError, ConnectionResetError):
@@ -138,6 +156,38 @@ def _make_handler(live, bus, workdir: str, web_dir: str,
             self.send_header("Cache-Control", "no-store")  # 开发期热更：禁止浏览器缓存 index
             self.end_headers()
             self.wfile.write(index_cache["body"])
+
+        def _asset(self, path: str) -> None:
+            """静态构建产物（web/assets/*）。名字只允许 URL 安全平铺名，杜绝穿越。"""
+            name = path[len("/assets/"):]
+            ext = os.path.splitext(name)[1].lower()
+            if (not name or "/" in name or "\\" in name or "\x00" in name
+                    or not _ASSET_RX.fullmatch(name) or ext not in _ASSET_TYPES):
+                self.send_error(404, "asset not found")
+                return
+            p = os.path.join(web_dir, "assets", name)  # name 无分隔符 => 必在 web_dir 内
+            try:
+                mtime = os.path.getmtime(p)
+            except OSError:
+                self.send_error(404, "web/assets/" + name
+                                + " not baked (run `cd frontend && npm run build`; commit web/)")
+                return
+            entry = assets_cache.get(p)
+            if entry is None or entry["mtime"] != mtime:
+                try:
+                    with open(p, "rb") as f:
+                        body = f.read()
+                except OSError:
+                    log.exception("asset read failed: %s", name)
+                    self.send_error(500, "read failed")
+                    return
+                assets_cache[p] = {"mtime": mtime, "body": body}
+            self.send_response(200)
+            self.send_header("Content-Type", _ASSET_TYPES[ext])
+            self.send_header("Content-Length", str(len(assets_cache[p]["body"])))
+            self.send_header("Cache-Control", "no-store")  # 开发期热更：与 index 一致不缓存
+            self.end_headers()
+            self.wfile.write(assets_cache[p]["body"])
 
         def _sse(self) -> None:
             self.send_response(200)

@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+/* ── 设计 token:旧 web/index.html :root 调色板逐值映射 ── */
+@theme {
+  --color-bg: #0d1220;
+  --color-panel: #131a2b;
+  --color-panel2: #182136;
+  --color-line: #223052;
+  --color-line2: #2c3c63;
+  --color-ink: #e6ebf5;
+  --color-mut: #8b98b3;
+  --color-dim: #5d6b87;
+  --color-amber: #e8a33d;
+  --color-green: #35c07a;
+  --color-red: #e5534b;
+  --color-blue: #5aa2ff;
+  --color-cyan: #4ec9c2;
+  /* 旧派生浅色文本(横幅/chip 前景) */
+  --color-amberlight: #f2c879;
+  --color-redlight: #f0928c;
+  --color-greenlight: #8ce0b2;
+  --color-bluetint: #a9c9f7;
+
+  --font-sans: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, -apple-system,
+    sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+}
+
+/* ── 基座(对齐旧 base 样式) ── */
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font: 14px/1.55 var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+a {
+  color: var(--color-blue);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+:focus-visible {
+  outline: 2px solid var(--color-blue);
+  outline-offset: 2px;
+}
+
+/* ── 求解中相位呼吸圈 ── */
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(232, 163, 61, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(232, 163, 61, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(232, 163, 61, 0);
+  }
+}
+.animate-pulse-ring {
+  animation: pulse-ring 2.2s infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-ring {
+    animation: none;
+  }
+}

@@ -9,3 +9,4 @@ data/
 pi/
 *.log
 .env
+frontend/node_modules/

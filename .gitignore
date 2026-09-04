@@ -17,3 +17,4 @@ vpn/
 
 # Claude worktrees
 .claude/worktrees/
+frontend/node_modules/
