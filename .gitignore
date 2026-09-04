@@ -12,5 +12,5 @@ pi/
 *.log
 # VPN / credentials — never commit live configs
 *.ovpn
-*.Zone.Identifier
+*Zone.Identifier
 vpn/
