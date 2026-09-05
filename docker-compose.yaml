@@ -1,11 +1,37 @@
 # ══════════════════════════════════════════════════════════
-# TsecBench 极简求解 worker — 单容器编排
-# 一个容器 = 常驻 Pi Agent worker(VPN 持有者),一次开一道题,
-# 串行刷完全部题目,刷完轮询待命。平台(core :8000)独立运行于宿主机,
-# worker 经 BENCHMARK_BASE_URL 访问它。
+# TsecBench 双服务编排 — 求解 worker + 本地观测平台(obs)
+# worker = 常驻 Pi Agent 求解容器(VPN 持有者),串行刷题;
+# platform = 观测平台:agent 日志入库(SQLite WAL) + 只读态势 API + SPA(:8090)。
+# 远端官方跑分平台与本地 core 均不经由此编排(worker 经 BENCHMARK_BASE_URL 访问)。
 # ══════════════════════════════════════════════════════════
 
 services:
+  # ── 本地观测平台:摄取(带 token)+ 查询/SSE/SPA 同源;零渗透工具/SDK/key 挂载 ──
+  platform:
+    build:
+      context: .
+      dockerfile: Dockerfile.platform
+    image: tsecbench-platform:latest
+    container_name: tsecbench-platform
+    restart: unless-stopped
+    environment:
+      # 摄取鉴权 token;未配 → ingest 响亮 503(防静默空转);与 worker 中继同值
+      OBSERVABILITY_TOKEN: ${OBSERVABILITY_TOKEN:-}
+      OBSERVABILITY_DB: /app/data/obs.sqlite3
+      OBSERVABILITY_WEB: /app/web
+    ports:
+      - "${OBS_PORT:-8090}:8090"
+    volumes:
+      # data/ 首次有 compose 挂载:SQLite(+wal/shm)与 vpn/ 一样持久化在宿主机
+      - ./data:/app/data
+      - ./web:/app/web:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8090/api/health',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   worker:
     build:
       context: .
@@ -50,6 +76,10 @@ services:
       #    禁用时请一并注释掉整个 ports 段）──
       STATUS_PORT: ${STATUS_PORT:-8080}
       WORKER_ID: ${WORKER_ID:-worker-1}
+      # ── 观测平台摄取(可选):compose 网络内以 service DNS 可达;
+      #    宿主直跑 driver 时设 OBSERVABILITY_URL=http://127.0.0.1:8090 ──
+      OBSERVABILITY_URL: ${OBSERVABILITY_URL:-http://platform:8090}
+      OBSERVABILITY_TOKEN: ${OBSERVABILITY_TOKEN:-}
       # ── VPN 配置路径 (容器内, entrypoint 读取;文件不存在则跳过) ──
       ADAPTER_VPN_CONFIG: /vpn/client.ovpn
     ports:

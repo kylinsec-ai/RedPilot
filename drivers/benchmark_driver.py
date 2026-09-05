@@ -58,6 +58,7 @@ from adapter.task import AgentTask
 from adapter.taskprompt import build_task_prompt, write_context_md
 from adapter.solver import create_solver, touch_heartbeat
 from adapter.solver.base import extract_flags, is_valid_flag
+from adapter.solver.pi_agent import compress_transcript
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("adapter.driver")
@@ -89,6 +90,8 @@ WORKER_ID = os.getenv("WORKER_ID", "worker-1").strip() or "worker-1"
 # ── 实时监视单例（main() 初始化；None 时求解照常，仅无推送）──
 _LIVE: LiveState | None = None
 _BUS: LiveBus | None = None
+# 观测平台中继（main() 初始化；OBSERVABILITY_URL 未配时为 None，零行为变化）
+_RELAY = None
 
 # 边界事件：立即落地快照文件（高频 progress/text 只走内存+SSE）
 _FLUSH_KINDS = {"tool_end", "turn_done", "error", "system", "lifecycle"}
@@ -298,6 +301,12 @@ async def solve_one(
                                          flag_format=FLAG_FORMAT, on_fact=on_fact,
                                          on_event=on_event, transcript_path=transcript_path)
 
+        # session 结束:压缩 transcript，去掉 message_update 流式增量（占 92% 体积）
+        # 压缩前先让 obs 中继把本 run 未读字节排干(压缩会重写文件,行内信息零丢失依赖此序)
+        if _RELAY is not None:
+            _RELAY.flush_run()
+        compress_transcript(transcript_path)
+
         # 候选去重后逐个直接提交;平台 correct/duplicate 响应即唯一闸门。
         # 去重键用原文精确匹配(平台按原文哈希判分,大小写敏感;归一化键会误杀)；
         # 仅在收到平台响应后标记（异常未触达平台的不标记，下一轮可重试）；
@@ -415,10 +424,16 @@ def main() -> None:
     touch_heartbeat()
 
     # 实时监视：LiveState（原子文件 /work/.live/<worker>.json）+ SSE 广播线程
-    global _LIVE, _BUS
+    global _LIVE, _BUS, _RELAY
     _LIVE = LiveState(worker_id=WORKER_ID,
                       state_path=os.path.join(WORKDIR, ".live", f"{WORKER_ID}.json"))
     _BUS = LiveBus()
+    try:
+        from drivers.obs_relay import maybe_start_relay
+        _RELAY = maybe_start_relay(_LIVE, _BUS, WORKDIR)
+    except Exception:
+        log.exception("obs relay start failed (platform ingestion disabled)")
+        _RELAY = None
     try:
         from drivers.status_server import serve_forever_in_thread
         serve_forever_in_thread(_LIVE, _BUS, STATUS_PORT, workdir=WORKDIR)

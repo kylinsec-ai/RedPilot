@@ -3,5 +3,7 @@ fastapi
 uvicorn
 pydantic
 python-dotenv
-# 平台接入官方 SDK（worker 直调;httpx 为其传递依赖，不单列）
+# 平台接入官方 SDK（worker 直调）
 tsec-benchmark
+# obs 观测中继(drivers/obs_relay.py)直连平台 ingest 端点
+httpx

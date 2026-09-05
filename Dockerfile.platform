@@ -1,0 +1,28 @@
+# ══════════════════════════════════════════════════════════════
+# TSecBench 本地观测平台 Dockerfile — python slim 最小面
+# 零渗透工具/VPN/Node/SDK/key/work 挂载,只持 OBSERVABILITY_TOKEN
+# ══════════════════════════════════════════════════════════════
+
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    LANG=C.UTF-8
+
+# ── 国内镜像源 (pip),extra-index 兜底 pypi.org(与主 Dockerfile 同款) ──
+RUN printf '[global]\nindex-url = https://mirrors.bfsu.edu.cn/pypi/web/simple\nextra-index-url = https://pypi.org/simple\ntimeout = 120\n[install]\ntrusted-host = mirrors.bfsu.edu.cn\n' \
+        > /etc/pip.conf
+
+WORKDIR /app
+
+COPY requirements.platform.txt /app/requirements.platform.txt
+RUN pip install --no-cache-dir -r /app/requirements.platform.txt
+
+COPY obs /app/obs
+
+# 数据与 SPA 产物由 compose bind-mount 提供: ./data:/app/data  ./web:/app/web:ro
+ENV OBSERVABILITY_DB=/app/data/obs.sqlite3 \
+    OBSERVABILITY_WEB=/app/web
+
+EXPOSE 8090
+CMD ["uvicorn", "obs.app:app", "--host", "0.0.0.0", "--port", "8090"]

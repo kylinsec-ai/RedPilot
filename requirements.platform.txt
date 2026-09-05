@@ -1,0 +1,7 @@
+# TSecBench 观测平台(独立于 worker/core)最小依赖面:
+# 不装 tsec-benchmark —— 平台零 SDK 挂载,只持 OBSERVABILITY_TOKEN
+fastapi
+uvicorn
+pydantic
+python-dotenv
+httpx
