@@ -1,53 +1,25 @@
 <script lang="ts">
-  import { fetchRoster } from "../lib/api";
   import { fmtRel } from "../lib/format";
   import { goChallenge } from "../lib/route.svelte";
-  import type { ChallengeRow, RosterSnapshot } from "../lib/types";
+  import { roster, sortRows, toRows, traceChips, refreshRoster } from "../lib/roster.svelte";
+  import type { RowSortKey } from "../lib/roster.svelte";
   import Banner from "../components/Banner.svelte";
   import Chip from "../components/Chip.svelte";
   import DiffBadge from "../components/DiffBadge.svelte";
   import StatCard from "../components/StatCard.svelte";
 
-  let roster: RosterSnapshot | null = $state(null);
-  let failed = $state(false);
-  let sortKey: "code" | "score" | "prog" | "act" | null = $state(null);
+  // 花名册来自共享 store(App 启动时已挂单轮询 10s);挂载时补刷一次,恢复旧版"回总览即刷新"
+  const snap = $derived(roster.data);
+
+  // 挂载即补刷(共享节拍最长 10s 旧数据);无依赖,仅挂载跑一次
+  $effect(() => {
+    void refreshRoster();
+  });
+
+  let sortKey: RowSortKey | null = $state(null);
   let sortAsc = $state(true);
 
-  // 派生值在模板 else 分支内以 {@const} 计算(roster 已收窄为 RosterSnapshot)
-
-  // ── 排序:与旧版逐字一致的 comparator ──
-  function keyOf(x: ChallengeRow, k: "code" | "score" | "prog" | "act"): string | number {
-    if (k === "code") return x.unique_code;
-    if (k === "score") return x.total_score || 0;
-    if (k === "prog") return x.correct_flag_count || 0;
-    return x.local?.last_activity || 0;
-  }
-  function diffRank(d: string): number {
-    return d === "easy" ? 0 : d === "hard" ? 2 : 1;
-  }
-  function sortRows(
-    list: ChallengeRow[],
-    sortKey: "code" | "score" | "prog" | "act" | null,
-    sortAsc: boolean,
-  ): ChallengeRow[] {
-    return list.slice().sort((a, b) => {
-      if (sortKey) {
-        const ka = keyOf(a, sortKey);
-        const kb = keyOf(b, sortKey);
-        if (typeof ka === "string" && typeof kb === "string") {
-          const c = ka.localeCompare(kb);
-          return sortAsc ? c : -c;
-        }
-        return sortAsc ? (ka as number) - (kb as number) : (kb as number) - (ka as number);
-      }
-      if ((a.is_completed ? 1 : 0) !== (b.is_completed ? 1 : 0)) return a.is_completed ? 1 : -1;
-      if (diffRank(a.difficulty) !== diffRank(b.difficulty))
-        return diffRank(a.difficulty) - diffRank(b.difficulty);
-      return (b.total_score || 0) - (a.total_score || 0);
-    });
-  }
-
-  function setSort(k: "code" | "score" | "prog" | "act"): void {
+  function setSort(k: RowSortKey): void {
     if (sortKey === k) sortAsc = !sortAsc;
     else {
       sortKey = k;
@@ -55,45 +27,19 @@
     }
   }
 
-  async function refresh(): Promise<void> {
-    try {
-      roster = await fetchRoster();
-      failed = false;
-    } catch {
-      failed = true;
-    }
-  }
-
-  $effect(() => {
-    void refresh();
-    const iv = setInterval(() => {
-      if (!document.hidden) void refresh();
-    }, 10000);
-    return () => clearInterval(iv);
-  });
-
-  const chips = (x: ChallengeRow) => {
-    const out: { tone: "flag" | "crash" | "sess" | "art"; text: string }[] = [];
-    if (x.local?.flag) out.push({ tone: "flag", text: "FLAG ✓" });
-    if (x.local?.crashed) out.push({ tone: "crash", text: "core" });
-    if (x.local?.transcript_bytes) out.push({ tone: "sess", text: "会话" });
-    const arts = x.local?.artifacts?.length || 0;
-    if (arts) out.push({ tone: "art", text: `产物 ${arts}` });
-    return out;
-  };
-
   const TH =
     "whitespace-nowrap border-b border-line2 pb-[7px] pt-[7px] pr-2.5 text-left text-[12px] font-semibold text-dim";
 </script>
 
-{#if failed}
+{#if roster.failed && !snap}
   <Banner tone="err" text="无法读取题目总览（/api/roster 不可达）。服务是否在运行？" />
-{:else if !roster}
+{:else if !snap}
   <div class="py-[26px] text-center text-[13.5px] text-dim">加载中…</div>
 {:else}
-  {@const rows = Object.values(roster.challenges || {}).filter(
-    (x): x is ChallengeRow => !!x && !!x.unique_code,
-  )}
+  {#if roster.failed}
+    <Banner tone="warn" text="题目总览刷新失败，正在显示缓存数据，自动重试中…" />
+  {/if}
+  {@const rows = toRows(snap)}
   {@const n = rows.length}
   {@const comp = rows.filter((x) => x.is_completed).length}
   {@const flagTotal = rows.reduce((a, x) => a + (x.correct_flag_count || 0), 0)}
@@ -109,18 +55,18 @@
     <StatCard label="本地留痕（FLAG 文件）" value={localFlags} tone="amber" />
   </div>
 
-  {#if roster.platform_disabled}
+  {#if snap.platform_disabled}
     <Banner
       tone="info"
       text="平台轮询已禁用（缺 BENCHMARK_* 或 SDK 不可用）——下表仅含本地有痕迹的题。"
     />
-  {:else if roster.platform_error}
+  {:else if snap.platform_error}
     <Banner
       tone="warn"
-      text={`平台数据暂不可用：${roster.platform_error}。正在显示 ${fmtRel(roster.fetched_at)}的缓存，本地痕迹照常刷新。`}
+      text={`平台数据暂不可用：${snap.platform_error}。正在显示 ${fmtRel(snap.fetched_at)}的缓存，本地痕迹照常刷新。`}
     />
-  {:else if roster.fetched_at}
-    <div class="mb-2 text-[12px] text-dim">平台数据 {fmtRel(roster.fetched_at)}更新 · 共 {n} 题</div>
+  {:else if snap.fetched_at}
+    <div class="mb-2 text-[12px] text-dim">平台数据 {fmtRel(snap.fetched_at)}更新 · 共 {n} 题</div>
   {/if}
 
   <div class="mb-3.5 rounded-[10px] border border-line bg-panel px-4.5 py-4">
@@ -155,7 +101,7 @@
         </thead>
         <tbody>
           {#each sorted as x (x.unique_code)}
-            {@const c = chips(x)}
+            {@const c = traceChips(x.local)}
             <tr
               class="cursor-pointer border-b border-line align-middle hover:bg-panel2"
               tabindex="0"

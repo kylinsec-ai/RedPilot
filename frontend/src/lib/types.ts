@@ -139,3 +139,57 @@ export type TimelineEntry =
   | TextEntry
   | NoteEntry
   | ErrorEntry;
+
+/** ── Runs 历史(/api/runs 系,obs 后端新增;run_id=32hex,status 对齐 SQL CHECK)── */
+
+export const RUN_STATUSES = [
+  "running",
+  "solved",
+  "done",
+  "failed",
+  "interrupted",
+] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+export const RUN_STATUS_LABEL: Record<string, string> = {
+  running: "进行中",
+  solved: "已解出",
+  done: "已结束",
+  failed: "失败",
+  interrupted: "中断",
+};
+
+export interface RunRow {
+  run_id: string;
+  worker_id: string;
+  challenge_code: string;
+  model?: string;
+  status: RunStatus | string; // 宽松以容忍未来状态
+  started_at: number; // epoch s
+  ended_at?: number | null;
+  duration_s?: number | null;
+  error?: string | null;
+  turns?: number | null;
+  sessions?: number | null;
+  flags_found?: number | null;
+  flags_accepted?: string[] | null; // list | null(后端已归一)
+  updated_at?: number;
+  event_count: number;
+}
+
+export interface RunsListResp {
+  runs: RunRow[];
+}
+
+export interface RunEventRow {
+  seq: number;
+  type: string;
+  ts?: number | null;
+  payload: string;
+}
+
+export interface RunEventsResp {
+  events: RunEventRow[];
+  next_seq: number;
+  end: boolean;
+}

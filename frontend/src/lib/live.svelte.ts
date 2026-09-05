@@ -32,20 +32,21 @@ export function startLiveWatchers(): () => void {
 
   const connect = () => {
     if (stopped) return;
-    es = new EventSource("/api/events");
-    es.onopen = () => {
+    const src = new EventSource("/api/events");
+    es = src;
+    src.onopen = () => {
       live.conn = "live";
     };
-    es.onerror = () => {
+    src.onerror = () => {
       live.conn = "reconnecting";
       try {
-        es?.close();
+        src.close();
       } catch {
         /* noop */
       }
       retry = setTimeout(connect, 3000);
     };
-    es.onmessage = (ev) => {
+    src.onmessage = (ev) => {
       try {
         paint(JSON.parse(ev.data));
       } catch {
@@ -65,6 +66,7 @@ export function startLiveWatchers(): () => void {
 
   return () => {
     stopped = true;
+    started = false;
     es?.close();
     clearInterval(fallback);
     if (retry) clearTimeout(retry);

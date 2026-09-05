@@ -1,10 +1,13 @@
 /**
- * 类型化只读 API 客户端。同源:status_server 提供 /api/*;dev 由 vite 代理到 :8080。
+ * 类型化只读 API 客户端。同源:平台服务(obs)提供 /api/*;dev 由 vite 代理到 :8090。
  */
 import type {
   ChallengeDetail,
   LiveSnap,
   RosterSnapshot,
+  RunEventsResp,
+  RunRow,
+  RunsListResp,
   TimelineResp,
 } from "./types";
 
@@ -24,3 +27,11 @@ export const fetchTranscript = (code: string, tail = 200) =>
   j<{ code: string; lines: string[] }>(
     `/api/transcript?code=${encodeURIComponent(code)}&tail=${tail}`,
   );
+
+/** ── Runs 历史 ── */
+export const fetchRuns = (qs = "") => j<RunsListResp>("/api/runs" + qs);
+export const fetchRun = (runId: string) => j<RunRow>(`/api/runs/${runId}`);
+export const fetchRunEvents = (runId: string, after = 0, limit = 500) =>
+  j<RunEventsResp>(`/api/runs/${runId}/events?after=${after}&limit=${limit}`);
+export const fetchRunTimeline = (runId: string, after = 0) =>
+  j<TimelineResp>(`/api/runs/${runId}/timeline?after=${after}`);

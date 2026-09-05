@@ -3,6 +3,7 @@
 /* ── 设计 token:旧 web/index.html :root 调色板逐值映射 ── */
 @theme {
   --color-bg: #0d1220;
+  --color-rail: #0a0e1a; /* 侧栏表面:bg 再向黑混一档,明度递进 侧栏<画布<面板 */
   --color-panel: #131a2b;
   --color-panel2: #182136;
   --color-line: #223052;
@@ -26,17 +27,47 @@
   --font-mono: ui-monospace, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
 }
 
-/* ── 基座(对齐旧 base 样式) ── */
+/* ── 基座(对齐旧 base 样式) ──
+   scroll 模型:html/body 锁定,侧栏 nav 与 main 各为独立滚动容器(左右布局壳) */
 html,
 body {
   margin: 0;
   padding: 0;
+  height: 100%;
+  overflow: hidden;
 }
 body {
   background: var(--color-bg);
   color: var(--color-ink);
   font: 14px/1.55 var(--font-sans);
   -webkit-font-smoothing: antialiased;
+}
+
+/* ── 内区细滚动条(侧栏 nav / main) ── */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line2) transparent;
+}
+.scroll-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: var(--color-line2);
+  border-radius: 4px;
+}
+.scroll-thin::-webkit-scrollbar-thumb:hover {
+  background: var(--color-line);
+}
+
+/* ── 抽屉滑入(仅应动作而动;reduced-motion 关过渡) ── */
+.drawer-slide {
+  transition: transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .drawer-slide {
+    transition: none;
+  }
 }
 a {
   color: var(--color-blue);

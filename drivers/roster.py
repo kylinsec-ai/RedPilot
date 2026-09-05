@@ -567,6 +567,13 @@ class TranscriptDigest:
                 msg = ev.get("message") or {}
                 self._touch_ts(st, msg.get("timestamp"))
                 if (msg.get("role")) == "assistant":
+                    # 压缩后的 transcript 无 message_update，text_buf 为空；
+                    # 此时从 message_end 的 content 直接提取文本
+                    if not st.get("text_buf"):
+                        for c in (msg.get("content") or []):
+                            if c.get("type") == "text" and c.get("text"):
+                                st["text_buf"] = c["text"]
+                                break
                     self._flush_text(st)
             elif kind == "tool_execution_start":
                 args = ev.get("args") or {}
