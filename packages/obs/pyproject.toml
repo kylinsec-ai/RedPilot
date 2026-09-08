@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tsecbench-obs"
+version = "0.1.0"
+description = "TsecBench observability platform: SQLite ingest/read API + SPA hosting + local live-source server"
+requires-python = ">=3.10"
+# 基线零 fastapi:worker(Kali)镜像安装本基线发行版只为 localserver(stdlib),
+# contracts 是唯一依赖。[platform] extra 供平台镜像拉起完整 FastAPI 应用。
+dependencies = ["tsecbench-contracts"]
+
+[project.optional-dependencies]
+platform = ["fastapi", "uvicorn", "pydantic", "python-dotenv"]
+
+[tool.setuptools.packages.find]
+include = ["obs*"]

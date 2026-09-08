@@ -17,27 +17,18 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from .digest import fold_rows
 from .schema import RUN_STATUSES, require_run_id
+from tsecbench_contracts.assets import ASSET_RX as _ASSET_RX
+from tsecbench_contracts.assets import ASSET_TYPES as _ASSET_TYPES
+from tsecbench_contracts.digest import fold_rows
 
 log = logging.getLogger("obs.read")
 
 router = APIRouter(tags=["read"])
 
 # ── 前端构建产物(vite 多文件 dist → web/assets/*)──
-# 名字只允许 URL 安全平铺名(vite 只发 <hash>.js/.css),杜绝路径穿越
-_ASSET_TYPES = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "text/javascript; charset=utf-8",
-    ".mjs": "text/javascript; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".json": "application/json; charset=utf-8",
-    ".map": "application/json; charset=utf-8",
-    ".svg": "image/svg+xml",
-    ".png": "image/png",
-    ".woff2": "font/woff2",
-}
-_ASSET_RX = re.compile(r"[A-Za-z0-9._-]{1,120}")
+# mime 表与穿越守卫单源于 tsecbench_contracts.assets(与 worker 侧仪表板共用);
+# 本服务的缓存策略(index/assets 头)是自身关切,不归 contracts。
 _VALID_RX = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
