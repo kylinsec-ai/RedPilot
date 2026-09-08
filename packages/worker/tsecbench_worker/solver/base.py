@@ -37,6 +37,16 @@ class SolveResult:
     def has_flags(self) -> bool:
         return bool(self.flags)
 
+    @property
+    def provider_failure(self) -> bool:
+        """零回合且末端报错 = provider 失败而非"会话完成"。
+
+        pi 对 provider 400/超限等仅发 stopReason=error 的收尾消息(err=none 表象),
+        编排层若当正常完成处理就会静默烧题库(2026-09-08 事故:280 run/0 flag)。
+        turns==0 保证真实工作过(哪怕带错误)的会话不误判。
+        """
+        return self.turns == 0 and bool(self.error)
+
 
 # ── 心跳文件 ─────────────────────────────────────────────
 

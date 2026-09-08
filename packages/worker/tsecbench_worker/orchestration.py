@@ -43,9 +43,20 @@ log = logging.getLogger("tsecbench_worker.orchestration")
 
 START_MAX_RETRIES = 8     # 单题启动重试(平台并发槽位竞争)
 CLOSE_RETRIES = 3
+PROVIDER_FAILURE_RETRIES = 2  # 0-turn+报错(provider 失败)的会话级重开次数
+
+
+class ProviderFailure(Exception):
+    """provider 失败(0-turn 会话+报错)耗尽重试 — driver 据此计数熔断(exit 3)。
+
+    2026-09-08 事故:pi 对 provider 400 只发 stopReason=error 的收尾消息,
+    编排层误作"正常完成"静默烧题库(280 run/0 flag/63 题)。本异常把
+    "LLM 上游坏了"从普通未解出中区分出来,由 driver 决定熔断。
+    """
+
 
 __all__ = ["solve_one", "build_task", "_prioritize", "LiveReporter", "make_live_hooks",
-           "START_MAX_RETRIES", "CLOSE_RETRIES"]
+           "START_MAX_RETRIES", "CLOSE_RETRIES", "PROVIDER_FAILURE_RETRIES", "ProviderFailure"]
 
 
 # ── 实时监视报告器(重推导 _live_set,单例改注入式) ────────────
@@ -277,8 +288,20 @@ async def solve_one(
                   transcript_path=transcript_path,
                   model=getattr(cfg, "model", ""))
         # pi 会话同步阻塞可达 ~1500s:必须放线程,禁止直接 await
-        result = await _solve_in_thread(solver_backend, prompt, workdir, cfg,
-                                        on_fact, on_event, transcript_path)
+        # provider 失败(0-turn+报错,pi 表象 err=none)重开至多 2 次:
+        # provider 瞬断/路由抽风不应把整题让掉;真 bug 会连败烧重试预算后暴露
+        result = None
+        for session_no in range(PROVIDER_FAILURE_RETRIES + 1):
+            result = await _solve_in_thread(solver_backend, prompt, workdir, cfg,
+                                            on_fact, on_event, transcript_path)
+            if not result.provider_failure or session_no >= PROVIDER_FAILURE_RETRIES:
+                break
+            backoff = 5.0 * (session_no + 1)
+            log.warning("provider failure on %s (turns=0, %s) — retrying in %.0fs (%d/%d)",
+                        code, (result.error or "")[:120], backoff,
+                        session_no + 1, PROVIDER_FAILURE_RETRIES)
+            _live_set(phase="solving", error=head_text(result.error))
+            await _async_sleep(backoff)
 
         # session 结束:压缩 transcript,去掉 message_update 流式增量(占 92% 体积)
         # 压缩前先让 obs 中继把本 run 未读字节排干(压缩会重写文件,行内信息零丢失依赖此序)
@@ -321,12 +344,21 @@ async def solve_one(
             else:
                 log.info("flag INCORRECT on %s: %s", code, cand[:40])
 
-        log.info("session done on %s: %d turns, %.0fs, %d candidate(s), %d accepted",
-                 code, result.turns, result.duration_s, len(result.flags), len(accepted))
+        log.info("session done on %s: %d turns, %.0fs, %d candidate(s), %d accepted%s",
+                 code, result.turns, result.duration_s, len(result.flags), len(accepted),
+                 f", error={head_text(result.error, 120)}" if result.error else "")
+        if result.provider_failure:
+            # 会话级重试已耗尽仍 0-turn+报错:向上抛,driver 计 streak 熔断。
+            # close 仍走 finally(平台实例不泄漏),只是不再进入提交流程。
+            raise ProviderFailure(
+                f"{code}: {result.turns} turns after {PROVIDER_FAILURE_RETRIES + 1} "
+                f"sessions, last error: {head_text(result.error or '', 200)}")
         _live_set(phase="done", accepted=len(accepted),
                   flags_found=len(result.flags),
                   error=head_text(result.error) if result.error else "")
         return False, accepted
+    except ProviderFailure:
+        raise  # 熔断信号直达 driver,不得被兜底 except 吞掉
     except Exception:
         log.exception("solve_one error on %s", code)
         return False, accepted

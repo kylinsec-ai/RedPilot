@@ -377,6 +377,18 @@ class PiAgentBackend(SolverBackend):
 
                         # ── 终态 ──
                         elif event_type in ("agent_end", "turn_end"):
+                            # provider 失败上游只落在收尾消息的 stopReason=error +
+                            # errorMessage(pi 不发顶层 error 事件,漏读则 0-turn
+                            # 会话以 err=none 表象完成 → 编排层静默烧题库)。
+                            end_msgs = event.get("messages") or []
+                            last_msg = end_msgs[-1] if isinstance(end_msgs, list) and end_msgs else {}
+                            if isinstance(last_msg, dict) \
+                                    and last_msg.get("stopReason") == "error" \
+                                    and last_msg.get("errorMessage"):
+                                if not result.error:
+                                    result.error = str(last_msg["errorMessage"])
+                                log.warning("pi stopReason=error: %s", result.error[:200])
+                                _emit("error", {"error": head_text(result.error)})
                             if text_buf:
                                 all_output_parts.append(text_buf)
                                 _emit("text", {"preview": tail_text(text_buf, ASSISTANT_PREVIEW_MAX)})

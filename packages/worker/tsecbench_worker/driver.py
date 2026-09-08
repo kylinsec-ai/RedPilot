@@ -41,13 +41,14 @@ from .relay import maybe_start_relay
 from .roster import RosterPoller
 from .settings import WorkerSettings, _parse_status_port
 from .solver import create_solver, touch_heartbeat
-from .orchestration import LiveReporter, _prioritize, solve_one
+from .orchestration import LiveReporter, ProviderFailure, _prioritize, solve_one
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("tsecbench_worker.driver")
 
 CYCLE_SLEEP = 30          # 一轮刷完后的等待(秒)
 IDLE_SLEEP = 60           # 无待解题时的轮询间隔(秒)
+PROVIDER_FAILURE_EXIT_STREAK = 3  # 连续 N 题 provider 失败 → exit 3 熔断
 
 
 # amain() 进入时填充:心跳线程据此探测事件循环活性(卡死 → os._exit(4))
@@ -63,6 +64,7 @@ async def amain(settings: WorkerSettings, cfg: SolverConfig, solver_backend) -> 
     reporter = LiveReporter(_LIVE, _BUS)
     submitted: dict[str, set[str]] = {}
     solved_ever: set[str] = set()
+    provider_fail_streak = 0  # 连续 provider 失败(0-turn+报错)计数,见循环内熔断
     try:
         async with TSecBenchmarkAsync(base_url=settings.benchmark_base_url,
                                       token=settings.benchmark_token) as client:
@@ -95,14 +97,33 @@ async def amain(settings: WorkerSettings, cfg: SolverConfig, solver_backend) -> 
                             workdir_root=settings.workdir,
                             flag_format=settings.flag_format,
                             submitted=submitted)
+                    except ProviderFailure as e:
+                        # 会话级重试耗尽仍 0-turn+报错:计连续 streak,达阈值熔断。
+                        # 说明 LLM 上游坏了而非题目难——继续循环只会静默烧完
+                        # roster(2026-09-08 事故:280 run/0 flag/63 题全烧)。
+                        # exit 3 复用"瞬断自动拉起"语义,给 provider/网络恢复留窗口。
+                        provider_fail_streak += 1
+                        log.error("provider failure streak %d/%d on %s: %s",
+                                  provider_fail_streak, PROVIDER_FAILURE_EXIT_STREAK,
+                                  ch.unique_code, e)
+                        solved, accepted = False, []
                     except KeyboardInterrupt:
                         raise
                     except Exception:
                         log.exception("unexpected error on %s", ch.unique_code)
+                        provider_fail_streak = 0
                         solved, accepted = False, []
+                    else:
+                        provider_fail_streak = 0
                     if solved:
                         solved_ever.add(ch.unique_code)
                         log.info("=== solved %s (%d flag(s)) ===", ch.unique_code, len(accepted))
+                    if provider_fail_streak >= PROVIDER_FAILURE_EXIT_STREAK:
+                        log.critical(
+                            "%d consecutive challenges ended provider-failure — "
+                            "LLM upstream is down; exiting 3 for container restart",
+                            provider_fail_streak)
+                        sys.exit(3)
 
                 # 一轮全部会话已关 → 回 idle(空 code,同上:不残留 'closing')
                 _reporter_set(phase="idle", challenge_code="", error="")

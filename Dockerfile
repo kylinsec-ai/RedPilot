@@ -8,7 +8,7 @@ FROM tsecbench/kali:latest
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    NODE_VERSION=20.18.1 \
+    NODE_VERSION=22.23.2 \
     LANG=C.UTF-8
 
 # ── 1. 配置国内镜像源 (pip) ──

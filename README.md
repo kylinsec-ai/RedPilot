@@ -73,6 +73,21 @@ container_port?, docker_network?}]}]}`,或直接传对象/数组;`TSECBENCH_TASK
 docker build -f Dockerfile.base -t tsecbench/kali:latest .
 ```
 
+### 升级 pi(必须保持最新)
+
+镜像内 `npm install -g @earendil-works/pi-coding-agent` 不钉版本——**重建镜像即取最新**。
+pi 新版发布后的标准动作(2026-09-08 事故教训:pi 0.74.2 不发 Console Go 强制的
+`x-opencode-session` 头,provider 400 被 pi 表象成 0-turn/err=none 会话,静默烧题库;
+修复在 0.75.5,而 0.85.1 已要求 Node ≥22.19):
+
+1. `npm view @earendil-works/pi-coding-agent version` + 读 CHANGELOG(重点:engines/Node 要求、compat/session 头、tools 协议变化)。
+2. pi 的 `engines.node` 升了就同步改 `Dockerfile.base` / `Dockerfile` 的 `NODE_VERSION`(两处必须一致——两层都各自 tar 解压覆盖 `/usr/local`)。
+3. `docker build -f Dockerfile.base -t tsecbench/kali:latest . && docker build -f Dockerfile -t tsecbench-adapter:latest .`
+4. 回归:`docker run --rm --env-file .env tsecbench-adapter:latest pi --version`、
+   `docker run --rm --env-file .env tsecbench-adapter:latest pi --print --model $SOLVER_MODEL "Reply with exactly: OK"`(应输出 OK)、
+   起 worker 后首题 turns>0。
+5. 提交本次版本钉(Dockerfile 的 NODE_VERSION),复盘记录距上次重建天数。
+
 ```bash
 cp .env.example .env        # 填 BENCHMARK_TOKEN/BASE_URL/DEEPSEEK_API_KEY
 docker compose up -d --build
