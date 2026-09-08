@@ -456,8 +456,12 @@ def serve_forever_in_thread(live, bus, port: int, *,
 
     workdir = workdir or os.getenv("ADAPTER_WORKDIR", "/work")
     if web_dir is None:
-        web_dir = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                "..", "..", "..", "web"))
+        # 环境变量优先(compose/镜像设 OBSERVABILITY_WEB 或按 /app/web 布局);
+        # 回退按本文件相对宿主源树定位(packages/obs/obs → ../../../web)
+        web_dir = (os.getenv("OBSERVABILITY_WEB", "").strip()
+                   or os.getenv("STATUS_WEB_DIR", "").strip()
+                   or os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                    "..", "..", "..", "web")))
     try:
         srv = ThreadingHTTPServer(
             ("0.0.0.0", port), _make_handler(live, bus, workdir, web_dir, poller, digest))

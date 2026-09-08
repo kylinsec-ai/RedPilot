@@ -77,6 +77,8 @@ services:
       # ── 运行 ──
       ADAPTER_WORKDIR: /work
       ADAPTER_FLAG_FORMAT: ${ADAPTER_FLAG_FORMAT:-flag{...}}
+      # 本地态势台 SPA 目录(挂载的 web 构建产物)
+      OBSERVABILITY_WEB: /app/web
       # ── 人读态势台（只读 :8080；STATUS_PORT=0 禁用求解器内服务，
       #    但 0 不能出现在下方 ports 映射里（compose 校验直接失败，容器起不来），
       #    禁用时请一并注释掉整个 ports 段）──
