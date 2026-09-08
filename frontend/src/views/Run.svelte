@@ -4,7 +4,6 @@
     fetchRunEvents,
     fetchRunTimeline,
   } from "../lib/api";
-  import { fmtClock } from "../lib/format";
   import { goChallenge } from "../lib/route.svelte";
   import { RUN_STATUS_LABEL } from "../lib/types";
   import type {
@@ -63,22 +62,30 @@
   }
 
   /**
-   * 自调度:运行中(running)每 4s 追一次(事件随 worker 推送增长),其余单次即止。
+   * 自调度:running 每 4s 追一次(事件随 worker 推送增长),终态单次即止。
+   * 只依赖 runId(run 切换时由 {#key} 重建本组件):detail/entries 等更新
+   * 不再重跑 effect —— 否则每次刷新都会 cancel 计时器立刻再刷,退化成忙轮询。
+   * 首次刷新失败(detail 仍 null)时 2s 重试:瞬时失败不杀死轮询(与 Challenge 同法)。
    */
   $effect(() => {
+    runId;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const tick = async () => {
       try {
-        if (!document.hidden) await refresh();
-        fatal = "";
+        if (!document.hidden) {
+          await refresh();
+          fatal = "";
+        }
+        // 切后台跳过 fetch 时不碰 fatal:旧报错留到下次成功刷新再清
       } catch (e) {
         if (!detail) fatal = String(e);
       }
       if (stopped) return;
-      if (detail?.status === "running") {
-        timer = setTimeout(() => void tick(), 4000);
-      }
+      // async 之后的读取不构成 effect 依赖:由链式计时器自己决定是否续期
+      const s = detail?.status;
+      if (s === "running") timer = setTimeout(() => void tick(), 4000);
+      else if (s === undefined) timer = setTimeout(() => void tick(), 2000);
     };
     void tick();
     return () => {
@@ -243,9 +250,6 @@
             <span class="flex-none tabular-nums text-dim">{e.seq}</span>
             <span class="flex-none rounded border border-line2 px-[6px] py-px text-[10.5px] text-cyan">
               {e.type}
-            </span>
-            <span class="truncate text-mut">
-              {fmtClock(e.ts ? e.ts * 1000 : null) || "—"}
             </span>
           </summary>
           <pre

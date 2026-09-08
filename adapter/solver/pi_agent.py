@@ -201,6 +201,9 @@ class PiAgentBackend(SolverBackend):
             STALL_TIMEOUT = 480.0
 
         for attempt in range(max_retries + 1):
+            # 每次尝试从干净错误态开始:上一轮 stall/timeout/异常不得污染成功轮
+            # (否则 driver 的 closing 帧会把重试后部分成功的 run 关成 failed)
+            result.error = None
             try:
                 proc = subprocess.Popen(
                     cmd,
@@ -251,6 +254,7 @@ class PiAgentBackend(SolverBackend):
                     # → 杀掉子进程并重开会话（置 need_retry,外层 for attempt 重试）
                     stall_deadline = time.monotonic() + STALL_TIMEOUT
                     need_retry = False
+                    stopped_by_us = False  # 本轮是否我们主动 terminate/kill(区分外部 SIGKILL/SIGTERM)
                     last_progress_emit = 0.0  # tool_execution_update 节流：最多 1/s
                     last_hb = 0.0  # 心跳/落盘节流:行级突发不再 syscall 风暴
                     last_flush = 0.0
@@ -265,16 +269,18 @@ class PiAgentBackend(SolverBackend):
                     while True:
                         ready, _, _ = select.select([proc.stdout], [], [], 30)
                         if not ready:
-                            # 无输出分支同样执行 session deadline,静默 pi 不再绕过时长上限
+                            # 无输出分支同样执行 session deadline,静默 pi 不再绕过时长上限。
+                            # 与有输出分支同语义:预算耗尽即收尾(SIGTERM,不 kill+重试)——
+                            # 静默不足 30s 也可能只是模型在憋大招;真卡死由 stall 看门狗击毙
                             if time.monotonic() > deadline:
-                                log.warning("pi session timeout after %ds (silent)", solver_cfg.session_seconds)
+                                log.warning("pi session timeout after %ds (silent)",
+                                            solver_cfg.session_seconds)
                                 _emit("system", {"phase": "timeout",
                                                  "detail": f"session_seconds={solver_cfg.session_seconds}"})
-                                proc.kill()
-                                try:
-                                    proc.wait(timeout=10)
-                                except subprocess.TimeoutExpired:
-                                    pass
+                                proc.terminate()
+                                stopped_by_us = True
+                                # 零输出的预算耗尽同样记错并重试:否则空 transcript
+                                # 以 err=None 收尾,调用方误作正常完成(重试拿新鲜 deadline)
                                 result.error = "session_timeout"
                                 need_retry = True
                                 break
@@ -283,6 +289,7 @@ class PiAgentBackend(SolverBackend):
                                             STALL_TIMEOUT)
                                 _emit("system", {"phase": "stalled", "detail": f"no output {STALL_TIMEOUT:.0f}s"})
                                 proc.kill()
+                                stopped_by_us = True
                                 proc.wait(timeout=10)
                                 result.error = "stalled_no_output"
                                 need_retry = True
@@ -290,17 +297,9 @@ class PiAgentBackend(SolverBackend):
                                 break
                             continue
                         # 有数据分支同样执行 stall 检查:纯空行滴答让 select 持续
-                        # 可读、从不进入上面的无输出分支,不在这里查就永远查不到
-                        if time.monotonic() > stall_deadline:
-                            log.warning("pi session stalled %ds (no output) — killing and retrying",
-                                        STALL_TIMEOUT)
-                            _emit("system", {"phase": "stalled", "detail": f"no output {STALL_TIMEOUT:.0f}s"})
-                            proc.kill()
-                            proc.wait(timeout=10)
-                            result.error = "stalled_no_output"
-                            need_retry = True
-                            stall_deadline = time.monotonic() + STALL_TIMEOUT
-                            break
+                        # 可读、从不进入上面的无输出分支,不在这里查就永远查不到。
+                        # 顺序:先读后判 —— 结束静默的内容必须先取走,看门狗不得
+                        # 在读取前 kill(否则刚过 stall 阈值到达的答案连读的机会都没有)。
                         try:
                             chunk = os.read(stdout_fd, 65536)
                         except BlockingIOError:
@@ -314,6 +313,20 @@ class PiAgentBackend(SolverBackend):
                         elif chunk is not None and not eof_seen:
                             eof_seen = True
                             out_buf += out_decoder.decode(b"", final=True)
+                        # 本次没读到实质内容(空行滴答/EAGAIN)且看门狗超时 → 击毙。
+                        # EOF(b"") 除外:进程自己退出不算 stall
+                        if (chunk is None or (chunk and not chunk.strip())) \
+                                and time.monotonic() > stall_deadline:
+                            log.warning("pi session stalled %ds (no output) — killing and retrying",
+                                        STALL_TIMEOUT)
+                            _emit("system", {"phase": "stalled", "detail": f"no output {STALL_TIMEOUT:.0f}s"})
+                            proc.kill()
+                            stopped_by_us = True
+                            proc.wait(timeout=10)
+                            result.error = "stalled_no_output"
+                            need_retry = True
+                            stall_deadline = time.monotonic() + STALL_TIMEOUT
+                            break
                         if "\n" in out_buf:
                             line, out_buf = out_buf.split("\n", 1)
                         elif eof_seen:
@@ -343,6 +356,7 @@ class PiAgentBackend(SolverBackend):
                             _emit("system", {"phase": "timeout",
                                              "detail": f"session_seconds={solver_cfg.session_seconds}"})
                             proc.terminate()
+                            stopped_by_us = True
                             break
 
                         try:
@@ -430,7 +444,12 @@ class PiAgentBackend(SolverBackend):
                     proc.wait(timeout=30)
                     with stderr_lock:
                         stderr_preview = list(stderr_tail)
-                    if proc.returncode and stderr_preview:
+                    # 我们自己发的 SIGTERM(-15)/SIGKILL(-9)(deadline/stall)不算异常退出:
+                    # 已分别发过 timeout/stalled 事件,再发 stderr 错误相位会把正常收尾
+                    # 误标成 error(rc=-15 且 pi 曾有常规 stderr 输出时必触发)。
+                    # 外部击毙(OOM 等,非我们发的)不在此列:照常发 stderr 保留 crash 线索。
+                    if proc.returncode and (proc.returncode not in (-9, -15)
+                                            or not stopped_by_us) and stderr_preview:
                         _emit("system", {"phase": "stderr",
                                          "detail": tail_text("\n".join(stderr_preview), 500)})
 

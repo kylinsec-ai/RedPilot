@@ -8,24 +8,22 @@ from __future__ import annotations
 
 import hmac
 import logging
-import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
-from .schema import EventsIn, LiveIn, PingIn, RosterIn, RunCloseIn
-from .store import ACTIVE_PHASES
+from .schema import (ACTIVE_PHASES, EventsIn, LiveIn, PingIn, RosterIn, RunCloseIn,
+                     require_run_id)
+from .store import ObsStore
 
 log = logging.getLogger("obs.ingest")
 
 router = APIRouter(prefix="/api/internal", tags=["internal"])
 
-_RUN_ID_RX = re.compile(r"^[0-9a-f]{32}$")
 _HEADER = "X-Observability-Token"
 
 # live 快照的 idle 守卫:worker 重新上线却残留 running run → 重启残留
 _IDLE_ERROR = "worker restarted idle"
-_SWITCH_ERROR = "worker switched challenge"
 
 
 def _check_token(request: Request) -> None:
@@ -37,7 +35,7 @@ def _check_token(request: Request) -> None:
         raise HTTPException(401, "bad or missing token")
 
 
-def _require_store(request: Request):
+def _require_store(request: Request) -> ObsStore:
     return request.app.state.store
 
 
@@ -48,11 +46,8 @@ async def post_live(body: LiveIn, request: Request,
     store = _require_store(request)
     snap = body.snapshot
     phase = snap.get("phase") or ""
-
-    async def _guard():
-        prev = await run_in_threadpool(store.put_live, body.worker_id, snap)
-        if not prev:
-            return
+    prev = await run_in_threadpool(store.put_live, body.worker_id, snap)
+    if prev:
         prev_phase = prev.get("phase") or ""
         code = snap.get("challenge_code") or ""
         prev_code = prev.get("challenge_code") or ""
@@ -70,8 +65,6 @@ async def post_live(body: LiveIn, request: Request,
             if closed:
                 log.info("worker %s switched %s → %s, interrupted stale run(s): %s",
                          body.worker_id, prev_code, code, closed)
-
-    await _guard()
     bus = getattr(request.app.state, "bus", None)
     if bus is not None:  # SSE:每帧 = 一次 live POST 的 {**snapshot, kind}
         await bus.publish({**snap, "kind": body.kind})
@@ -81,19 +74,16 @@ async def post_live(body: LiveIn, request: Request,
 @router.post("/events")
 async def post_events(body: EventsIn, request: Request,
                       _auth=Depends(_check_token)) -> dict:
-    """事件流批插入:UNIQUE(run_id,seq) 幂等;全重放新增=0。"""
+    """事件流批插入:UNIQUE(run_id,seq) 幂等;全重放新增=0。建行与批插单事务。"""
     store = _require_store(request)
-    if not _RUN_ID_RX.fullmatch(body.run_id):
-        raise HTTPException(400, "bad run_id")
+    require_run_id(body.run_id)
     if not body.events:
         return {"ok": True, "inserted": 0}
-    started = min((e.ts for e in body.events if e.ts is not None), default=None)
-    new_run = await run_in_threadpool(store.ensure_run, body.run_id, body.worker_id,
-                                      body.challenge_code, body.model, started)
-    rows = [(e.seq, e.type, e.ts, e.payload) for e in body.events]
-    inserted = await run_in_threadpool(store.insert_events, body.run_id, body.worker_id,
-                                       body.challenge_code, rows)
-    if new_run:
+    rows = [(e.seq, e.type, e.payload) for e in body.events]
+    inserted, created = await run_in_threadpool(
+        store.append_events, body.run_id, body.worker_id, body.challenge_code,
+        rows, body.model)
+    if created:
         log.info("run %s open (worker=%s code=%s, %d events)", body.run_id,
                  body.worker_id, body.challenge_code, inserted)
     return {"ok": True, "inserted": inserted}
@@ -104,8 +94,7 @@ async def post_run_close(body: RunCloseIn, request: Request,
                          _auth=Depends(_check_token)) -> dict:
     """关闭 run;终态幂等,无行静默忽略(relay 全序保证事件先于 close 到达)。"""
     store = _require_store(request)
-    if not _RUN_ID_RX.fullmatch(body.run_id):
-        raise HTTPException(400, "bad run_id")
+    require_run_id(body.run_id)
     closed = await run_in_threadpool(
         store.close_run, body.run_id,
         status=body.status, error=body.error, turns=body.turns,

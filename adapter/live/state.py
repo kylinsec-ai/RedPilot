@@ -43,6 +43,25 @@ def ensure_dir(path: str) -> None:
         pass
 
 
+def atomic_write_json(path: str, obj) -> bool:
+    """tmp + os.replace 原子写（drivers/roster 亦复用此单一实现）。成功返回 True。
+
+    tmp 名带线程 + 纳秒(同进程并发 save 不互踩);失败返回 False 由调用方
+    决定重试/记录 —— 静默吞掉会让节流窗口冻结而无任何线索。
+    """
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}.{time.monotonic_ns()}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
 def summarize_args(args, max_len: int = ARGS_SUMMARY_MAX) -> str:
     """Truncate args JSON + redact secret-ish values (never ships full creds)."""
     if isinstance(args, dict):  # 先裁大 value，避免全量 dumps 巨型参数
@@ -54,9 +73,10 @@ def summarize_args(args, max_len: int = ARGS_SUMMARY_MAX) -> str:
     except Exception:
         s = str(args)
     if isinstance(args, str):
-        # 大字符串先截断再跑正则:含嵌套量词的 _SECRET_PAIR_RX 扫全量 MB 级文本会卡住求解线程
-        if len(args) > 65536:
-            args = args[:65536] + "…"
+        # 大字符串先截断再跑正则:含嵌套量词的 _SECRET_PAIR_RX 扫全量 MB 级文本会卡住求解线程。
+        # 注意必须裁 s 本身 —— args 与 s 是同一字符串(str 不可变,截 args 是死代码)
+        if len(s) > 65536:
+            s = s[:65536] + "…"
         try:
             s = _SECRET_PAIR_RX.sub(r'\1"***"', s)
         except Exception:
@@ -104,7 +124,9 @@ class LiveState:
         if state_path:
             ensure_dir(state_path)
 
-    def update(self, _turns_inc: int = 0, _immediate: bool = False, **fields) -> dict:
+    def update(self, _turns_inc: int = 0, **fields) -> dict:
+        """合并字段并节流落地(每次调用刷新 updated_at/elapsed_s;不保证落盘 ——
+        边界事件的强制落盘由调用方随 flush() 完成,见 benchmark_driver._FLUSH_KINDS)。"""
         with self._lock:
             if _turns_inc:
                 self._data["turns"] = int(self._data.get("turns", 0)) + _turns_inc
@@ -113,7 +135,7 @@ class LiveState:
             if self._data.get("started_at"):
                 self._data["elapsed_s"] = int(self._data["updated_at"] - self._data["started_at"])
             snap = dict(self._data)
-        self.save(force=_immediate)
+        self.save()
         return snap
 
     def snapshot(self) -> dict:
@@ -121,51 +143,18 @@ class LiveState:
             return dict(self._data)
 
     def save(self, force: bool = False) -> None:
-        """节流落地；force=True 用于 tool_end/lifecycle/error 等边界事件"""
+        """节流落地；force=True 用于 tool_end/lifecycle/error 等边界事件。
+        失败(如目录不可写)不推进 _last_save —— 下次 throttled save 仍可重试,
+        不至于静默冻结一个节流窗口。"""
         if not self._path:
             return
         now = time.monotonic()
         if not force and now - self._last_save < SAVE_MIN_INTERVAL:
             return
-        try:
-            with self._lock:
-                snap = dict(self._data)
-            # tmp 名带线程 + 纳秒(同进程并发 save 不互踩);失败不推进 _last_save,
-            # 下次 throttled save 仍可重试,不至于静默冻结一个节流窗口
-            tmp = f"{self._path}.tmp.{os.getpid()}.{threading.get_ident()}.{time.monotonic_ns()}"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(snap, f, ensure_ascii=False)
-            os.replace(tmp, self._path)
+        with self._lock:
+            snap = dict(self._data)
+        if atomic_write_json(self._path, snap):
             self._last_save = time.monotonic()
-        except Exception:
-            pass
 
     def flush(self) -> None:
         self.save(force=True)
-
-    # ── pi event helpers（tool_end/lifecycle 类边界事件立即落地）──
-    def on_tool_start(self, tool_name: str, args) -> dict:
-        return self.update(
-            _turns_inc=1,
-            phase="solving",
-            current_tool=tool_name or "",
-            current_args_summary=summarize_args(args or {}),
-        )
-
-    def on_tool_progress(self, preview: str) -> dict:
-        return self.update(last_output_tail=tail_text(preview, OUTPUT_TAIL_MAX))
-
-    def on_tool_end(self, tool_name: str, out: str, flags: int = 0) -> dict:
-        return self.update(
-            _immediate=True,
-            last_tool=tool_name or "",
-            last_output_tail=tail_text(out or "", OUTPUT_TAIL_MAX),
-            current_tool="",
-            flags_found=flags,
-        )
-
-    def on_text(self, preview: str, thinking_len: int = 0) -> dict:
-        fields: dict = {"assistant_preview": tail_text(preview, ASSISTANT_PREVIEW_MAX)}
-        if thinking_len:
-            fields["thinking_len"] = thinking_len
-        return self.update(**fields)

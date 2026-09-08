@@ -43,3 +43,11 @@ def test_plain_string_passthrough():
     s = summarize_args("token: abc123 " * 500)  # 大字符串先截断再正则(防灾难性回溯)
     assert len(s) == ARGS_SUMMARY_MAX + 1
     assert s.endswith("…")
+
+
+def test_large_string_truncation_before_regex():
+    huge_str = '{"token":"secret_val"}' + "a" * 100000
+    s = summarize_args(huge_str, max_len=100)
+    assert len(s) <= 101
+    assert '"***"' in s
+    assert "secret_val" not in s

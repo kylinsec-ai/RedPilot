@@ -30,6 +30,48 @@ RUN set -eux; arch="$(uname -m)"; case "$arch" in x86_64) NA=x64;; aarch64|arm64
 # 自定义/覆盖 provider 时以卷挂载 ~/.pi/agent/models.json(官方格式),勿烤进镜像。
 # 内置目录条目数计入下述 BUILD_SELFCHECK(非门禁,超时 5s)。
 
+# ── 3.5 题面工具 + 浏览器自动化 ──
+# kali-linux-headless 已含 nmap/sqlmap/ffuf/gobuster 等;这里补浏览器与按题面场景
+# 的常用工具(S3/对象存储、目录爆破、数据库客户端、crypto 库等)。
+# playwright 版本策略:不用 Debian 拆分包(kali-rolling 的 node-playwright 1.38 落后
+# python3-playwright 1.55 → driver 握手缺 deviceDescriptors,实测 KeyError),改 pip
+# 自包含 wheel(内置 node driver)。chromium 由 apt 提供(playwright CDN 不可达,捆绑
+# 浏览器下载必失败),脚本经 executable_path=/usr/bin/chromium 使用(见 tools/ 与下方
+# 冒烟;root 运行需 --no-sandbox)。
+RUN set -eu; \
+    apt-get update; \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+        chromium \
+        dirsearch feroxbuster nuclei \
+        chisel gdb foremost sshpass steghide \
+        redis-tools s3cmd awscli \
+        python3-pycryptodome python3-sympy python3-gmpy2 python3-z3 python3-pwntools \
+        jq qemu-user-static ltrace strace python3-filebytes; \
+    # 移除 Debian 拆分版 playwright(版本错配 1.38 driver vs 1.55 py → KeyError),pip 装
+    # 自包含 wheel 到 /usr/local(dist-packages 路径无遮蔽);连带移除 node-playwright;
+    # theharvester(唯一反向依赖)保留,其 playwright 依赖失效仅在其被调用时报错,本题集不用。
+    apt-get -y remove python3-playwright node-playwright; \
+    rm -rf /var/lib/apt/lists/*; \
+    ln -sf /usr/local/bin/node /usr/bin/node; \
+    pip3 install --break-system-packages --no-cache-dir "playwright==1.55.0"; \
+    # ropper: 用 apt 的 python3-filebytes(依赖),--no-deps 避开源码编译
+    pip3 install --break-system-packages --no-cache-dir --no-deps ropper; \
+    echo "[build] tools layer done"
+
+# ── 3.6 浏览器冒烟(不 gate 构建,结果进日志) ──
+RUN python3 - <<'PY' || echo "[build] WARN: playwright smoke failed (see above)"
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path="/usr/bin/chromium", headless=True,
+                          args=["--no-sandbox", "--disable-dev-shm-usage"])
+    pg = b.new_page()
+    pg.goto("data:text/html,<title>pw-ok</title>")
+    ok = pg.title() == "pw-ok"
+    b.close()
+print("[build] playwright smoke:", "OK" if ok else "title mismatch")
+assert ok
+PY
+
 # ── 4. Python 依赖 ──
 COPY requirements.txt /app/requirements.txt
 RUN pip3 install --break-system-packages -r /app/requirements.txt
@@ -37,13 +79,16 @@ RUN pip3 install --break-system-packages -r /app/requirements.txt
 # ── 5. 复制适配器代码 ──
 COPY adapter /app/adapter
 COPY drivers /app/drivers
+COPY tools /opt/tools
+COPY skills /root/.pi/agent/skills
 COPY web /app/web
 COPY entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh /opt/tools/*.py
 
 # ── 6. 自检 ──
 RUN set -eu; mkdir -p /opt/tools; log=/opt/tools/BUILD_SELFCHECK.txt; : > "$log"; missing=""; \
-    for b in node python3 curl wget git nmap sqlmap hydra socat ncat pi; do \
+    for b in node python3 curl wget git nmap sqlmap hydra socat ncat pi \
+             chromium dirsearch feroxbuster nuclei aws redis-cli; do \
         if command -v "$b" >/dev/null 2>&1; then echo "OK   $b" >>"$log"; \
         else echo "MISS $b" >>"$log"; missing="$missing $b"; fi; done; \
     echo "==== SELF-CHECK ====" >>"$log"; \

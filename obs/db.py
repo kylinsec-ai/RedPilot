@@ -11,7 +11,8 @@ import os
 import sqlite3
 from pathlib import Path
 
-# 每次迁移 = 一个语句列表(单事务原子)
+from .schema import RUN_STATUSES
+
 _MIGRATION_1 = [
     # ── runs: 每次 solve_one 一条(同 code 可多 run 的历史累积) ──
     """
@@ -21,10 +22,9 @@ _MIGRATION_1 = [
       challenge_code  TEXT NOT NULL,
       model           TEXT NOT NULL DEFAULT '',
       status          TEXT NOT NULL DEFAULT 'running'
-                      CHECK (status IN ('running','solved','done','failed','interrupted')),
+                      CHECK (status IN (%(statuses)s)),
       started_at      REAL NOT NULL,             -- epoch s
       ended_at        REAL,
-      duration_s      REAL,
       error           TEXT,                      -- close 载荷(relay 截断 ≤2000)
       turns           INTEGER,                   -- 可空;close 缺省按 tool_execution_start 计数回填
       sessions        INTEGER,                   -- 可空;close 缺省按 type='session' 回填
@@ -32,7 +32,7 @@ _MIGRATION_1 = [
       flags_accepted  TEXT,                      -- JSON list[str](=FLAG 文件同信任域)
       updated_at      REAL NOT NULL
     );
-    """,
+    """ % {"statuses": ", ".join(repr(s) for s in RUN_STATUSES)},
     """
     CREATE INDEX IF NOT EXISTS idx_runs_challenge ON runs(challenge_code, started_at DESC);
     """,
@@ -45,25 +45,17 @@ _MIGRATION_1 = [
     """
     CREATE INDEX IF NOT EXISTS idx_runs_worker    ON runs(worker_id, started_at DESC);
     """,
-    # ── events: 原文事件行全量入库(worker 侧已丢 message_update);id 全局单调=摄取序 ──
+    # ── events: 原文事件行全量入库(worker 侧已丢 message_update);id 全局单调=摄取序。
+    #    run 级信息(code/worker)只存 runs 行,events 经 run_id 关联 —— 避免每行冗余副本漂移。 ──
     """
     CREATE TABLE IF NOT EXISTS events (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
       run_id          TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
       seq             INTEGER NOT NULL,          -- run 内单调(过滤流行序号),0 起
-      worker_id       TEXT NOT NULL,             -- 冗余:免 join 的 worker/全局检索(单写者不变式)
-      challenge_code  TEXT NOT NULL,             -- 同上;transcript-tail/维护 DELETE
       type            TEXT NOT NULL,             -- 摄取时解析;payload 为权威
-      ts              REAL,                      -- epoch s(worker ship 时刻;无则 NULL)
       payload         TEXT NOT NULL,             -- 原文 JSON 行(与 transcript.jsonl 同信任域)
-      UNIQUE (run_id, seq)
+      UNIQUE (run_id, seq)                       -- 幂等地基;其索引同时服务 run 内 seq 检索
     );
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_events_run      ON events(run_id, seq);
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_events_challenge ON events(challenge_code, id);
     """,
     # ── live_state: 兼作 worker 注册表(PK 即注册;首份 live/首 ping 建档) ──
     """
@@ -76,18 +68,39 @@ _MIGRATION_1 = [
     # ── roster_snapshot: 每 worker 一行(worker 60s 全量覆盖;读侧合并见 store.roster_merged) ──
     """
     CREATE TABLE IF NOT EXISTS roster_snapshot (
-      worker_id         TEXT PRIMARY KEY,
-      fetched_at        REAL,
-      stale             INTEGER NOT NULL DEFAULT 1,
-      platform_error    TEXT,
-      platform_disabled INTEGER NOT NULL DEFAULT 0,
-      payload           TEXT,                    -- 完整 5 键快照 JSON {fetched_at,stale,...,challenges}
-      updated_at        REAL NOT NULL
+      worker_id  TEXT PRIMARY KEY,
+      payload    TEXT NOT NULL,                  -- 完整 5 键快照 JSON {fetched_at,stale,...,challenges}
+      updated_at REAL NOT NULL
     );
     """,
 ]
 
-MIGRATIONS: list[list[str]] = [_MIGRATION_1]
+# ── v2: 重建 events 至 v1 形状 ──
+# 历史背景:早于本迁移框架的 22:03 草稿库带着 extra 列 worker_id/challenge_code(NOT NULL
+# 无默认)与当前 INSERT 四列相撞 → INSERT OR IGNORE 每行静默吞(NOT NULL 违约),post_events
+# 恒回 200 + inserted:0,事件"入库成功"实为零行。迁移幂等:对 v1 新形状的库同样安全
+# (空拷贝后换名);version≥2 自动跳过。载入数据只取 5 列,旧冗余列随 DROP 消失。
+_MIGRATION_2 = [
+    """
+    CREATE TABLE events_v2 (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id          TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+      seq             INTEGER NOT NULL,
+      type            TEXT NOT NULL,
+      payload         TEXT NOT NULL,
+      UNIQUE (run_id, seq)
+    );
+    """,
+    """
+    INSERT INTO events_v2(run_id, seq, type, payload)
+      SELECT run_id, seq, type, payload FROM events ORDER BY id;
+    """,
+    "DROP TABLE events;",
+    "ALTER TABLE events_v2 RENAME TO events;",
+    # 无需再建 idx_events_run:UNIQUE(run_id, seq) 约束自带同键 autoindex(见 v1 注释)
+]
+
+MIGRATIONS: list[list[str]] = [_MIGRATION_1, _MIGRATION_2]
 
 
 def connect(db_path: str | os.PathLike) -> sqlite3.Connection:

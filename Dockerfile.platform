@@ -25,4 +25,6 @@ ENV OBSERVABILITY_DB=/app/data/obs.sqlite3 \
     OBSERVABILITY_WEB=/app/web
 
 EXPOSE 8090
-CMD ["uvicorn", "obs.app:app", "--host", "0.0.0.0", "--port", "8090"]
+# shell 形式以便 OBSERVABILITY_HOST/PORT env 生效(README 文档化的旋钮;
+# exec 保持信号直通)
+CMD ["sh", "-c", "exec uvicorn obs.app:app --host ${OBSERVABILITY_HOST:-0.0.0.0} --port ${OBSERVABILITY_PORT:-8090}"]

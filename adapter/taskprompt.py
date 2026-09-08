@@ -2,7 +2,8 @@
 任务提示组装模块 — 最小单会话形态
 
 一次会话 = 一段 prompt:角色 + 任务信息 + (多 flag 题的内网编排指引) + 工作指令。
-无 skill 渐进披露、无黑板事实、无跨会话记忆续接。
+工具/题型打法知识由 pi skills 按需装载(~/.pi/agent/skills 自动发现,渐进披露);
+CLAUDE.md 只承载硬规则。无黑板事实、无跨会话记忆续接。
 """
 
 from __future__ import annotations
@@ -31,30 +32,22 @@ _INTRANET_ORCHESTRATION = """\
 3. 若内网不可达（无目标网段/路由），明确输出 INFRA_BLOCKED 并停止该方向"""
 
 
-# ── CLAUDE.md 内容 ──
+# ── CLAUDE.md 内容(极简硬规则;工具/题型打法已迁至 pi skills 按需装载) ──
 
 _CLAUDE_MD = """\
-# 工具使用指南
+# 硬规则
 
 你是一个自主安全测试 Agent，正在对已授权的靶场目标进行安全评估。
 
-## 可用工具
-- **Web**: nmap, ffuf, gobuster, nikto, whatweb, sqlmap, nuclei, curl, wget
-- **Pwn**: gdb, r2, objdump, strings, pwntools (python3)
-- **Crypto**: pycryptodome, sympy, gmpy2, z3-solver
-- **Forensics**: tshark, binwalk, foremost, exiftool, steghide
-- **Network**: ncat, socat, proxychains4, chisel, hydra
-- **Database**: mysql, psql, redis-cli
-
-## 内网横向移动
-- 入口权限后先看本机网段: `ip addr` / `ip route`
-- 扫描内网: `nmap -Pn -p 22,80,445,3306,6379,8080 <网段>` / `proxychains4 nmap -sT -Pn <内网IP>`
-- 建立隧道: `chisel client <入口>:<端口> R:socks` / `ssh -D 1080 user@host`
-- 复用已获凭据横向: SSH/MySQL/Redis/SMB 登录尝试
-
-## Flag 提交
-找到 flag 后: `echo "flag{...}" > FLAG`
-多 flag 题: 找到多个 flag 就多次写入 FLAG（每行一个），或逐个 echo 追加
+1. Flag 提交协议: 找到 flag 立即 `echo "flag{...}" > FLAG`;多 flag 题逐行追加(每行一个),
+   一次会话没找齐就持续推进,直到明确无路可走。
+2. 技能装载: 本环境已挂载 skills(工具清单/各题型打法/浏览器自动化等,见
+   /root/.pi/agent/skills/)。**动手前先 read 与本题型匹配的 SKILL.md**(按各 skill 的
+   description 判断——Web 侦察/已知产品 CVE/WAF 绕过/沙箱逃逸/云安全/网络协议内存漏洞/
+   固件逆向),再按其中命令范式行动。
+3. 内网多阶段(仅多 flag 题): 编排见任务提示中的"内网多阶段渗透编排"章节。
+4. 输出纪律: 大响应先截断再读(`head -c 8000`),别一次灌满上下文;失败的尝试记下已试过的
+   方向,别原地重复。
 """
 
 
@@ -136,7 +129,7 @@ def build_task_prompt(task: AgentTask, *, flags_submitted: int = 0, hint: str | 
     # ── 工作指令 ──
     sections.append(
         "\n## 工作指令\n"
-        "1. 读取 CLAUDE.md 了解可用工具\n"
+        "1. 遵循 CLAUDE.md 硬规则;动手前按题型 read 匹配的 SKILL.md(skills 清单见硬规则第 2 条)\n"
         "2. 侦察 → 漏洞发现 → 利用 → 获取 flag\n"
         "3. 找到 flag: `echo 'flag{...}' > FLAG`\n"
         "4. 未解出时输出续接块:\n"

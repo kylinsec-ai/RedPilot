@@ -18,6 +18,7 @@ from fastapi.responses import Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from .digest import fold_rows
+from .schema import RUN_STATUSES, require_run_id
 
 log = logging.getLogger("obs.read")
 
@@ -38,7 +39,6 @@ _ASSET_TYPES = {
 }
 _ASSET_RX = re.compile(r"[A-Za-z0-9._-]{1,120}")
 _VALID_RX = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-_RUN_ID_RX = re.compile(r"^[0-9a-f]{32}$")
 
 
 def _store(request: Request):
@@ -89,11 +89,14 @@ def asset(name: str, request: Request) -> Response:
     p = os.path.join(web_dir, "assets", name)  # name 无分隔符 => 必在 web_dir 内
     try:
         with open(p, "rb") as f:
-            return _no_store(f.read(), _ASSET_TYPES[ext])
+            body = f.read()
     except OSError:
         raise HTTPException(
             404, "web/assets/" + name
             + " not baked (run `cd frontend && npm run build`; commit web/)")
+    # vite 产物名带内容 hash → 不可变缓存;只有 index.html 保持 no-store(开发期热更)
+    return Response(content=body, media_type=_ASSET_TYPES[ext],
+                    headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 # ── 系统 ──
@@ -158,23 +161,18 @@ async def roster(request: Request) -> dict:
 @router.get("/api/challenge")
 async def challenge(code: str = Query(...), request: Request = None) -> dict:
     """单题详情:平台行 + local + flags(取自最近一次含 flags_accepted 的 run);
-    本地无数据返回最小行,不 500。"""
+    行选择与 /api/roster 同一份合并视图(非 local_only 优先)。本地无数据返回最小行,不 500。"""
     code = (code or "").strip()
     _check_code(code)
     store = _store(request)
-    rows = await run_in_threadpool(store.roster_rows)
-    platform_row: dict = {}
-    for r in sorted(rows, key=lambda x: x["fetched_at"] or 0.0, reverse=True):
-        row = r["challenges"].get(code)
-        if row is not None:
-            platform_row = dict(row)
-            break
-    merged = {**platform_row, "unique_code": code}
-    if not platform_row:
-        merged.setdefault("local_only", True)
-    flags = await run_in_threadpool(store.challenge_flags, code)
-    merged["flags"] = flags
-    return merged
+    merged = await run_in_threadpool(store.roster_merged)
+    row = merged["challenges"].get(code)
+    out = dict(row) if row else {}
+    out["unique_code"] = code
+    if not row:
+        out.setdefault("local_only", True)
+    out["flags"] = await run_in_threadpool(store.challenge_flags, code)
+    return out
 
 
 @router.get("/api/transcript")
@@ -207,52 +205,29 @@ async def timeline(code: str = Query(...), after: int = Query(0),
 
 # ── runs 历史 ──
 
-_RUN_STATUSES = ("running", "solved", "done", "failed", "interrupted")
-
-
-def _flags_list(row: dict) -> list | None:
-    raw = row.get("flags_accepted")
-    if not raw:
-        return None
-    try:
-        parsed = json.loads(raw)
-        return parsed if isinstance(parsed, list) else None
-    except Exception:
-        return None
-
-
 @router.get("/api/runs")
 async def runs_list(status: str | None = None, worker: str | None = None,
                     challenge: str | None = None, limit: int = Query(200, ge=1, le=500),
                     request: Request = None) -> dict:
-    if status is not None and status not in _RUN_STATUSES:
+    if status is not None and status not in RUN_STATUSES:
         raise HTTPException(400, "bad status")
     if worker is not None and not _VALID_RX.fullmatch(worker):
         raise HTTPException(400, "bad worker")
     if challenge is not None:
         _check_code(challenge)
     store = _store(request)
+    # flags_accepted 已在 store 层解析(list;无 = [])
     rows = await run_in_threadpool(store.list_runs, status, worker, challenge, limit)
-    for row in rows:  # flags_accepted 归一化与 detail 一致(list | None)
-        row["flags_accepted"] = _flags_list(row)
     return {"runs": rows}
 
 
 @router.get("/api/runs/{run_id}")
 async def runs_detail(run_id: str, request: Request = None) -> dict:
-    if not _RUN_ID_RX.fullmatch(run_id):
-        raise HTTPException(400, "bad run_id")
+    require_run_id(run_id)
     store = _store(request)
     row = await run_in_threadpool(store.run_row, run_id)
     if row is None:
         raise HTTPException(404, "run not found")
-    if row["flags_accepted"]:
-        try:
-            row["flags_accepted"] = json.loads(row["flags_accepted"])
-        except Exception:
-            row["flags_accepted"] = []
-    else:
-        row["flags_accepted"] = []
     return row
 
 
@@ -260,11 +235,11 @@ async def runs_detail(run_id: str, request: Request = None) -> dict:
 async def runs_events(run_id: str, after: int = Query(0),
                       limit: int = Query(500, ge=1, le=1000),
                       request: Request = None) -> dict:
-    if not _RUN_ID_RX.fullmatch(run_id):
-        raise HTTPException(400, "bad run_id")
+    require_run_id(run_id)
     after = max(0, int(after))
     store = _store(request)
-    if await run_in_threadpool(store.run_row, run_id) is None:
+    # 存在性探测走轻量 SELECT 1(不必拉整行投影)
+    if not await run_in_threadpool(store.run_exists, run_id):
         raise HTTPException(404, "run not found")
     return await run_in_threadpool(store.run_events, run_id, after, limit)
 
@@ -273,11 +248,10 @@ async def runs_events(run_id: str, after: int = Query(0),
 async def runs_timeline(run_id: str, after: int = Query(0),
                         request: Request = None) -> dict:
     """单 run 折叠时间线(复用同一 fold,seq 为该 run 内序)。"""
-    if not _RUN_ID_RX.fullmatch(run_id):
-        raise HTTPException(400, "bad run_id")
+    require_run_id(run_id)
     after = max(0, int(after))
     store = _store(request)
-    if await run_in_threadpool(store.run_row, run_id) is None:
+    if not await run_in_threadpool(store.run_exists, run_id):
         raise HTTPException(404, "run not found")
     rows = await run_in_threadpool(store.events_for_run, run_id)
     return await run_in_threadpool(fold_rows, rows, after=after, live=False)

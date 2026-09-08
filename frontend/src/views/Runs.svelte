@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { fetchRuns } from "../lib/api";
   import { goChallenge, goRun } from "../lib/route.svelte";
   import { RUN_STATUSES, RUN_STATUS_LABEL } from "../lib/types";
@@ -12,6 +13,7 @@
   let qStatus = $state<"" | RunStatus>("");
   let qWorker = $state("");
   let qCode = $state("");
+  let loadSeq = 0; // 过期响应丢弃(手动连点时最后发起者胜)
 
   const STATUS_CLS: Record<string, string> = {
     running: "text-amberlight border-[rgba(232,163,61,0.5)]",
@@ -46,17 +48,27 @@
   }
 
   async function load(): Promise<void> {
+    const qs = buildQs();
+    const seq = ++loadSeq;
     try {
-      rows = (await fetchRuns(buildQs())).runs;
+      const data = (await fetchRuns(qs)).runs;
+      if (seq !== loadSeq) return; // 已有更新的查询在飞:丢弃过期响应
+      rows = data;
       failed = "";
     } catch (e) {
+      if (seq !== loadSeq) return;
       failed = String(e);
     }
   }
 
-  // 挂载即拉一次(共享节拍无 Runs 数据源);查询按钮/Enter 手动刷新
+  const hasFilter = $derived(
+    qStatus !== "" || qWorker.trim() !== "" || qCode.trim() !== "",
+  );
+
+  // 仅挂载时拉一次:untrack 防止 buildQs() 对 q* 的同步读把击键变成逐键请求
+  // (手动刷新 = 查询按钮 / Enter,与 UI 文案一致)
   $effect(() => {
-    void load();
+    untrack(() => void load());
   });
 
   // 函数边界读取:避免 TS 把 rows 收窄为 null 后 derived 到 never[] 的闭包陷阱
@@ -221,7 +233,9 @@
   </div>
   {#if rows !== null && !rows.length}
     <div class="py-[26px] text-center text-[13.5px] text-dim">
-      还没有运行记录——worker 首次解题推送后自动出现。
+      {hasFilter
+        ? "无匹配记录——调整过滤条件后点查询。"
+        : "还没有运行记录——worker 首次解题推送后自动出现。"}
     </div>
   {/if}
 </div>

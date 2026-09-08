@@ -13,48 +13,54 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from typing import Optional
 
 log = logging.getLogger("adapter.roster")
 
-_SAFE_RX_IMPORT = None
-
 
 def _safe_code(code: str) -> str:
-    """与 driver 一致的 code->目录映射（sanitize+hash 后缀）；失败回退纯 sanitize"""
-    global _SAFE_RX_IMPORT
-    try:
-        from drivers.benchmark_driver import _safe_code as sc
-        _SAFE_RX_IMPORT = sc
-        return sc(code)
-    except Exception:
-        pass
-    import hashlib
-    import re
+    """code -> 安全目录名(sanitize + sha1 hash 后缀)。全仓唯一实现:
+    benchmark_driver 与 status_server 都从这里取(纯 stdlib,不触发 SDK 导入)。"""
     raw = str(code)
     safe = re.sub(r"[^A-Za-z0-9_-]+", "-", raw).strip("-")[:64] or "chal"
     return safe if safe == raw else f"{safe}-{hashlib.sha1(raw.encode()).hexdigest()[:6]}"
 
 
 def atomic_write_json(path: str, obj) -> bool:
-    """tmp + os.replace 原子写（沿用 adapter/live/state.py 的落地模式）。成功返回 True。"""
-    try:
-        d = os.path.dirname(path)
-        if d:
-            os.makedirs(d, exist_ok=True)
-        tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}.{time.monotonic_ns()}"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False)
-        os.replace(tmp, path)
-        return True
-    except Exception:
+    """tmp + os.replace 原子写(单一实现见 adapter/live/state.atomic_write_json)。
+    成功返回 True;失败记 debug 并返回 False。"""
+    from adapter.live.state import atomic_write_json as _write
+    ok = _write(path, obj)
+    if not ok:
         log.debug("atomic_write_json failed: %s", path)
-        return False
+    return ok
+
+
+# ── FLAG 候选文件读法(obs_relay 兜底与 challenge_detail 共用同一实现) ──
+
+FLAG_FILES = ("FLAG", "flag.txt", "FLAG.txt")
+FLAG_MAX_LINES = 50
+
+
+def read_flag_lines(dpath: str, names: tuple[str, ...] = FLAG_FILES) -> list[str]:
+    """读题目目录的 FLAG 候选:逐个试名,首个有实质内容的去空行后最多 FLAG_MAX_LINES 条;
+    空文件跳过(占位空 FLAG 不得挡住后面的 flag.txt 候选);全部缺失/全空返回 []。"""
+    for name in names:
+        try:
+            with open(os.path.join(dpath, name), encoding="utf-8", errors="ignore") as f:
+                lines = [ln.strip() for ln in f if ln.strip()]
+            if lines:
+                return lines[:FLAG_MAX_LINES]
+        except OSError:
+            continue
+    return []
 
 
 # ── 本地目录扫描 ─────────────────────────────────────────────
@@ -65,7 +71,6 @@ _SKIP_NAMES = {".", "..", "__pycache__", ".live"}
 def _dir_maps_to_code(dirname: str) -> Optional[str]:
     """目录名是否可能是某 code 的 _safe_code 映射（可逆的纯 sanitize 名返回原名）"""
     # 带 hash 后缀的映射名无法反解真实 code -> 返回 None（上层按目录名当本地痕迹兜底）
-    import re
     if not dirname or dirname.startswith((".", "_")) or dirname in _SKIP_NAMES:
         return None
     if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", dirname):
@@ -149,23 +154,30 @@ def challenge_detail(workdir: str, code: str, platform_row: Optional[dict]) -> d
     """单题详情：平台行 + 本地痕迹 + FLAG 内容 + 文件明细。code 需先经调用方守卫。"""
     dpath = os.path.join(workdir, _safe_code(code))
     local = scan_local_dir(workdir, os.path.basename(dpath)) if os.path.isdir(dpath) else {}
-    flags: list[str] = []
-    transcript_samples: list[str] = []
-    fp = os.path.join(dpath, "FLAG")
-    if os.path.isfile(fp):
-        try:
-            with open(fp, encoding="utf-8", errors="ignore") as f:
-                for i, ln in enumerate(f):
-                    if i >= 50:
-                        break
-                    s = ln.strip()
-                    if s:
-                        flags.append(s)
-        except OSError:
-            pass
+    # 详情只认规范名 FLAG(与 roster 快照/obs 兜底不同,不扩散到 flag.txt 候选)
+    flags = read_flag_lines(dpath, names=("FLAG",))
     row = dict(platform_row or {})
     row.update({"unique_code": code, "local": local, "flags": flags})
     return row
+
+
+def local_challenge_row(code: str, local: Optional[dict] = None) -> dict:
+    """local_only 挑战行模板(poll_once/_poll_local_only/status_server 三处共用)"""
+    row = {"unique_code": code, "local_only": True, "description": "", "difficulty": "",
+           "total_score": 0, "flag_count": 0, "correct_flag_count": 0,
+           "is_completed": False, "container_status": "", "container_addr": [],
+           "level": 0}
+    if local is not None:
+        row["local"] = local
+    return row
+
+
+def empty_roster_snapshot(*, platform_disabled: bool = True) -> dict:
+    """5 键空快照(poller 初值/status_server 兜底共用;platform store 保同构字面量)。
+    poller 初值传 platform_disabled=False(旧字面量语义:环境就绪时首轮询前不误报禁用);
+    无 poller 的 status_server 兜底保持 True(确无平台源)。"""
+    return {"fetched_at": 0.0, "stale": True, "platform_error": "",
+            "platform_disabled": platform_disabled, "challenges": {}}
 
 
 # ── RosterPoller ─────────────────────────────────────────────
@@ -200,13 +212,7 @@ class RosterPoller:
         self._interval = interval
         self._path = os.path.join(workdir, ".live", "roster.json")
         self._lock = threading.Lock()
-        self._snap = {
-            "fetched_at": 0.0,
-            "stale": True,
-            "platform_error": "",
-            "platform_disabled": False,
-            "challenges": {},
-        }
+        self._snap = empty_roster_snapshot(platform_disabled=False)
         self._client = None
 
     def _platform_rows(self) -> dict[str, dict]:
@@ -251,25 +257,25 @@ class RosterPoller:
                 self._snap["fetched_at"] = time.time()
                 self._snap["stale"] = True
                 self._snap["platform_error"] = str(e)
-        # 本地痕迹叠加到当前快照（平台失败时也刷本地——保留旧平台行）
+        # 本地痕迹叠加到当前快照（平台失败时也刷本地——保留旧平台行）。
+        # 行级深拷贝一层:已交出的 snapshot()/排队中的 relay 载荷不再被下轮原地改写。
         with self._lock:
-            challenges = dict(self._snap["challenges"])
+            challenges = {code: dict(row)
+                          for code, row in self._snap["challenges"].items()}
         for code, lc in local.items():
-            row = challenges.setdefault(code, {"unique_code": code, "local_only": True,
-                                               "description": "", "difficulty": "",
-                                               "total_score": 0, "flag_count": 0,
-                                               "correct_flag_count": 0,
-                                               "is_completed": False,
-                                               "container_status": "",
-                                               "container_addr": [], "level": 0})
+            row = challenges.setdefault(code, local_challenge_row(code))
             row["local"] = lc
         with self._lock:
             self._snap["challenges"] = challenges
-        atomic_write_json(self._path, self._snap)
+        atomic_write_json(self._path, self.snapshot())
 
     def snapshot(self) -> dict:
+        """行级拷贝交出:调用方持有的是快照时刻的副本,与轮询线程的 live 行解耦。"""
         with self._lock:
-            return dict(self._snap)
+            snap = dict(self._snap)
+            snap["challenges"] = {code: dict(row)
+                                  for code, row in snap["challenges"].items()}
+            return snap
 
     def _poll_local_only(self) -> None:
         """平台不可用/被禁时：至少刷一次本地痕迹视图（platform 行清空）"""
@@ -284,24 +290,28 @@ class RosterPoller:
             }
         challenges: dict = {}
         for code, lc in local.items():
-            challenges[code] = {"unique_code": code, "local_only": True, "description": "",
-                                "difficulty": "", "total_score": 0, "flag_count": 0,
-                                "correct_flag_count": 0, "is_completed": False,
-                                "container_status": "", "container_addr": [], "level": 0,
-                                "local": lc}
+            challenges[code] = local_challenge_row(code, local=lc)
         with self._lock:
             self._snap["challenges"] = challenges
-        atomic_write_json(self._path, self._snap)
+        atomic_write_json(self._path, self.snapshot())
 
     def _loop(self) -> None:
+        warned_sdk = False
         while True:
             try:
                 if self._client is None:
                     self._client = _client_from_env()
                     if self._client is None:
-                        log.info("roster platform poll disabled (BENCHMARK_* unset or SDK missing)")
+                        if not warned_sdk:
+                            log.info("roster platform poll disabled "
+                                     "(BENCHMARK_* unset or SDK missing); retrying each cycle")
+                            warned_sdk = True
+                        # 平台不可用也要每轮重扫本地:新题目录/FLAG/transcript 增长
+                        # 都会出现;SDK 就绪后 _client_from_env 可自愈
                         self._poll_local_only()
-                        return
+                        time.sleep(self._interval)
+                        continue
+                warned_sdk = False
                 self.poll_once()
             except Exception:
                 log.exception("roster poll loop error")
@@ -616,12 +626,18 @@ class TranscriptDigest:
                     st["loaded_cache"] = True
                 self._parse_lines(st, path)
             # seq 从 0 起；客户端始终传上一轮的 next_seq(=已见条目数)，故用 >=
+            truncated = bool(st["truncated"])
+            if after == 0 and truncated:
+                # 全量同步(初始加载/截断恢复)即消费截断标记:只出现一次,
+                # 增量客户端按它重建本地条目后,后续轮询恢复增量语义;
+                # 否则压缩/重截断后的每次轮询都会被当成"又要全量重放"
+                st["truncated"] = False
             entries = [e for e in st["entries"] if e["seq"] >= after]
             abrupt = bool(st["sessions"]) and st["agent_ends"] < st["sessions"] and not live
             meta = {
                 "sessions": st["sessions"],
                 "agent_ends": st["agent_ends"],
-                "truncated": bool(st["truncated"]),
+                "truncated": truncated,
                 "dropped": bool(st["dropped"]),
                 "abrupt": abrupt,
                 "live": bool(live),

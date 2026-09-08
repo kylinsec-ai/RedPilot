@@ -52,7 +52,10 @@ class MockServer:
             return [b for p, b in self.records if p == path]
 
     def close(self) -> None:
+        # shutdown() 只停 serve_forever,必须 server_close() 释放监听 socket,
+        # 否则每个用例泄漏一个已绑定端口(后续用例复用端口会撞上残留 backlog)
         self._srv.shutdown()
+        self._srv.server_close()
 
 
 @pytest.fixture
@@ -153,6 +156,7 @@ def test_lifecycle_order_filter_and_solved(tmp_path, mock_server):
     types = [json.loads(e["payload"])["type"] for e in evs]
     assert types == ["_attempt", "session", "turn_start"]
     assert all("message_update" not in e["payload"] for e in evs)
+    relay.stop()
 
 
 def test_status_mapping_failed_and_done(tmp_path, mock_server):
@@ -172,15 +176,26 @@ def test_status_mapping_failed_and_done(tmp_path, mock_server):
     assert mock_server.by_path("/api/internal/run_close")[0]["status"] == "failed"
     assert mock_server.by_path("/api/internal/run_close")[0]["error"] == "stall timeout"
 
-    # done:部分接受(found=2, accepted=1)
+    # done:零接受但发现候选(found=2, accepted=0)
     bus.publish(_frame("starting", "c-01"))
     bus.publish(_frame("solving", "c-01", transcript_path=str(path)))
     time.sleep(0.4)
     open(path, "a", encoding="utf-8").write('{"type": "session"}\n')
-    bus.publish(_frame("done", "c-01", accepted=1, flags_found=2))
-    bus.publish(_frame("closing", "c-01", accepted=1, flags_found=2))
+    bus.publish(_frame("done", "c-01", accepted=0, flags_found=2))
+    bus.publish(_frame("closing", "c-01", accepted=0, flags_found=2))
     _wait(lambda: len(mock_server.by_path("/api/internal/run_close")) >= 2, what="done close")
     assert mock_server.by_path("/api/internal/run_close")[1]["status"] == "done"
+
+    # solved:接受且候选数大于接受数(found=3, accepted=1)
+    bus.publish(_frame("starting", "c-02"))
+    bus.publish(_frame("solving", "c-02", transcript_path=str(path)))
+    time.sleep(0.4)
+    open(path, "a", encoding="utf-8").write('{"type": "session"}\n')
+    bus.publish(_frame("done", "c-02", accepted=1, flags_found=3))
+    bus.publish(_frame("closing", "c-02", accepted=1, flags_found=3))
+    _wait(lambda: len(mock_server.by_path("/api/internal/run_close")) >= 3, what="solved close with decoys")
+    assert mock_server.by_path("/api/internal/run_close")[2]["status"] == "solved"
+    relay.stop()
 
 
 def test_shrink_compress_no_duplicate_loss(tmp_path, mock_server):
@@ -216,6 +231,7 @@ def test_shrink_compress_no_duplicate_loss(tmp_path, mock_server):
         what="压缩后追加行到达")
     bus.publish(_frame("closing", "d-01"))
     _wait(lambda: bool(mock_server.by_path("/api/internal/run_close")), what="close")
+    relay.stop()
 
 
 def test_truncate_at_run_start(tmp_path, mock_server):
@@ -238,6 +254,7 @@ def test_truncate_at_run_start(tmp_path, mock_server):
         json.loads(e["payload"]).get("type") == "_attempt"
         for e in _events_of(mock_server.by_path("/api/internal/events"))),
         what="截断后内容从头送达")
+    relay.stop()
 
 
 def test_platform_down_then_recover(tmp_path):
@@ -279,4 +296,4 @@ def test_platform_down_then_recover(tmp_path):
         assert types == ["_attempt", "session"]  # 零丢失
     finally:
         srv.close()
-        relay._stop.set()
+        relay.stop()

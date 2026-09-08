@@ -19,6 +19,26 @@ def _j(d: dict) -> str:
     return json.dumps(d, ensure_ascii=False)
 
 
+def rid() -> str:
+    """新 run_id(uuid4().hex 形态,平台 RUN_ID_RX 校验)。"""
+    import uuid
+    return uuid.uuid4().hex
+
+
+def roster_snap(rows: dict, *, fetched_at: float = 100.0, stale: bool = False,
+                error: str = "") -> dict:
+    """完整 5 键 roster 快照(与 worker RosterPoller.snapshot 同构)。"""
+    return {"fetched_at": fetched_at, "stale": stale, "platform_error": error,
+            "platform_disabled": False, "challenges": rows}
+
+
+def live_body(phase: str, code: str = "a-05") -> dict:
+    """一次 internal/live POST 请求体(快照为 LiveState 子集,键与 worker 侧一致)。"""
+    return {"worker_id": "worker-1", "kind": "lifecycle",
+            "snapshot": {"worker_id": "worker-1", "phase": phase,
+                         "challenge_code": code, "turns": 1}}
+
+
 def session_ev(sid: str = "ab12cd", ts: str = "2026-09-04T11:52:03.942Z",
                cwd: str = "/work/a-05") -> dict:
     return {"type": "session", "version": 3, "id": sid, "timestamp": ts, "cwd": cwd}
@@ -67,7 +87,7 @@ def agent_end_ev() -> dict:
 
 def make_run_events(events: list[dict]) -> list[dict]:
     """把原始事件 dict 列表转成摄取行(seq 单调,payload 为原文行)。"""
-    return [{"seq": i, "type": e.get("type", ""), "ts": None, "payload": _j(e)}
+    return [{"seq": i, "type": e.get("type", ""), "payload": _j(e)}
             for i, e in enumerate(events)]
 
 
@@ -97,7 +117,10 @@ def client(tmp_path, web_dir):
 
 
 @pytest.fixture
-def client_no_token(tmp_path, web_dir):
+def client_no_token(tmp_path, web_dir, monkeypatch):
+    # obs.config import 时 load_dotenv() 会把 .env 的 OBSERVABILITY_TOKEN 带进进程;
+    # "无 token 应用" 语义要求真无 token → 显式摘掉 env(否则 401 顶替 503,测试失真)
+    monkeypatch.delenv("OBSERVABILITY_TOKEN", raising=False)
     with TestClient(create_app(db_path=str(tmp_path / "obs.sqlite3"),
                                web_dir=web_dir, obs_token=None)) as c:
         yield c
@@ -111,11 +134,7 @@ def headers() -> dict:
 def seed_run(store: ObsStore, code: str = "a-05", worker: str = "worker-1",
              started_at: float = 1_000.0, events: list[dict] | None = None) -> str:
     """开一个 run 并(可选)插入合成事件;返回 run_id。"""
-    import uuid
-    run_id = uuid.uuid4().hex
-    store.ensure_run(run_id, worker, code, "opencode-go/mimo-v2.5", started_at)
-    if events:
-        store.insert_events(run_id, worker, code,
-                            [(e["seq"], e["type"], e.get("ts"), e["payload"])
-                             for e in make_run_events(events)])
+    run_id = rid()
+    rows = [(e["seq"], e["type"], e["payload"]) for e in make_run_events(events or [])]
+    store.append_events(run_id, worker, code, rows, "opencode-go/mimo-v2.5", started_at)
     return run_id

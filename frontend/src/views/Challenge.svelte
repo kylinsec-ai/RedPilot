@@ -34,7 +34,15 @@
     try {
       const ch = await fetchChallenge(c);
       detail = ch;
-      const tl = await fetchTimeline(c, nextSeq);
+      let tl = await fetchTimeline(c, nextSeq);
+      if (tl.meta?.truncated) {
+        // worker 侧 digest 被重截断(压缩/5MB 轮换):seq 从头编号,本地旧条目作废
+        // (keyed each 会与重编的 seq 冲突/叠行)—— 先取到全量再替换,失败则保留旧条目
+        const fresh = await fetchTimeline(c, 0);
+        entries.length = 0;
+        nextSeq = 0;
+        tl = fresh;
+      }
       meta = tl.meta;
       for (const en of tl.entries) entries.push(en); // append-only:keyed 行展开态不丢
       nextSeq = tl.next_seq;

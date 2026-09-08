@@ -7,21 +7,19 @@ import threading
 
 import pytest
 
-from conftest import (TOKEN, assistant_msg_ev, make_run_events, session_ev,
-                      tool_end_ev, tool_start_ev, turn_end_ev, turn_start_ev,
-                      user_msg_ev)
+from conftest import (TOKEN, assistant_msg_ev, live_body, make_run_events, rid,
+                      roster_snap, session_ev, tool_end_ev, tool_start_ev,
+                      turn_end_ev, turn_start_ev, user_msg_ev)
 from obs.app import create_app
 from fastapi.testclient import TestClient
 from obs.bus import LiveBus
 
 
 def _ingest(client, headers, events, code="a-05", model=""):
-    import uuid
-    rid = uuid.uuid4().hex
-    body = {"run_id": rid, "worker_id": "worker-1", "challenge_code": code,
+    body = {"run_id": rid(), "worker_id": "worker-1", "challenge_code": code,
             "model": model, "events": make_run_events(events)}
     assert client.post("/api/internal/events", json=body, headers=headers).status_code == 200
-    return rid
+    return body["run_id"]
 
 
 def _close(client, headers, rid, status="solved", flags=None):
@@ -38,12 +36,13 @@ def test_static_and_health(client):
     assert r.status_code == 200 and r.text == "ok"
     r = client.get("/")
     assert r.status_code == 200 and "spa" in r.text
-    assert r.headers["cache-control"] == "no-store"
+    assert r.headers["cache-control"] == "no-store"  # index 热更:恒不缓存
     assert client.get("/index.html").status_code == 200
     r = client.get("/assets/index-x.js")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/javascript")
-    assert r.headers["cache-control"] == "no-store"
+    # vite 产物名带内容 hash → 可安全不可变缓存;只有 index.html 走 no-store
+    assert r.headers["cache-control"] == "public, max-age=31536000, immutable"
 
 
 def test_asset_guards(web_dir):
@@ -76,18 +75,13 @@ def test_index_requires_web_dir(tmp_path):
 
 # ── roster / challenge 契约 ──
 
-def _snap(rows: dict, fetched_at: float = 100.0) -> dict:
-    return {"fetched_at": fetched_at, "stale": False, "platform_error": "",
-            "platform_disabled": False, "challenges": rows}
-
-
 def test_roster_challenge_contracts(client, headers):
-    snap = _snap({"a-05": {"unique_code": "a-05", "difficulty": "easy",
-                           "description": "desc", "total_score": 100,
-                           "flag_count": 2, "correct_flag_count": 1,
-                           "is_completed": False, "container_status": "running",
-                           "container_addr": ["10.0.0.5:80"], "level": 1,
-                           "local": {"dir": "a-05", "flag": True, "crashed": False}}})
+    snap = roster_snap({"a-05": {"unique_code": "a-05", "difficulty": "easy",
+                                 "description": "desc", "total_score": 100,
+                                 "flag_count": 2, "correct_flag_count": 1,
+                                 "is_completed": False, "container_status": "running",
+                                 "container_addr": ["10.0.0.5:80"], "level": 1,
+                                 "local": {"dir": "a-05", "flag": True, "crashed": False}}})
     assert client.post("/api/internal/roster",
                        json={"worker_id": "worker-1", "snapshot": snap},
                        headers=headers).status_code == 200
@@ -129,15 +123,10 @@ def test_transcript_and_timeline(client, headers):
 
 def test_timeline_live_flag(client, headers):
     _ingest(client, headers, [session_ev()])
-    live = {"worker_id": "worker-1", "kind": "lifecycle",
-            "snapshot": {"phase": "solving", "challenge_code": "a-05"}}
-    client.post("/api/internal/live", json=live, headers=headers)
+    client.post("/api/internal/live", json=live_body("solving", "a-05"), headers=headers)
     tl = client.get("/api/timeline?code=a-05").json()
     assert tl["meta"]["live"] is True and tl["meta"]["abrupt"] is False
-    client.post("/api/internal/live",
-                json={"worker_id": "worker-1", "kind": "lifecycle",
-                      "snapshot": {"phase": "idle", "challenge_code": ""}},
-                headers=headers)
+    client.post("/api/internal/live", json=live_body("idle", ""), headers=headers)
     assert client.get("/api/timeline?code=a-05").json()["meta"]["live"] is False
 
 
@@ -253,10 +242,7 @@ def _sse_frames(base: str, headers: dict, live_body: dict | None):
 
 
 def test_sse_push_after_subscribe(live_server, headers):
-    body = {"worker_id": "worker-1", "kind": "lifecycle",
-            "snapshot": {"worker_id": "worker-1", "phase": "solving",
-                         "challenge_code": "b-01"}}
-    first, pushed = _sse_frames(live_server, headers, body)
+    first, pushed = _sse_frames(live_server, headers, live_body("solving", "b-01"))
     assert pushed is not None, "live POST 后推帧未达"
     assert pushed["phase"] == "solving"
     assert pushed["challenge_code"] == "b-01"
@@ -265,11 +251,10 @@ def test_sse_push_after_subscribe(live_server, headers):
 
 
 def test_snapshot_first_frame_not_empty_after_live(live_server, headers):
-    body = {"worker_id": "worker-1", "kind": "lifecycle",
-            "snapshot": {"worker_id": "worker-1", "phase": "idle"}}
     import httpx
     with httpx.Client(base_url=live_server, timeout=10) as c:
-        assert c.post("/api/internal/live", json=body, headers=headers).status_code == 200
+        assert c.post("/api/internal/live", json=live_body("idle"),
+                      headers=headers).status_code == 200
     first, _ = _sse_frames(live_server, headers, None)
     assert first["phase"] == "idle"
 

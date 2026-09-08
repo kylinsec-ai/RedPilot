@@ -10,8 +10,6 @@ import json
 import re
 
 ARGS_SUMMARY_MAX = 300
-OUTPUT_TAIL_MAX = 2048
-ASSISTANT_PREVIEW_MAX = 500
 ERROR_HEAD_MAX = 200
 
 _SECRET_KEY_RX = re.compile(r"(key|token|secret|auth|password|passwd)", re.IGNORECASE)
@@ -50,8 +48,8 @@ def summarize_args(args, max_len: int = ARGS_SUMMARY_MAX) -> str:
         s = str(args)
     if isinstance(args, str):
         # 大字符串先截断再跑正则:含嵌套量词的 _SECRET_PAIR_RX 扫全量 MB 级文本会卡住请求
-        if len(args) > 65536:
-            args = args[:65536] + "…"
+        if len(s) > 65536:
+            s = s[:65536] + "…"
         try:
             s = _SECRET_PAIR_RX.sub(r'\1"***"', s)
         except Exception:

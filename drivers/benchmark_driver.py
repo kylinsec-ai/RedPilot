@@ -15,17 +15,16 @@ TSecBench 极简求解驱动 — 单 worker 串行刷题(异步直调官方 tsec
 闸门只有: flag 格式候选 + 平台判分/幂等(SDK 抛 DuplicateSubmit)。无轮次/熔断/止损/
 黑板记忆/验证器 LLM —— 那些机制已随 MVP 精简移除。
 
-失败语义: SDK 入口 VPN 预检失败 exit 4;平台任务结束(409)exit 0;列表失败 exit 3;
-均退出由容器 restart 策略拉起;单题启动/提交失败只记日志,不 panic。
+失败语义: 配置错误(缺凭据/坏 SOLVER_MODEL 等)exit 0(明示后停止,on-failure 不重启);
+SDK 入口 VPN 预检失败 exit 4;平台任务结束(409)exit 0;列表失败 exit 3;
+exit 3/4 由容器 restart 策略拉起;单题启动/提交失败只记日志,不 panic。
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import os
-import re
 import sys
 import threading
 import time
@@ -92,21 +91,28 @@ _LIVE: LiveState | None = None
 _BUS: LiveBus | None = None
 # 观测平台中继（main() 初始化；OBSERVABILITY_URL 未配时为 None，零行为变化）
 _RELAY = None
+# amain() 进入时填充:心跳线程据此探测事件循环活性(卡死 → os._exit(4))
+_LOOP: "asyncio.AbstractEventLoop | None" = None
 
 # 边界事件：立即落地快照文件（高频 progress/text 只走内存+SSE）
 _FLUSH_KINDS = {"tool_end", "turn_done", "error", "system", "lifecycle"}
 
 
-def _live_set(kind: str = "lifecycle", _immediate: bool = False, **fields) -> None:
+def _live_set(kind: str = "lifecycle", _extra: dict | None = None, **fields) -> None:
     """update+publish 一行式；_LIVE 为 None 时无操作；异常吞掉不影响求解。
-    默认 _immediate=False：update 节流保存，需要落盘的边界事件由下方
-    kind 命中 _FLUSH_KINDS 的一次强制 flush 完成，恰好一次落盘。"""
+    update 节流保存；需要落盘的边界事件由 kind 命中 _FLUSH_KINDS 的一次
+    强制 flush 完成，恰好一次落盘。
+    _extra:只走总线信封、不进 LiveState 快照的带外元数据(键以下划线开头,
+    中继不落库;如 run 收尾时附带的平台已确认 accepted 明文列表)。"""
     try:
         if _LIVE is None:
             return
-        snap = _LIVE.update(_immediate=_immediate, **fields)
+        snap = _LIVE.update(**fields)
         if _BUS is not None and _BUS.has_subscribers():
-            _BUS.publish({**snap, "kind": kind})
+            payload = {**snap, "kind": kind}
+            if _extra:
+                payload.update(_extra)
+            _BUS.publish(payload)
         if kind in _FLUSH_KINDS:
             _LIVE.flush()
     except Exception:
@@ -121,9 +127,8 @@ def _make_hooks():
         for f in extract_flags(out or ""):
             if f not in found:
                 found.append(f)
-        # _immediate=False:update 节流 + 下方 kind 命中 _FLUSH_KINDS 的一次强制 flush,
-        # 恰好一次落盘(原默认 True 会 double-persist)
-        _live_set("tool_end", _immediate=False,
+        # update 节流保存 + kind 命中 _FLUSH_KINDS 的一次强制 flush,恰好一次落盘
+        _live_set("tool_end",
                   last_tool=tool_name or "",
                   last_output_tail=tail_text(out or "", OUTPUT_TAIL_MAX),
                   current_tool="",
@@ -135,7 +140,7 @@ def _make_hooks():
         if fn is None:
             log.debug("unknown pi event kind dropped: %s", kind)
             return
-        _live_set(kind, _immediate=False, **fn(p))
+        _live_set(kind, **fn(p))
 
     return on_fact, on_event
 
@@ -168,10 +173,10 @@ _EVENT_TABLE = {
 # ── 排序与任务构建 ──────────────────────────────────────────
 
 def _safe_code(code: str) -> str:
-    """将 challenge code 转为安全的目录名"""
-    raw = str(code)
-    safe = re.sub(r"[^A-Za-z0-9_-]+", "-", raw).strip("-")[:64] or "chal"
-    return safe if safe == raw else f"{safe}-{hashlib.sha1(raw.encode()).hexdigest()[:6]}"
+    """将 challenge code 转为安全的目录名。唯一实现见 drivers.roster._safe_code
+    (纯 stdlib 模块,免 SDK 导入耦合;惰性取避免 import 期拉全 roster)。"""
+    from drivers.roster import _safe_code as _sc
+    return _sc(code)
 
 
 def _difficulty_rank(d: str) -> int:
@@ -352,8 +357,9 @@ async def solve_one(
         log.exception("solve_one error on %s", code)
         return False, accepted
     finally:
-        # 单会话结束即释放实例(多 flag 剩题由下一轮重新 start 冷启动)
-        _live_set(phase="closing")
+        # 单会话结束即释放实例(多 flag 剩题由下一轮重新 start 冷启动)。
+        # _accepted_flags = 本会话平台确认正确的明文(FLAG 文件含被拒候选,不能作 accepted)
+        _live_set(phase="closing", _extra={"_accepted_flags": list(accepted)})
         if not await _close_with_retry(client, code):
             log.warning("challenge %s left running on platform", code)
 
@@ -362,6 +368,8 @@ async def solve_one(
 
 async def amain(base_url: str, token: str, cfg: SolverConfig) -> None:
     """异步主循环:SDK 入口 VPN 预检 → list/start/hint/solve/submit/close 串行刷题。"""
+    global _LOOP
+    _LOOP = asyncio.get_running_loop()  # 心跳线程据此探测事件循环活性
     solver_backend = create_solver()
     submitted: dict[str, set[str]] = {}
     solved_ever: set[str] = set()
@@ -380,6 +388,10 @@ async def amain(base_url: str, token: str, cfg: SolverConfig) -> None:
 
                 pending = [c for c in challenges if not c.is_completed and c.unique_code not in solved_ever]
                 if not pending:
+                    # 无待解题:回 idle(带空 code)——否则 obs live_state 与两块仪表板
+                    # 永久残留上个 run 的 phase='closing'('closing' ∈ ACTIVE_PHASES →
+                    # 恒显 '求解中:<最后 code>',timeline meta.live 恒真)
+                    _live_set(phase="idle", challenge_code="", error="")
                     log.info("no pending challenges, polling again in %ds", IDLE_SLEEP)
                     await asyncio.sleep(IDLE_SLEEP)
                     continue
@@ -398,6 +410,8 @@ async def amain(base_url: str, token: str, cfg: SolverConfig) -> None:
                         solved_ever.add(ch.unique_code)
                         log.info("=== solved %s (%d flag(s)) ===", ch.unique_code, len(accepted))
 
+                # 一轮全部会话已关 → 回 idle(空 code,同上:不残留 'closing')
+                _live_set(phase="idle", challenge_code="", error="")
                 log.info("=== pass done: %d pending, %d solved this run, polling in %ds ===",
                          len(pending), len(solved_ever), CYCLE_SLEEP)
                 await asyncio.sleep(CYCLE_SLEEP)
@@ -411,15 +425,18 @@ def main() -> None:
     base_url = os.getenv("BENCHMARK_BASE_URL", "").strip()
     token = os.getenv("BENCHMARK_TOKEN", "").strip()
     if not base_url or not token:
+        # 配置错误 = 正常终止:restart:on-failure 会重启一切非零退出,
+        # 只有 exit 0 才能"停一次"——明示错误后停止,不进 restart 闷循环
         log.error("BENCHMARK_BASE_URL and BENCHMARK_TOKEN must be set")
-        sys.exit(2)
+        sys.exit(0)
 
     try:
         cfg = SolverConfig.from_env()
     except ValueError as e:
-        # 裸 SOLVER_MODEL/垃圾 SESSION_SECONDS 等:明示退出码,不进 restart 闷循环
+        # 裸 SOLVER_MODEL/垃圾 SESSION_SECONDS 等:明示错误后停止(exit 0),
+        # 不进 restart 闷循环(非零退出会被 on-failure 无限重启)
         log.error("bad solver config: %s", e)
-        sys.exit(2)
+        sys.exit(0)
     os.makedirs(WORKDIR, exist_ok=True)
     touch_heartbeat()
 
@@ -428,26 +445,61 @@ def main() -> None:
     _LIVE = LiveState(worker_id=WORKER_ID,
                       state_path=os.path.join(WORKDIR, ".live", f"{WORKER_ID}.json"))
     _BUS = LiveBus()
+    # 题目总览轮询单实例:status_server 与 obs_relay 共享同一 RosterPoller
+    # (同 worker 只跑一个 60s 轮询,避免双线程双写 /work/.live/roster.json)。
+    # 两边都没启用则不建。obs 是否启用以 OBSERVABILITY_URL 为准(maybe_start_relay 同判)。
+    roster_poller = None
+    if STATUS_PORT > 0 or os.getenv("OBSERVABILITY_URL", "").strip():
+        try:
+            from drivers.roster import RosterPoller
+            roster_poller = RosterPoller(WORKDIR)
+            roster_poller.start()
+        except Exception:
+            log.exception("roster poller start failed (dashboard shows local-only)")
+            roster_poller = None
     try:
         from drivers.obs_relay import maybe_start_relay
-        _RELAY = maybe_start_relay(_LIVE, _BUS, WORKDIR)
+        _RELAY = maybe_start_relay(_LIVE, _BUS, WORKDIR, roster_poller=roster_poller)
     except Exception:
         log.exception("obs relay start failed (platform ingestion disabled)")
         _RELAY = None
     try:
         from drivers.status_server import serve_forever_in_thread
-        serve_forever_in_thread(_LIVE, _BUS, STATUS_PORT, workdir=WORKDIR)
+        serve_forever_in_thread(_LIVE, _BUS, STATUS_PORT, workdir=WORKDIR,
+                                poller=roster_poller)
     except Exception:
         log.exception("status server failed to start (solving continues)")
 
-    # 独立心跳线程: 进程存活即刷新 /tmp/driver_heartbeat(compose healthcheck 依据)
+    # 独立心跳线程: 30s 刷 /tmp/driver_heartbeat(compose healthcheck 依据);
+    # 同时探测事件循环活性 —— 纯文件心跳只证明进程存活,asyncio loop 同步卡死
+    # (死锁/无超时阻塞)时 pi 线程仍会 touch_heartbeat,文件恒新,健康检查永绿。
+    # 探针:call_soon_threadsafe 的应答若连续 5 次(≈150s)未在 1s 内回来 →
+    # loop 已卡死 → os._exit(4) 由容器 restart 策略拉起(与 VPN 看门狗同款语义)。
     def _heartbeat_loop():
+        ack = threading.Event()
+        missed = 0
         while True:
             time.sleep(30)
             try:
                 touch_heartbeat()
             except Exception:
                 pass
+            loop = _LOOP
+            if loop is None:
+                continue  # amain 尚未进入(启动期),文件心跳已足够
+            ack.clear()
+            try:
+                loop.call_soon_threadsafe(ack.set)
+            except RuntimeError:
+                continue  # loop 已关闭(正常退出路径)
+            if ack.wait(timeout=1.0):
+                missed = 0
+                continue
+            missed += 1
+            if missed >= 5:
+                log.critical("event loop unresponsive for ~%ds — exiting 4 for container restart",
+                             missed * 30)
+                os._exit(4)
 
     threading.Thread(target=_heartbeat_loop, daemon=True, name="heartbeat").start()
 

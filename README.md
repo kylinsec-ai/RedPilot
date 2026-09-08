@@ -159,6 +159,13 @@ cd frontend && npm ci && npm run build   # svelte-check + vite build → ../web/
 - `obs/` — **本地观测平台**:FastAPI 装配 + SQLite(WAL,版本化迁移)存储/摄取/折叠/读端
   (`app/db/store/schema/ingest/read/digest/redact/bus` + `tests/`)
 - `adapter/` — worker 侧组件库:config/task/taskprompt + `solver/`(Pi Agent)+ `live/`(快照/SSE bus)
+- `skills/` — **pi skills 知识库**(按题型打法:web-recon-toolkit / known-cve-playbook /
+  waf-bypass / sandbox-escape / cloud-security / network-pwn / reverse-engineering)。
+  以 pi 原生 skill 格式(SKILL.md + name/description frontmatter)挂载到容器
+  `/root/.pi/agent/skills`(自动发现,渐进披露:description 常驻、正文模型按需 read);
+  每题 workdir 的 CLAUDE.md 只留硬规则(flag 协议 + skill 指针)。改内容免重建镜像,
+  compose bind-mount 下一题即生效;镜像构建时 COPY 烘焙。
+- `tools/` — 浏览器自动化助手脚本(pw_fetch.py / pw_example.py),挂载 `/opt/tools`
 - `drivers/benchmark_driver.py` — 串行求解主循环(唯一编排者,异步直调官方 SDK)
 - `drivers/obs_relay.py` — worker 最小观测中继(订阅 LiveBus + transcript 字节续读 → POST obs)
 - `drivers/status_server.py` + `drivers/roster.py` — 容器本地调试态势台(:8080,已非数据主源)

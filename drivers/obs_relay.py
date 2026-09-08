@@ -8,6 +8,7 @@ run_close 恒在事件之后落库;平台幂等(UNIQUE run_id+seq)兜底重发�
 
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import os
@@ -25,40 +26,88 @@ _TAIL_CADENCE = 1.0     # transcript 字节续读节拍
 _PING_CADENCE = 30.0    # 心跳(平台 stale_after=150s,余量 5x)
 _ROSTER_CADENCE = 60.0  # roster 快照全量(与 worker 轮询同节奏)
 _BATCH_MAX = 64         # 单批事件行数
-_FLAG_FILES = ("FLAG", "flag.txt", "FLAG.txt")
-_FLAG_MAX_LINES = 50
 _ERR_MAX = 2000
+# 积压上限:平台长 down 时 events/run_close 继续留队(零丢失);live 帧只占槽位
+# (恒最新一帧)、续读暂停、ping/roster 队满即丢下节拍再生 —— 队列因此有界
+# (put_droppable 门控可再生消息;requeue 只循环同批消息不增长)
+_QUEUE_CAP = 500
+# 总线信封键(snapshot 之外的 kind/ts)只在通道内使用,不入库:
+# obs/schema.py LiveIn 契约 snapshot = LiveState 纯快照(读端首帧 kind 缺省 'snapshot')
+_LIVE_ENVELOPE_KEYS = frozenset({"kind", "ts"})
+
+
+def _strip_envelope(frame: dict) -> dict:
+    """剥掉总线信封与带外元数据(下划线前缀,如 _accepted_flags),只留状态键。"""
+    return {k: v for k, v in frame.items()
+            if k not in _LIVE_ENVELOPE_KEYS and not k.startswith("_")}
 
 
 class _Fifo:
-    """无界 FIFO + 控制消息;单发送线程顺序 POST(与事件同队,保单 worker 全序)。"""
+    """无界 FIFO + 控制消息;单发送线程顺序 POST(与事件同队,保单 worker 全序)。
+
+    失败消息经 requeue 放回队首重试:同一 run 的 events 恒先于 run_close 送达,
+    平台长时间 down 时事件留在 FIFO(无界),恢复后续传零丢失。
+    """
 
     def __init__(self) -> None:
-        self._q: queue.Queue = queue.Queue()
+        self._q: collections.deque = collections.deque()
+        self._cv = threading.Condition()
         self._pending_live: dict | None = None  # 最新 live 槽:同刻多帧只留最新
-        self._lock = threading.Lock()
 
     def put(self, msg: dict) -> None:
-        self._q.put(msg)
+        with self._cv:
+            self._q.append(msg)
+            self._cv.notify()
+
+    def requeue(self, msg: dict) -> None:
+        """失败消息放回队首(保序重试,不落尾)。"""
+        with self._cv:
+            self._q.appendleft(msg)
+            self._cv.notify()
+
+    def put_droppable(self, msg: dict) -> bool:
+        """可再生消息用:队满直接丢(下节拍再生),ping/roster 走此通道保队列有界。
+        events/run_close 为零丢失保留无界 put(队满时续读已暂停,积压只来自
+        同批待重试消息与零星 close)。"""
+        with self._cv:
+            if len(self._q) >= _QUEUE_CAP:
+                return False
+            self._q.append(msg)
+            self._cv.notify()
+            return True
 
     def put_live(self, frame: dict) -> None:
-        """live 槽合并:队列里若已有未发 live,替换为最新(绝不堆积)。"""
-        with self._lock:
+        """live 槽合并:队列里若已有未发 live,替换为最新(绝不堆积)。
+        队满也保留最新帧(只占槽位不进队);ship_live 在积压排空后的下节拍补送 ——
+        旧帧永不盖掉新帧,恢复后平台先看到最新 phase。
+        槽内只存纯状态快照 —— 信封键(kind/ts)与带外元数据(_ 前缀)剥掉,
+        契约:LiveIn.snapshot = LiveState 纯快照(读端首帧 kind 缺省 'snapshot')。"""
+        with self._cv:
             self._pending_live = {"t": "live", "worker_id": frame.get("worker_id"),
                                   "kind": frame.get("kind", "lifecycle"),
-                                  "frame": frame, "_stamp": time.monotonic()}
+                                  "frame": _strip_envelope(frame)}
 
     def ship_live(self) -> bool:
-        """引擎节拍把最新槽移交发送队列;未发帧静默丢旧,绝不堆积。"""
-        with self._lock:
-            if self._pending_live is None:
+        """引擎节拍把最新槽移交发送队列;未发帧静默丢旧,绝不堆积。
+        队满时保留槽位,待积压排空后的下一节拍再送。"""
+        with self._cv:
+            if self._pending_live is None or len(self._q) >= _QUEUE_CAP:
                 return False
-            self._q.put(self._pending_live)
+            self._q.append(self._pending_live)
             self._pending_live = None
+            self._cv.notify()
         return True
 
+    def get(self, timeout: float) -> dict:
+        with self._cv:
+            while not self._q:
+                if not self._cv.wait(timeout):
+                    raise queue.Empty
+            return self._q.popleft()
+
     def depth(self) -> int:
-        return self._q.qsize()
+        with self._cv:
+            return len(self._q)
 
 
 class ObsRelay:
@@ -66,7 +115,7 @@ class ObsRelay:
     sender 线程负责 HTTP;平台 down 时事件留在 FIFO(无界),恢复后续传零丢失。"""
 
     def __init__(self, live, bus, workdir: str, url: str, token: str | None,
-                 worker_id: str = "worker-1"):
+                 worker_id: str = "worker-1", roster_poller=None):
         self._live = live
         self._bus = bus
         self._workdir = workdir
@@ -76,11 +125,15 @@ class ObsRelay:
         self._fifo = _Fifo()
         self._run: dict | None = None          # {run_id, code, model, path, base, seq, emitted}
         self._file_lock = threading.Lock()     # 序列化文件续读(引擎 tick 与 driver flush 共用)
-        self._poller = None                    # drivers.roster.RosterPoller(惰性起)
+        self._roster_poller = roster_poller    # 共享 RosterPoller(main() 注入);None → 惰性自起
         self._stop = threading.Event()
         self._sent = threading.Event()         # sender 有进展(测试/健康用)
 
     # ── 生命周期 ──
+
+    def stop(self) -> None:
+        """停引擎与 sender 线程(幂等;测试/进程关停用)。"""
+        self._stop.set()
 
     def start(self) -> None:
         t = threading.Thread(target=self._engine, daemon=True, name="obs-relay")
@@ -136,8 +189,7 @@ class ObsRelay:
                         continue
                     if typ == "message_update":
                         continue
-                    rows.append({"seq": run["seq"], "type": typ,
-                                 "ts": None, "payload": line})
+                    rows.append({"seq": run["seq"], "type": typ, "payload": line})
                     run["seq"] += 1
                     run["emitted"] = True
                     if len(rows) >= _BATCH_MAX:
@@ -158,8 +210,9 @@ class ObsRelay:
         run = self._run
 
         if run and phase in ("starting", "solving", "submitting") and code:
-            if run["code"] != code:
-                # 换题帧没走 closing?防御:先关旧 run(平台侧另有 idle/switch 守卫)
+            if run["code"] != code and not run.get("closed"):
+                # 换题帧没走 closing?防御:先关旧 run(平台侧另有 idle/switch 守卫);
+                # 已 closed 的 run 再关 = 重复 run_close(平台终态幂等,纯噪音),跳过
                 self._close_run(run, frame, note="switch without close")
 
         if phase == "starting" and code and (run is None or run["code"] != code
@@ -179,9 +232,8 @@ class ObsRelay:
                 run["model"] = str(frame.get("model") or run.get("model") or "")
             return
 
-        if (phase == "closing" or (phase == "idle" and run and not run.get("closed"))):
-            if run and not run.get("closed"):
-                self._close_run(run, frame)
+        if run and not run.get("closed") and phase in ("closing", "idle"):
+            self._close_run(run, frame)
 
     def _close_run(self, run: dict, frame: dict, note: str = "") -> None:
         """drain 全部事件(同步续读到 EOF 并入队)后 POST run_close —— FIFO 保证全序。"""
@@ -194,16 +246,20 @@ class ObsRelay:
         error = str(frame.get("error") or "")
         accepted = int(frame.get("accepted") or 0)
         flags_found = int(frame.get("flags_found") or 0)
-        if error and "start failed" in error:
+        if error:
             status = "failed"
-        elif error:
-            status = "failed"
-        elif accepted > 0 and accepted == flags_found and flags_found > 0:
+        elif accepted > 0:
             status = "solved"
         else:
             status = "done"
         path = run.get("path") or ""
-        flags = self._read_flags(path)
+        raw = frame.get("_accepted_flags")
+        if isinstance(raw, list):
+            # driver 随 closing 帧附带的平台确认 accepted 明文(FLAG 文件含被拒候选)
+            from drivers.roster import FLAG_MAX_LINES
+            flags = [str(f) for f in raw][:FLAG_MAX_LINES]
+        else:
+            flags = self._read_flags(path)  # 旧帧/测试兜底:回退 FLAG 文件
         self._fifo.put({
             "t": "close", "run": run,
             "body": {"run_id": run["run_id"], "worker_id": run.get("worker_id"),
@@ -217,28 +273,24 @@ class ObsRelay:
                  status, f" note={note}" if note else "")
 
     def _read_flags(self, transcript_path: str) -> list[str]:
+        """回退读 FLAG 候选文件(读法单源:drivers.roster.read_flag_lines)。"""
         if not transcript_path:
             return []
-        d = os.path.dirname(transcript_path)
-        for name in _FLAG_FILES:
-            p = os.path.join(d, name)
-            try:
-                with open(p, encoding="utf-8", errors="ignore") as f:
-                    lines = [ln.strip() for ln in f if ln.strip()]
-                return lines[:_FLAG_MAX_LINES]
-            except OSError:
-                continue
-        return []
+        from drivers.roster import read_flag_lines
+        return read_flag_lines(os.path.dirname(transcript_path))
 
     # ── 引擎与发送 ──
 
     def _engine(self) -> None:
         q = self._bus.subscribe()
         try:
-            # 注册行:worker 上线即一份 idle 快照(平台 live_state 建档 + /api/status 有值)
+            # 注册行:worker 上线即一份 idle 快照(平台 live_state 建档 + /api/status 有值)。
+            # 必须立即 ship —— 若只进 0.6s 节拍槽,重启后首个 'starting' 帧会先到平台,
+            # 平台崩溃守卫将看不到 idle 帧:同 code 崩溃重启的僵尸 running run 无人关闭
             snap = dict(self._live.snapshot()) if self._live else {}
             snap.setdefault("worker_id", self._worker_id)
             self._fifo.put_live({**snap, "kind": "lifecycle"})
+            self._fifo.ship_live()
             next_live = time.monotonic() + _LIVE_CADENCE
             next_tail = time.monotonic() + _TAIL_CADENCE
             next_ping = time.monotonic() + _PING_CADENCE
@@ -262,7 +314,7 @@ class ObsRelay:
                     next_tail = now + _TAIL_CADENCE
                     run = self._run
                     if run and run.get("path") and not run.get("closed") \
-                            and self._fifo.depth() < 500:  # 平台长 down:暂停续读,队列不膨胀
+                            and self._fifo.depth() < _QUEUE_CAP:  # 平台长 down:暂停续读,队列不膨胀
                         try:
                             with self._file_lock:
                                 self._tail_once(run)
@@ -270,7 +322,8 @@ class ObsRelay:
                             log.debug("obs tail error", exc_info=True)
                 if now >= next_ping:
                     next_ping = now + _PING_CADENCE
-                    self._fifo.put({"t": "ping", "worker_id": self._worker_id})
+                    # ping 可再生:队满即丢(下节拍再生),不参与无界积压
+                    self._fifo.put_droppable({"t": "ping", "worker_id": self._worker_id})
                 if now >= next_roster:
                     next_roster = now + _ROSTER_CADENCE
                     try:
@@ -284,19 +337,22 @@ class ObsRelay:
                 pass
 
     def _roster_tick(self) -> None:
-        if self._poller is None:
+        # main() 已与 status_server 共享一个 RosterPoller 时直接用其快照;
+        # 裸 obs(STATUS_PORT=0)部署下惰性自起一个(与旧行为一致)。
+        if self._roster_poller is None:
             try:
                 from drivers.roster import RosterPoller
-                self._poller = RosterPoller(self._workdir)
-                self._poller.start()
+                self._roster_poller = RosterPoller(self._workdir)
+                self._roster_poller.start()
             except Exception as e:
                 log.warning("obs roster poller unavailable: %s", e)
                 return
         try:
-            snap = self._poller.snapshot()
+            snap = self._roster_poller.snapshot()
             if snap:
-                self._fifo.put({"t": "roster", "worker_id": self._worker_id,
-                                "snapshot": snap})
+                # roster 全量可再生:队满即丢(60s 后再生),不参与无界积压
+                self._fifo.put_droppable({"t": "roster", "worker_id": self._worker_id,
+                                          "snapshot": snap})
         except Exception as e:
             log.warning("obs roster snapshot failed: %s", e)
 
@@ -307,7 +363,7 @@ class ObsRelay:
             headers = {"X-Observability-Token": self._token} if self._token else {}
             while not self._stop.is_set():
                 try:
-                    msg = self._fifo._q.get(timeout=0.5)
+                    msg = self._fifo.get(timeout=0.5)
                 except queue.Empty:
                     continue
                 try:
@@ -319,6 +375,8 @@ class ObsRelay:
                                               "model": msg["run"].get("model") or "",
                                               "events": msg["rows"]}, headers=headers)
                     elif msg["t"] == "live":
+                        # 帧已在 put_live 剥好信封/带外键 —— 原样 POST(勿二次剥)。
+                        # 契约:LiveIn.snapshot = LiveState 纯快照
                         r = client.post(self._url + "/api/internal/live",
                                         json={"worker_id": msg["worker_id"],
                                               "kind": msg.get("kind", "lifecycle"),
@@ -340,20 +398,32 @@ class ObsRelay:
                         self._sent.set()
                         continue
                     detail = r.text[:200]
-                    if detail and (time.monotonic() - warned.get(detail, 0.0)) > 60:
+                    retryable = r.status_code >= 500 or r.status_code == 429
+                    if not retryable:
+                        # 4xx = 配置/载荷错误:重试不会成功,响亮丢弃(避免无界积压)
+                        log.error("obs POST %s HTTP %d — permanent error, message dropped: %s",
+                                  msg["t"], r.status_code, detail)
+                    elif detail and (time.monotonic() - warned.get(detail, 0.0)) > 60:
                         log.warning("obs POST %s HTTP %d: %s", msg["t"], r.status_code, detail)
                         warned[detail] = time.monotonic()
+                    if retryable and msg["t"] != "live":
+                        self._fifo.requeue(msg)
                 except Exception as e:
                     if time.monotonic() - warned.get("exc", 0.0) > 60:
-                        log.warning("obs platform unreachable (%s) — retrying, events buffered", e)
+                        log.warning("obs platform unreachable (%s) — retrying, message requeued", e)
                         warned["exc"] = time.monotonic()
+                    if msg["t"] != "live":
+                        self._fifo.requeue(msg)
+                    # live 帧不重放:最新槽会随下一节拍补送,旧帧重放反而滞后
                 time.sleep(backoff)
                 backoff = min(backoff * 1.5, 10.0)
 
 
-def maybe_start_relay(live, bus, workdir: str | None = None) -> ObsRelay | None:
+def maybe_start_relay(live, bus, workdir: str | None = None,
+                      roster_poller=None) -> ObsRelay | None:
     """OBSERVABILITY_URL 未设返回 None —— 宿主裸跑等场景零行为变化。
-    token 可选:平台侧未配 token 时返回 503(响亮),relay 记 warn + 退避重试。"""
+    token 可选:平台侧未配 token 时返回 503(响亮),relay 记 warn + 退避重试。
+    roster_poller:main() 与 status_server 共享的 RosterPoller(缺省 relay 惰性自起)。"""
     url = os.getenv("OBSERVABILITY_URL", "").strip().rstrip("/")
     if not url:
         log.info("obs relay disabled (OBSERVABILITY_URL unset)")
@@ -361,6 +431,7 @@ def maybe_start_relay(live, bus, workdir: str | None = None) -> ObsRelay | None:
     token = os.getenv("OBSERVABILITY_TOKEN", "").strip() or None
     workdir = workdir or os.getenv("ADAPTER_WORKDIR", "/work")
     relay = ObsRelay(live, bus, workdir, url, token,
-                     worker_id=os.getenv("WORKER_ID", "worker-1"))
+                     worker_id=os.getenv("WORKER_ID", "worker-1"),
+                     roster_poller=roster_poller)
     relay.start()
     return relay

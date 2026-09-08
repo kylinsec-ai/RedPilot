@@ -24,7 +24,8 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from drivers.roster import RosterPoller, TranscriptDigest, challenge_detail, scan_local
+from drivers.roster import (RosterPoller, TranscriptDigest, _safe_code, challenge_detail,
+                            empty_roster_snapshot, local_challenge_row, scan_local)
 
 log = logging.getLogger("adapter.status")
 
@@ -54,19 +55,6 @@ def _valid_rel(name: str) -> bool:
     """映射后目录名的遍历守卫:_safe_code 产物(含 hash 后缀,超 64 字符)放行"""
     return bool(name) and "/" not in name and "\\" not in name \
         and "\x00" not in name and name not in (".", "..")
-
-
-def _map_code(code: str) -> str:
-    """与 driver 一致的 code->目录映射（sanitize+hash 后缀）；失败回退 sanitize 值"""
-    try:
-        from drivers.benchmark_driver import _safe_code
-        return _safe_code(code)
-    except Exception:
-        # 回退必须与 _safe_code 逐字一致（含 hash 后缀），否则查到错误目录
-        import hashlib
-        raw = str(code)
-        safe = re.sub(r"[^A-Za-z0-9_-]+", "-", raw).strip("-")[:64] or "chal"
-        return safe if safe == raw else f"{safe}-{hashlib.sha1(raw.encode()).hexdigest()[:6]}"
 
 
 def _make_handler(live, bus, workdir: str, web_dir: str,
@@ -211,6 +199,11 @@ def _make_handler(live, bus, workdir: str, web_dir: str,
                 while True:
                     try:
                         ev = q.get(timeout=15)
+                        if isinstance(ev, dict):
+                            # 带外元数据(_ 前缀,如 closing 帧附带的 _accepted_flags 明文)
+                            # 只走 relay→平台链路,绝不向仪表板广播(见 obs_relay._strip_envelope)
+                            ev = {k: v for k, v in ev.items()
+                                  if not (isinstance(k, str) and k.startswith("_"))}
                         self.wfile.write(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode())
                     except queue.Empty:
                         self.wfile.write(b": heartbeat\n\n")
@@ -237,7 +230,7 @@ def _make_handler(live, bus, workdir: str, web_dir: str,
             cands = []
             if _valid_code(code):
                 cands.append(os.path.join(workdir, code, "transcript.jsonl"))
-            mapped = _map_code(code)
+            mapped = _safe_code(code)
             if mapped != code and _valid_rel(mapped):
                 cands.append(os.path.join(workdir, mapped, "transcript.jsonl"))
             if not cands:
@@ -257,25 +250,20 @@ def _make_handler(live, bus, workdir: str, web_dir: str,
 
         def _roster(self) -> None:
             """题目总览：poller 快照（平台+本地）；异常时回退一次本地扫描，绝不让页面空"""
+            snap = None
             try:
-                snap = dict(poller.snapshot()) if poller else {
-                    "fetched_at": 0.0, "stale": True, "platform_error": "",
-                    "platform_disabled": True, "challenges": {}}
+                if poller is not None:
+                    snap = dict(poller.snapshot())
             except Exception:
                 log.exception("roster snapshot failed")
-                snap = {"fetched_at": 0.0, "stale": True, "platform_error": "",
-                        "platform_disabled": True, "challenges": {}}
+            if not snap:  # poller 缺省/失败 → 空快照(页面仍可渲染,带 stale 标记)
+                snap = empty_roster_snapshot()
             if not snap.get("challenges"):
                 try:
                     local = scan_local(workdir)
                     if local:
-                        rows = {}
-                        for code, lc in local.items():
-                            rows[code] = {"unique_code": code, "local_only": True,
-                                          "difficulty": "", "total_score": 0, "flag_count": 0,
-                                          "correct_flag_count": 0, "is_completed": False,
-                                          "container_status": "", "container_addr": [],
-                                          "level": 0, "description": "", "local": lc}
+                        rows = {code: local_challenge_row(code, local=lc)
+                                for code, lc in local.items()}
                         snap = dict(snap, challenges=rows)
                 except Exception:
                     log.exception("roster local fallback failed")
@@ -284,7 +272,7 @@ def _make_handler(live, bus, workdir: str, web_dir: str,
         def _challenge(self, qs: dict) -> None:
             code = (qs.get("code") or [""])[0]
             if not _valid_code(code):
-                mapped = _map_code(code)
+                mapped = _safe_code(code)
                 if not (mapped != code and _valid_rel(mapped)):
                     self.send_error(400, "bad code")
                     return
@@ -300,7 +288,7 @@ def _make_handler(live, bus, workdir: str, web_dir: str,
         def _timeline(self, qs: dict) -> None:
             code = (qs.get("code") or [""])[0]
             if not _valid_code(code):
-                mapped = _map_code(code)
+                mapped = _safe_code(code)
                 if not (mapped != code and _valid_rel(mapped)):
                     self.send_error(400, "bad code")
                     return
@@ -324,8 +312,12 @@ def _make_handler(live, bus, workdir: str, web_dir: str,
 
 def serve_forever_in_thread(live, bus, port: int, *,
                             workdir: str | None = None,
-                            web_dir: str | None = None) -> threading.Thread | None:
-    """起守护线程服务；port<=0 则禁用（回归：求解不受影响）。"""
+                            web_dir: str | None = None,
+                            poller: RosterPoller | None = None) -> threading.Thread | None:
+    """起守护线程服务；port<=0 则禁用（回归：求解不受影响）。
+
+    poller 缺省时自建并启动 RosterPoller;benchmark_driver.main 会与 obs_relay
+    共享同一个 poller 后传入(避免同 worker 两个 60s 轮询线程双写 roster.json)。"""
     if not port or port <= 0:
         log.info("status server disabled (STATUS_PORT=%s)", port)
         return None
@@ -335,13 +327,14 @@ def serve_forever_in_thread(live, bus, port: int, *,
         web_dir = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                 "..", "web"))
     # 监视台数据层：题目总览轮询 + transcript 合流 digest（各自失败隔离，不起服务不阻塞）
-    poller = digest = None
-    try:
-        poller = RosterPoller(workdir)
-        poller.start()
-    except Exception:
-        log.exception("roster poller start failed (dashboard shows local-only)")
-        poller = None
+    if poller is None:
+        try:
+            poller = RosterPoller(workdir)
+            poller.start()
+        except Exception:
+            log.exception("roster poller start failed (dashboard shows local-only)")
+            poller = None
+    digest = None
     try:
         digest = TranscriptDigest(workdir)
     except Exception:

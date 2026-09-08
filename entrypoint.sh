@@ -5,8 +5,16 @@ echo "[adapter] === TsecBench 平台接入层适配器 ==="
 echo "[adapter] BENCHMARK_BASE_URL=${BENCHMARK_BASE_URL:-<unset>}"
 
 # ── 校验必需环境变量 ──
-: "${BENCHMARK_TOKEN:?BENCHMARK_TOKEN must be provided}"
-: "${BENCHMARK_BASE_URL:?BENCHMARK_BASE_URL must be provided}"
+# 缺失 = 配置错误:明示后 exit 0 停止(restart:on-failure 会重启一切非零退出,
+# 只有 exit 0 能"停一次";用 :? 会 exit 1 无限闷循环,掩盖真因)
+if [[ -z "${BENCHMARK_TOKEN:-}" ]]; then
+  echo "[adapter] FATAL: BENCHMARK_TOKEN 未设置(.env 或 compose 环境变量)——容器停止,补齐后重新 docker compose up -d" >&2
+  exit 0
+fi
+if [[ -z "${BENCHMARK_BASE_URL:-}" ]]; then
+  echo "[adapter] FATAL: BENCHMARK_BASE_URL 未设置——容器停止,补齐后重新 docker compose up -d" >&2
+  exit 0
+fi
 
 # LLM 凭据由 pi 自行解析(官方 env 名,其次 ~/.pi/agent/auth.json)。
 # 空字符串的 *_API_KEY 视为未设后 unset(避免空值歧义;provider 凭据 env 名
@@ -41,7 +49,8 @@ if [[ -n "${VPN_CONFIG}" && -f "${VPN_CONFIG}" ]]; then
   # 保活: ping + 断线自动重连
   ovpn_args+=(--ping 10 --ping-restart 60)
 
-  openvpn "${ovpn_args[@]}" || { echo "[adapter] FATAL: openvpn failed" >&2; exit 1; }
+  # openvpn 启动失败视为 VPN 层瞬断:exit 4 → restart:on-failure 自动拉起(与 driver 同款语义)
+  openvpn "${ovpn_args[@]}" || { echo "[adapter] FATAL: openvpn failed, exiting 4 (restart will retry)" >&2; exit 4; }
 
   # 等待 VPN 建立 — 检测 tun 设备或尝试访问内网
   echo "[adapter] waiting for VPN tunnel..."

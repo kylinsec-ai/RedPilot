@@ -3,27 +3,24 @@
 from __future__ import annotations
 
 import time
-import uuid
 
-from conftest import attempt_ev, seed_run, session_ev, tool_start_ev, turn_start_ev
-
-
-def _rid() -> str:
-    return uuid.uuid4().hex
+from conftest import (attempt_ev, rid, roster_snap, seed_run, session_ev,
+                      tool_start_ev, turn_start_ev)
 
 
 # ── 幂等 ──
 
 def test_insert_idempotent(store):
-    rid = _rid()
-    assert store.ensure_run(rid, "worker-1", "a-05")
-    rows = [(0, "session", None, '{"type":"session"}'),
-            (1, "message_start", None, "{}")]
-    assert store.insert_events(rid, "worker-1", "a-05", rows) == 2
-    assert store.insert_events(rid, "worker-1", "a-05", rows) == 0  # 全重放
-    assert store.insert_events(rid, "worker-1", "a-05",
-                               [(2, "agent_start", None, "{}")]) == 1
-    assert store.ensure_run(rid, "worker-1", "a-05") is False  # 已存在
+    run_id = rid()
+    inserted, created = store.append_events(run_id, "worker-1", "a-05",
+                                            [(0, "session", '{"type":"session"}'),
+                                             (1, "message_start", "{}")])
+    assert (inserted, created) == (2, True)
+    assert store.append_events(run_id, "worker-1", "a-05",
+                               [(0, "session", '{"type":"session"}'),
+                                (1, "message_start", "{}")]) == (0, False)  # 全重放
+    assert store.append_events(run_id, "worker-1", "a-05",
+                               [(2, "agent_start", "{}")])[0] == 1
 
 
 def test_close_run_state_machine(store):
@@ -38,7 +35,7 @@ def test_close_run_state_machine(store):
     assert row["turns"] == 2
     assert row["sessions"] == 1
     assert row["flags_found"] == 1
-    assert row["flags_accepted"] == '["flag{a}"]'
+    assert row["flags_accepted"] == ["flag{a}"]
     assert row["ended_at"] is not None and row["duration_s"] >= 0
     # 终态幂等:再关一律忽略
     assert store.close_run(rid, status="failed") is False
@@ -87,20 +84,16 @@ def test_transcript_tail_across_runs(store):
 
 # ── roster 每 worker 行 + 读合并 ──
 
-def _snap(fetched_at: float, stale: bool, rows: dict) -> dict:
-    return {"fetched_at": fetched_at, "stale": stale, "platform_error": "",
-            "platform_disabled": False, "challenges": rows}
-
-
 def test_roster_per_worker_and_merge(store):
-    w1 = _snap(100.0, False, {"a-05": {"unique_code": "a-05", "difficulty": "easy"},
-                              "b-01": {"unique_code": "b-01", "local_only": True,
-                                       "local": {"dir": "b-01", "flag": True}}})
+    w1 = roster_snap({"a-05": {"unique_code": "a-05", "difficulty": "easy"},
+                      "b-01": {"unique_code": "b-01", "local_only": True,
+                               "local": {"dir": "b-01", "flag": True}}})
     store.put_roster("worker-1", w1)
     # 单 worker 读 = 原样
     assert store.roster_merged() == w1
 
-    stale_w2 = _snap(50.0, True, {"c-01": {"unique_code": "c-01", "difficulty": "hard"}})
+    stale_w2 = roster_snap({"c-01": {"unique_code": "c-01", "difficulty": "hard"}},
+                           fetched_at=50.0, stale=True)
     stale_w2["platform_error"] = "boom"
     store.put_roster("worker-2", stale_w2)
     merged = store.roster_merged()
@@ -108,8 +101,9 @@ def test_roster_per_worker_and_merge(store):
     assert merged["fetched_at"] == 100.0 and merged["stale"] is False
     assert set(merged["challenges"]) == {"a-05", "b-01", "c-01"}
     # 同一 code 多 worker:非 local_only 优先于 local_only
-    w2_fresh = _snap(200.0, False, {"b-01": {"unique_code": "b-01",
-                                             "difficulty": "medium", "local_only": False}})
+    w2_fresh = roster_snap({"b-01": {"unique_code": "b-01",
+                                     "difficulty": "medium", "local_only": False}},
+                           fetched_at=200.0)
     store.put_roster("worker-2", w2_fresh)
     merged = store.roster_merged()
     assert merged["fetched_at"] == 200.0

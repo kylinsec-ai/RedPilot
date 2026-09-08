@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import Any, Iterable, Optional
 
 from .redact import summarize_args
@@ -31,28 +32,18 @@ _TEXT_ENTRY_MAX = 1200
 
 def _iso_to_ms(iso: str) -> Optional[float]:
     try:
-        s = iso
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        from datetime import datetime
-        return datetime.fromisoformat(s).timestamp() * 1000.0
+        # py3.11+ fromisoformat 直接接受尾部 Z
+        return datetime.fromisoformat(iso).timestamp() * 1000.0
     except Exception:
         return None
 
 
 def _oneline(args, max_len: int = 300) -> str:
-    """工具参数 -> 单行命令/摘要(复用 redact.summarize_args;与 worker roster._oneline 同语义)"""
-    try:
-        if isinstance(args, dict) and isinstance(args.get("command"), str):
-            cmd = " ".join(args["command"].split())
-            return cmd if len(cmd) <= max_len else cmd[:max_len] + "…"
-        return summarize_args(args or {}, max_len=max_len)
-    except Exception:
-        try:
-            s = json.dumps(args or {}, ensure_ascii=False)
-        except Exception:
-            s = str(args)
-        return s if len(s) <= max_len else s[:max_len] + "…"
+    """工具参数 -> 单行命令/摘要(summarize_args 已兜底截断/脱敏,与 roster 同语义)"""
+    if isinstance(args, dict) and isinstance(args.get("command"), str):
+        cmd = " ".join(args["command"].split())
+        return cmd if len(cmd) <= max_len else cmd[:max_len] + "…"
+    return summarize_args(args or {}, max_len=max_len)
 
 
 def _result_tail(result, tail_len: int = 2000) -> tuple[str, int]:

@@ -23,13 +23,15 @@
   const q = $derived(query.trim().toLowerCase());
   const all = $derived(toRows(roster.data));
   const nTotal = $derived(all.length);
+  // q 过滤后的行(列表与 reveal 逻辑共用一份,避免两处 filter 语义漂移)
+  const filtered = $derived(
+    q ? all.filter((r) => r.unique_code.toLowerCase().includes(q)) : all,
+  );
 
   // 先全局默认排序再按难度装桶(桶内相对顺序与逐桶排序一致,sort stable);
   // 未知难度归"其他",组序 DIFF_ORDER
   const groups = $derived.by(() => {
-    const sorted = sortRows(
-      q ? all.filter((r) => r.unique_code.toLowerCase().includes(q)) : all,
-    );
+    const sorted = sortRows(filtered);
     const buckets = new Map<DiffKey, Row[]>();
     for (const r of sorted) {
       const k = diffKey(r.difficulty);
@@ -60,9 +62,15 @@
       return;
     }
     if (c === lastScrolled || document.hidden) return;
-    if (q && !all.some((r) => r.unique_code === c)) {
+    const present = all.some((r) => r.unique_code === c);
+    if (present && !filtered.some((r) => r.unique_code === c)) {
       // 搜索吞掉了激活行 → 清空搜索,下一轮 effect 再滚
       query = "";
+      return;
+    }
+    if (!present) {
+      // 全量花名册都没有该题(平台断连/历史题深链):清搜索也滚不到,
+      // 此时绝不能碰 query —— 否则每次击键都会被本 effect 抹掉,搜索框废掉
       return;
     }
     const el = listEl?.querySelector<HTMLElement>(`[data-code="${c}"]`);

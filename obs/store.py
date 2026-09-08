@@ -16,20 +16,48 @@ from contextlib import contextmanager
 from typing import Any
 
 from . import db as dbmod
+from .config import DEFAULT_STALE_AFTER
+from .schema import ACTIVE_PHASES, CLOSABLE_STATUSES
 
-# live 快照 phase 集合(用于崩溃守卫与 active-live 判定;与 worker LiveState 一致)
-ACTIVE_PHASES = ("starting", "solving", "submitting", "closing")
-# 可被 close 写入的 run 状态(终态幂等)
-_CLOSABLE = ("running", "interrupted")
+# runs 行投影(列表/详情共用;duration 由时间戳导出,不落列避免两处维护)。
+# event_count 用单次聚合 LEFT JOIN 而非每行相关子查询(limit≤500 时少 500 次索引扫)。
+_RUN_FIELDS = (
+    "r.run_id, r.worker_id, r.challenge_code, r.model, r.status,"
+    " r.started_at, r.ended_at,"
+    " CASE WHEN r.ended_at IS NOT NULL THEN MAX(0.0, r.ended_at - r.started_at) END"
+    "   AS duration_s,"
+    " r.error, r.turns, r.sessions, r.flags_found, r.flags_accepted, r.updated_at,"
+    " COALESCE(ev.event_count, 0) AS event_count"
+)
+_RUN_FROM = (
+    "FROM runs r LEFT JOIN"
+    " (SELECT run_id, COUNT(*) AS event_count FROM events GROUP BY run_id) ev"
+    " ON ev.run_id = r.run_id"
+)
+
+
+def _decode_flags(raw: str | None) -> list[str]:
+    """flags_accepted JSON 列 -> list(缺失/坏值 = [],与 challenge_flags 同缺省)。"""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 class ObsStore:
-    def __init__(self, db_path: str | os.PathLike):
+    def __init__(self, db_path: str | os.PathLike,
+                 *, stale_after: float = DEFAULT_STALE_AFTER):
+        """stale_after:心跳过期阈值 —— 房管关 stale run 与读端"在线上"判定同源
+        (app lifespan 从 Settings.stale_after 注入;测试可显式传)。"""
         dbmod.ensure_parent(db_path)
         self._path = str(db_path)
         self._conn = dbmod.connect(db_path)
         dbmod.migrate(self._conn)
         self._lock = threading.RLock()
+        self._stale_after = stale_after
 
     # ── 基础设施 ──
 
@@ -56,33 +84,32 @@ class ObsStore:
             else:
                 self._conn.execute("COMMIT")
 
-    def _inserted(self, before: int) -> int:
-        return self._conn.total_changes - before
-
     # ── 摄取(全部幂等) ──
 
-    def ensure_run(self, run_id: str, worker_id: str, challenge_code: str,
-                   model: str = "", started_at: float | None = None) -> bool:
-        """run 行不存在则建(running)。返回是否新建。"""
+    def append_events(self, run_id: str, worker_id: str, challenge_code: str,
+                      rows: list[tuple[int, str, str]], model: str = "",
+                      started_at: float | None = None) -> tuple[int, bool]:
+        """run 行不存在则建(running),随后幂等批插事件 —— 单事务。
+
+        rows 为 (seq, type, payload);UNIQUE(run_id, seq) + INSERT OR IGNORE
+        保证整批重放新增=0。返回 (实际新增行数, 是否新建 run)。
+        """
         started_at = started_at if started_at is not None else time.time()
         with self._tx():
             cur = self._conn.execute(
                 "INSERT OR IGNORE INTO runs(run_id, worker_id, challenge_code, model,"
                 " status, started_at, updated_at) VALUES(?,?,?,?, 'running',?,?)",
                 (run_id, worker_id, challenge_code, model, started_at, started_at))
-        return cur.rowcount > 0
-
-    def insert_events(self, run_id: str, worker_id: str, challenge_code: str,
-                      rows: list[tuple[int, str, float | None, str]]) -> int:
-        """幂等写入:UNIQUE(run_id, seq) + INSERT OR IGNORE。返回实际新增行数(整批重放=0)。"""
-        with self._tx():
+            created = cur.rowcount > 0
             before = self._conn.total_changes
             self._conn.executemany(
-                "INSERT OR IGNORE INTO events(run_id, seq, worker_id, challenge_code,"
-                " type, ts, payload) VALUES(?,?,?,?,?,?,?)",
-                [(run_id, seq, worker_id, challenge_code, typ, ts, payload)
-                 for seq, typ, ts, payload in rows])
-        return self._inserted(before)
+                "INSERT OR IGNORE INTO events(run_id, seq, type, payload)"
+                " VALUES(?,?,?,?)",
+                [(run_id, seq, typ, payload) for seq, typ, payload in rows])
+            # 计数必须在锁内读取:锁外读 total_changes 会把并发线程刚提交的
+            # 批计入本批(共享同一连接,total_changes 是连接级累计值)
+            inserted = self._conn.total_changes - before
+        return inserted, created
 
     def close_run(self, run_id: str, *, status: str, error: str | None = None,
                   turns: int | None = None, sessions: int | None = None,
@@ -92,18 +119,16 @@ class ObsStore:
         ended_at = ended_at if ended_at is not None else time.time()
         with self._tx():
             row = self._conn.execute(
-                "SELECT status, started_at FROM runs WHERE run_id=?", (run_id,)).fetchone()
-            if row is None or row["status"] not in _CLOSABLE:
+                "SELECT status FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            if row is None or row["status"] not in CLOSABLE_STATUSES:
                 return False
-            sets = ["status=?", "ended_at=?", "duration_s=?",
+            sets = ["status=?", "ended_at=?",
                     "turns=COALESCE(?, (SELECT COUNT(*) FROM events e"
                     " WHERE e.run_id=runs.run_id AND e.type='tool_execution_start'))",
                     "sessions=COALESCE(?, (SELECT COUNT(*) FROM events e"
                     " WHERE e.run_id=runs.run_id AND e.type='session'))",
                     "updated_at=?"]
-            params: list[Any] = [status, ended_at,
-                                 max(0.0, ended_at - row["started_at"]),
-                                 turns, sessions, ended_at]
+            params: list[Any] = [status, ended_at, turns, sessions, ended_at]
             if error is not None:
                 sets.append("error=?")
                 params.append(error)
@@ -121,28 +146,34 @@ class ObsStore:
     def close_runs_for_switch(self, worker_id: str, keep_code: str) -> list[str]:
         """崩溃守卫:worker 从某 code 切到新 code(未关旧 run)——旧 running run 关为 interrupted。"""
         return self._interrupt_runs(
-            "WHERE worker_id=? AND status='running' AND challenge_code<>?",
+            "WHERE r.worker_id=? AND r.status='running' AND r.challenge_code<>?",
             (worker_id, keep_code), error=f"switched away from {keep_code}")
 
     def close_running_for_worker(self, worker_id: str, error: str) -> list[str]:
         """空闲守卫:worker 重新上线(phase=idle)却残留 running run → 视为重启残留,关闭。"""
         return self._interrupt_runs(
-            "WHERE worker_id=? AND status='running'", (worker_id,), error=error)
+            "WHERE r.worker_id=? AND r.status='running'", (worker_id,), error=error)
 
-    def close_stale_runs(self, now: float | None = None, stale_after: float = 150.0) -> list[str]:
-        """housekeeper:心跳过期(无 live 行或 updated_at 超 stale_after)的 running run 关为 interrupted。"""
+    def close_stale_runs(self, now: float | None = None,
+                         stale_after: float | None = None) -> list[str]:
+        """housekeeper:心跳过期(无 live 行或 updated_at 超 stale_after)的 running run 关为 interrupted。
+        stale_after 缺省取构造注入的阈值(与读端新鲜窗口同源)。"""
+        if stale_after is None:
+            stale_after = self._stale_after
         now = now if now is not None else time.time()
         return self._interrupt_runs(
             "WHERE r.status='running' AND (l.updated_at IS NULL OR ? - l.updated_at > ?)",
-            (now, stale_after), error="no heartbeat", alias=True)
+            (now, stale_after), error="no heartbeat")
 
-    def _interrupt_runs(self, where: str, params: tuple, *, error: str,
-                        alias: bool = False) -> list[str]:
+    def _interrupt_runs(self, where: str, params: tuple, *, error: str) -> list[str]:
+        """关 running run 为 interrupted。live_state 恒 LEFT JOIN(live_state.worker_id 为
+        PK,1:1 无损)——无 live 行的 worker 由 l.updated_at IS NULL 表达。"""
         now = time.time()
-        table = "runs r LEFT JOIN live_state l ON l.worker_id=r.worker_id" if alias else "runs"
         with self._tx():
             rows = self._conn.execute(
-                f"SELECT run_id FROM {table} {where}", params).fetchall()
+                "SELECT r.run_id FROM runs r"
+                " LEFT JOIN live_state l ON l.worker_id = r.worker_id " + where,
+                params).fetchall()
             if not rows:
                 return []
             ids = [r["run_id"] for r in rows]
@@ -176,21 +207,12 @@ class ObsStore:
 
     def put_roster(self, worker_id: str, snap: dict[str, Any]) -> None:
         """覆盖该 worker 的 roster 轮询快照(60s 节奏);payload 存完整 5 键对象。"""
-        now = time.time()
         with self._tx():
             self._conn.execute(
-                "INSERT INTO roster_snapshot(worker_id, fetched_at, stale, platform_error,"
-                " platform_disabled, payload, updated_at) VALUES(?,?,?,?,?,?,?)"
-                " ON CONFLICT(worker_id) DO UPDATE SET fetched_at=excluded.fetched_at,"
-                " stale=excluded.stale, platform_error=excluded.platform_error,"
-                " platform_disabled=excluded.platform_disabled, payload=excluded.payload,"
+                "INSERT INTO roster_snapshot(worker_id, payload, updated_at) VALUES(?,?,?)"
+                " ON CONFLICT(worker_id) DO UPDATE SET payload=excluded.payload,"
                 " updated_at=excluded.updated_at",
-                (worker_id,
-                 snap.get("fetched_at"),
-                 1 if snap.get("stale") else 0,
-                 snap.get("platform_error") or None,
-                 1 if snap.get("platform_disabled") else 0,
-                 json.dumps(snap, ensure_ascii=False), now))
+                (worker_id, json.dumps(snap, ensure_ascii=False), time.time()))
 
     # ── 只读查询 ──
 
@@ -202,31 +224,70 @@ class ObsStore:
         return [{"worker_id": r["worker_id"], "updated_at": r["updated_at"],
                  "snapshot": json.loads(r["snapshot"])} for r in rows]
 
-    def live_latest(self) -> dict[str, Any] | None:
-        """最新活 worker 的快照(按 updated_at);无则 None。"""
-        rows = self.live_rows()
+    def live_latest(self, fresh_after: float | None = None) -> dict[str, Any] | None:
+        """最新"在线上"worker 的快照(按 updated_at;无线上行则 None)。
+
+        带新鲜窗口:死 worker 的残留 busy 快照不再被无限期地当作当前状态
+        (e2e 观测:worker 退出 23h 后 phase='closing' 行仍在被 /api/status 返回)。
+        fresh_after 缺省取构造注入阈值(与房管关 stale run 同源)。
+        """
+        if fresh_after is None:
+            fresh_after = self._stale_after
+        now = time.time()
+        rows = [r for r in self.live_rows() if now - r["updated_at"] <= fresh_after]
         if not rows:
             return None
         return max(rows, key=lambda r: r["updated_at"])["snapshot"]
 
     def active_live_codes(self) -> set[str]:
-        """正在活跃求解的 code 集合(用于 timeline meta.live 判定,复刻旧语义)。"""
+        """活跃求解的 code 集合(用于 timeline meta.live 判定,复刻旧语义)。
+
+        同样只算新鲜窗口内有心跳的 worker:否则死 worker 的残留
+        'closing'/'solving' 快照把已结束的 code 永远标成"实时求解中"。
+        窗口与 live_latest 同源(self._stale_after)。
+        """
+        now = time.time()
         return {r["snapshot"].get("challenge_code")
                 for r in self.live_rows()
-                if r["snapshot"].get("phase") in ACTIVE_PHASES
+                if now - r["updated_at"] <= self._stale_after
+                and r["snapshot"].get("phase") in ACTIVE_PHASES
                 and r["snapshot"].get("challenge_code")}
 
+    def sweep_live(self, now: float | None = None,
+                   older_than: float | None = None) -> int:
+        """房管 GC:删除超 older_than 秒无更新的 live_state 行(已死 worker 残留)。
+
+        安全前提:崩溃残留的 running run 已由 close_stale_runs(150s)先行打断,
+        删行只影响"读端无此 worker"的观感,不再承担守卫职责。
+        older_than 缺省 = stale 窗口 x4(房管节拍下死 worker 至少要留 4 个窗口)。
+        """
+        if older_than is None:
+            older_than = self._stale_after * 4
+        now = now if now is not None else time.time()
+        with self._tx():
+            cur = self._conn.execute(
+                "DELETE FROM live_state WHERE updated_at < ?", (now - older_than,))
+        return cur.rowcount
+
     def roster_rows(self) -> list[dict[str, Any]]:
+        """每 worker 一行:payload 快照全键 + worker_id/updated_at(快照 5 键由写入方保证)。
+        身份列恒取自 DB 行:payload 若含同名键(脏数据/伪造)一律剥掉,不得覆盖行身份。"""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT worker_id, fetched_at, stale, platform_error, platform_disabled,"
-                " payload, updated_at FROM roster_snapshot ORDER BY updated_at DESC").fetchall()
-        return [{"worker_id": r["worker_id"], "fetched_at": r["fetched_at"],
-                 "stale": bool(r["stale"]), "platform_error": r["platform_error"],
-                 "platform_disabled": bool(r["platform_disabled"]),
-                 "challenges": (json.loads(r["payload"]).get("challenges") or {})
-                 if r["payload"] else {},
-                 "updated_at": r["updated_at"]} for r in rows]
+                "SELECT worker_id, payload, updated_at FROM roster_snapshot"
+                " ORDER BY updated_at DESC").fetchall()
+        out = []
+        for r in rows:
+            try:
+                snap = json.loads(r["payload"])
+            except Exception:
+                snap = {}
+            if not isinstance(snap, dict):
+                snap = {}
+            snap.pop("worker_id", None)
+            snap.pop("updated_at", None)
+            out.append({"worker_id": r["worker_id"], "updated_at": r["updated_at"], **snap})
+        return out
 
     def roster_merged(self) -> dict[str, Any]:
         """多 worker roster 读合并;单 worker 时与原快照逐字节同构。
@@ -238,35 +299,35 @@ class ObsStore:
         if not rows:
             return {"fetched_at": 0.0, "stale": True, "platform_error": "",
                     "platform_disabled": True, "challenges": {}}
-        good = [r for r in rows if not r["stale"] and not r["platform_error"]]
-        seg = max(good, key=lambda r: r["fetched_at"] or 0.0) if good else rows[0]
+        good = [r for r in rows if not r.get("stale") and not r.get("platform_error")]
+        seg = max(good, key=lambda r: r.get("fetched_at") or 0.0) if good else rows[0]
         merged: dict[str, dict[str, Any]] = {}
-        for r in sorted(rows, key=lambda x: x["fetched_at"] or 0.0, reverse=True):
-            for code, row in r["challenges"].items():
+        for r in sorted(rows, key=lambda x: x.get("fetched_at") or 0.0, reverse=True):
+            for code, row in (r.get("challenges") or {}).items():
                 prev = merged.get(code)
                 if prev is None:
                     merged[code] = row
                 elif prev.get("local_only") and not row.get("local_only"):
                     merged[code] = row
-        return {"fetched_at": seg["fetched_at"], "stale": seg["stale"],
-                "platform_error": seg["platform_error"] or "",
-                "platform_disabled": seg["platform_disabled"],
+        return {"fetched_at": seg.get("fetched_at"), "stale": bool(seg.get("stale")),
+                "platform_error": seg.get("platform_error") or "",
+                "platform_disabled": bool(seg.get("platform_disabled")),
                 "challenges": merged}
 
     def events_for_code(self, code: str) -> list[dict[str, Any]]:
         """某 code 的全部事件,按 (run 起始时间, run rowid, run 内 seq) 全局有序(供 fold/尾部)。"""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT e.seq, e.type, e.ts, e.payload, e.run_id FROM events e"
+                "SELECT e.seq, e.type, e.payload, e.run_id FROM events e"
                 " JOIN runs r ON r.run_id = e.run_id"
-                " WHERE e.challenge_code=? ORDER BY r.started_at, r.rowid, e.seq",
+                " WHERE r.challenge_code=? ORDER BY r.started_at, r.rowid, e.seq",
                 (code,)).fetchall()
         return [dict(r) for r in rows]
 
     def events_for_run(self, run_id: str) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT seq, type, ts, payload FROM events WHERE run_id=? ORDER BY seq",
+                "SELECT seq, type, payload FROM events WHERE run_id=? ORDER BY seq",
                 (run_id,)).fetchall()
         return [dict(r) for r in rows]
 
@@ -274,8 +335,10 @@ class ObsStore:
         """该 code 最近 tail 条 payload(跨 run,时间倒序取尾再正序返回)。"""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT payload FROM events WHERE challenge_code=?"
-                " ORDER BY id DESC LIMIT ?", (code, tail)).fetchall()
+                "SELECT e.payload FROM events e"
+                " JOIN runs r ON r.run_id = e.run_id"
+                " WHERE r.challenge_code=?"
+                " ORDER BY e.id DESC LIMIT ?", (code, tail)).fetchall()
         return [r["payload"] for r in reversed(rows)]
 
     def list_runs(self, status: str | None = None, worker: str | None = None,
@@ -294,13 +357,13 @@ class ObsStore:
         params.append(min(max(limit, 1), 500))
         with self._lock:
             rows = self._conn.execute(
-                "SELECT r.run_id, r.worker_id, r.challenge_code, r.model, r.status,"
-                " r.started_at, r.ended_at, r.duration_s, r.error, r.turns, r.sessions,"
-                " r.flags_found, r.flags_accepted, r.updated_at,"
-                " (SELECT COUNT(*) FROM events e WHERE e.run_id = r.run_id) AS event_count"
-                f" FROM runs r{clause} ORDER BY r.started_at DESC, r.rowid DESC LIMIT ?",
+                f"SELECT {_RUN_FIELDS} {_RUN_FROM}{clause}"
+                " ORDER BY r.started_at DESC, r.rowid DESC LIMIT ?",
                 params).fetchall()
-        return [dict(r) for r in rows]
+        out = [dict(r) for r in rows]
+        for row in out:
+            row["flags_accepted"] = _decode_flags(row["flags_accepted"])
+        return out
 
     def challenge_flags(self, code: str) -> list[str]:
         """该 code 最近一次携带 flags_accepted 的 run 的 flag 明文(=FLAG 文件同信任域)。"""
@@ -309,34 +372,34 @@ class ObsStore:
                 "SELECT flags_accepted FROM runs WHERE challenge_code=? AND flags_accepted IS NOT NULL"
                 " ORDER BY COALESCE(ended_at, updated_at) DESC, rowid DESC LIMIT 1",
                 (code,)).fetchone()
-        if row is None:
-            return []
-        try:
-            flags = json.loads(row["flags_accepted"])
-            return flags if isinstance(flags, list) else []
-        except Exception:
-            return []
+        return _decode_flags(row["flags_accepted"]) if row else []
+
+    def run_exists(self, run_id: str) -> bool:
+        """存在性探测(详情端点 404 守卫用,免拉整行投影)。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        return row is not None
 
     def run_row(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT r.run_id, r.worker_id, r.challenge_code, r.model, r.status,"
-                " r.started_at, r.ended_at, r.duration_s, r.error, r.turns, r.sessions,"
-                " r.flags_found, r.flags_accepted, r.updated_at,"
-                " (SELECT COUNT(*) FROM events e WHERE e.run_id = r.run_id) AS event_count"
-                " FROM runs r WHERE r.run_id=?", (run_id,)).fetchone()
-        return dict(row) if row else None
+                f"SELECT {_RUN_FIELDS} {_RUN_FROM} WHERE r.run_id=?", (run_id,)).fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        out["flags_accepted"] = _decode_flags(out["flags_accepted"])
+        return out
 
     def run_events(self, run_id: str, after: int = 0, limit: int = 500) -> dict[str, Any]:
         """增量事件页:{events, next_seq, end}。next_seq = 本页末条 seq+1(续拉语义,与 seq 空洞无关)。"""
         limit = min(max(limit, 1), 1000)
         with self._lock:
             rows = self._conn.execute(
-                "SELECT seq, type, ts, payload FROM events WHERE run_id=? AND seq>=?"
+                "SELECT seq, type, payload FROM events WHERE run_id=? AND seq>=?"
                 " ORDER BY seq LIMIT ?", (run_id, after, limit + 1)).fetchall()
         has_more = len(rows) > limit
         rows = rows[:limit]
-        events = [{"seq": r["seq"], "type": r["type"], "ts": r["ts"],
-                   "payload": r["payload"]} for r in rows]
+        events = [{"seq": r["seq"], "type": r["type"], "payload": r["payload"]} for r in rows]
         next_seq = (events[-1]["seq"] + 1) if events else after
         return {"events": events, "next_seq": next_seq, "end": not has_more}

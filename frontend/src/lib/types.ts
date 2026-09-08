@@ -17,6 +17,7 @@ export interface LiveSnap {
   turns?: number;
   kind?: string;
   ts?: number;
+  updated_at?: number; // LiveState 每次 update 刷新(epoch s);跨传输版本守卫用
 }
 
 /** 单题目录本地痕迹(roster.py scan_local_dir,flag 是布尔:FLAG 文件存在与否) */
@@ -172,7 +173,7 @@ export interface RunRow {
   turns?: number | null;
   sessions?: number | null;
   flags_found?: number | null;
-  flags_accepted?: string[] | null; // list | null(后端已归一)
+  flags_accepted?: string[]; // 后端已归一(无 = [])
   updated_at?: number;
   event_count: number;
 }
@@ -184,7 +185,6 @@ export interface RunsListResp {
 export interface RunEventRow {
   seq: number;
   type: string;
-  ts?: number | null;
   payload: string;
 }
 
