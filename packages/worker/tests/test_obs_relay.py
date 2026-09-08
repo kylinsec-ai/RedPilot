@@ -1,7 +1,7 @@
-"""obs 中继测试:本地 mock HTTP 服务器按序记录 POST → 直接 import drivers.obs_relay
-起真 relay(不经 driver)→ 断言过滤/定序/状态映射/压缩收缩幂等/平台 down 恢复/未配禁用。
+"""obs 中继测试:本地 mock HTTP 服务器按序记录 POST → 直接起真 relay(不经 driver)
+→ 断言过滤/定序/状态映射/压缩收缩幂等/平台 down 恢复/未配禁用。
 
-工作目录:repo 根(pytest 由此起,adapter/drivers 可导入)。
+pytest 由仓库根起(packages/worker 在 pythonpath,tsecbench_worker 可导入)。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from adapter.live import LiveBus, LiveState
+from tsecbench_worker.live import LiveBus, LiveState
 
 
 # ── mock 服务器:按到达序记录 (path, body) ──
@@ -85,7 +85,7 @@ def _frame(phase: str, code: str = "a-05", **extra) -> dict:
 def _relay(tmp_path, url: str, token: str = "tok", workdir: str | None = None):
     live = LiveState(worker_id="worker-1", state_path=None)
     bus = LiveBus()
-    from drivers.obs_relay import ObsRelay
+    from tsecbench_worker.relay import ObsRelay
     r = ObsRelay(live, bus, workdir or str(tmp_path), url, token, worker_id="worker-1")
     r.start()
     return live, bus, r
@@ -102,8 +102,8 @@ def _events_of(records: list[dict]) -> list[dict]:
 
 def test_disabled_when_url_unset(monkeypatch):
     monkeypatch.delenv("OBSERVABILITY_URL", raising=False)
-    from drivers.obs_relay import maybe_start_relay
-    assert maybe_start_relay(None, None, "/tmp/x") is None
+    from tsecbench_worker.relay import maybe_start_relay
+    assert maybe_start_relay(None, None) is None
 
 
 # ── 端到端:starting→solving→closing 全序 + 过滤 + 状态映射 ──

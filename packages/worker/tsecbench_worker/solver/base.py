@@ -1,65 +1,26 @@
 """
-Agent 能力层 — 统一结果模型、flag 提取与 SolverBackend 抽象接口
+Agent 能力层 — 统一结果模型与 SolverBackend 抽象接口
 
 设计目标：解题 Agent（solver）固定使用 Pi Agent 编排网络安全 Agent。
 - pi_agent.py      Pi Agent CLI 适配器（唯一求解引擎）
 - factory.py       创建 Pi Agent 后端
 
-上层（driver）只依赖本文件的 SolveResult 与 solve() 接口。
+上层（编排层）只依赖本文件的 SolveResult 与 solve() 接口。
+flag 提取/校验单源 tsecbench_worker.flags;心跳路径单源 tsecbench_contracts.paths。
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-log = logging.getLogger("adapter.solver")
+from tsecbench_contracts.paths import FLAG_FILES, HEARTBEAT_PATH
+from tsecbench_worker.flags import is_valid_flag
 
-# flag 提取正则
-_FLAG_RX = re.compile(r"flag\{[^}]{1,200}\}", re.IGNORECASE)
-_FINAL_ANSWER_RX = re.compile(r"<FinalAnswer>(.*?)</FinalAnswer>", re.DOTALL)
-# flag body 合法字符：字母数字 + 常见分隔符（防命令注入 payload 误提取）
-_FLAG_BODY_RX = re.compile(r"^[A-Za-z0-9_\-.:/]{3,200}$")
-# 占位符/省略号 body（如 prompt 模板里的 flag{...}）必须含至少一个字母数字
-_ALNUM_RX = re.compile(r"[A-Za-z0-9]")
-
-
-def flag_body(flag: str) -> str:
-    """提取 flag{} 内主体；无完整外壳时原样返回"""
-    m = re.match(r"flag\{(.+)\}", flag, re.IGNORECASE)
-    return m.group(1) if m else flag
-
-
-def normalize_flag_body(flag: str) -> str:
-    """去外壳 + 去空白 + 小写：跨会话去重与提交前归一化比较"""
-    return flag_body(flag).strip().lower()
-
-
-def is_valid_flag(flag: str) -> bool:
-    """校验 flag 整体合法性：外壳完整 + body 无引号/空格/命令字符 + 非纯标点占位符"""
-    body = flag_body(flag)
-    return body != flag and bool(_FLAG_BODY_RX.match(body)) and bool(_ALNUM_RX.search(body))
-
-
-def extract_flags(text: str) -> list[str]:
-    """从文本中提取所有 flag{...} 格式的候选（过滤非法 body）"""
-    if not text:
-        return []
-    found = set()
-    for m in _FLAG_RX.finditer(text):
-        f = m.group(0)
-        if is_valid_flag(f):
-            found.add(f)
-    for m in _FINAL_ANSWER_RX.finditer(text):
-        for fm in _FLAG_RX.finditer(m.group(1)):
-            if is_valid_flag(fm.group(0)):
-                found.add(fm.group(0))
-    return list(found)
-
+log = logging.getLogger("tsecbench_worker.solver")
 
 @dataclass
 class SolveResult:
@@ -78,9 +39,6 @@ class SolveResult:
 
 
 # ── 心跳文件 ─────────────────────────────────────────────
-
-HEARTBEAT_PATH = "/tmp/driver_heartbeat"
-
 
 def touch_heartbeat() -> None:
     """更新心跳文件 mtime（失败静默）— driver 与 solver 会话共用"""
@@ -106,7 +64,6 @@ class SolverBackend(ABC):
         workdir: str,
         cfg,
         *,
-        flag_format: str = "flag{...}",
         on_fact: Optional[Callable] = None,
         transcript_path: Optional[str] = None,
         max_retries: int = 2,
@@ -117,8 +74,8 @@ class SolverBackend(ABC):
     @staticmethod
     def _read_flag_files(workdir: str, flags: list[str]) -> list[str]:
 
-        """从工作目录的标准 flag 文件补录候选"""
-        for name in ("FLAG", "flag.txt", "FLAG.txt"):
+        """从工作目录的标准 flag 文件补录候选(文件名单源 contracts.FLAG_FILES)"""
+        for name in FLAG_FILES:
             p = os.path.join(workdir, name)
             try:
                 if os.path.isfile(p):

@@ -19,7 +19,14 @@ import uuid
 
 import httpx
 
-log = logging.getLogger("adapter.obs_relay")
+from tsecbench_contracts.paths import FLAG_MAX_LINES
+from tsecbench_contracts.vocabulary import (MESSAGE_UPDATE, PHASES,
+                                            RUN_CLOSE_STATUSES, strip_for_snapshot)
+
+log = logging.getLogger("tsecbench_worker.relay")
+
+# 触发"旧 run 未关先切题"防御的 phase 集(active 全集;closing/idle/done/error 走关闭分支)
+ACTIVE_RUN_PHASES = tuple(p for p in PHASES if p in ("starting", "solving", "submitting"))
 
 _LIVE_CADENCE = 0.6     # live 快照推送节拍(≥0.5s,与 _live_set 1s 节流同量级)
 _TAIL_CADENCE = 1.0     # transcript 字节续读节拍
@@ -31,15 +38,6 @@ _ERR_MAX = 2000
 # (恒最新一帧)、续读暂停、ping/roster 队满即丢下节拍再生 —— 队列因此有界
 # (put_droppable 门控可再生消息;requeue 只循环同批消息不增长)
 _QUEUE_CAP = 500
-# 总线信封键(snapshot 之外的 kind/ts)只在通道内使用,不入库:
-# obs/schema.py LiveIn 契约 snapshot = LiveState 纯快照(读端首帧 kind 缺省 'snapshot')
-_LIVE_ENVELOPE_KEYS = frozenset({"kind", "ts"})
-
-
-def _strip_envelope(frame: dict) -> dict:
-    """剥掉总线信封与带外元数据(下划线前缀,如 _accepted_flags),只留状态键。"""
-    return {k: v for k, v in frame.items()
-            if k not in _LIVE_ENVELOPE_KEYS and not k.startswith("_")}
 
 
 class _Fifo:
@@ -85,7 +83,7 @@ class _Fifo:
         with self._cv:
             self._pending_live = {"t": "live", "worker_id": frame.get("worker_id"),
                                   "kind": frame.get("kind", "lifecycle"),
-                                  "frame": _strip_envelope(frame)}
+                                  "frame": strip_for_snapshot(frame)}
 
     def ship_live(self) -> bool:
         """引擎节拍把最新槽移交发送队列;未发帧静默丢旧,绝不堆积。
@@ -187,7 +185,7 @@ class ObsRelay:
                         typ = ev.get("type", "")
                     except Exception:
                         continue
-                    if typ == "message_update":
+                    if typ == MESSAGE_UPDATE:
                         continue
                     rows.append({"seq": run["seq"], "type": typ, "payload": line})
                     run["seq"] += 1
@@ -209,7 +207,7 @@ class ObsRelay:
         worker = str(frame.get("worker_id") or self._worker_id)
         run = self._run
 
-        if run and phase in ("starting", "solving", "submitting") and code:
+        if run and phase in ACTIVE_RUN_PHASES and code:
             if run["code"] != code and not run.get("closed"):
                 # 换题帧没走 closing?防御:先关旧 run(平台侧另有 idle/switch 守卫);
                 # 已 closed 的 run 再关 = 重复 run_close(平台终态幂等,纯噪音),跳过
@@ -232,6 +230,8 @@ class ObsRelay:
                 run["model"] = str(frame.get("model") or run.get("model") or "")
             return
 
+        # 关闭分支与原实现一致:仅 closing/idle 关闭(done/error 只是状态更新,
+        # done 帧后仍可能有 submitting/更多提交;真正收尾由 closing 帧携带 turns/accepted)
         if run and not run.get("closed") and phase in ("closing", "idle"):
             self._close_run(run, frame)
 
@@ -252,11 +252,11 @@ class ObsRelay:
             status = "solved"
         else:
             status = "done"
+        assert status in RUN_CLOSE_STATUSES  # 契约:close 状态 ⊆ contracts 终态集
         path = run.get("path") or ""
         raw = frame.get("_accepted_flags")
         if isinstance(raw, list):
             # driver 随 closing 帧附带的平台确认 accepted 明文(FLAG 文件含被拒候选)
-            from drivers.roster import FLAG_MAX_LINES
             flags = [str(f) for f in raw][:FLAG_MAX_LINES]
         else:
             flags = self._read_flags(path)  # 旧帧/测试兜底:回退 FLAG 文件
@@ -276,7 +276,7 @@ class ObsRelay:
         """回退读 FLAG 候选文件(读法单源:drivers.roster.read_flag_lines)。"""
         if not transcript_path:
             return []
-        from drivers.roster import read_flag_lines
+        from .roster import read_flag_lines
         return read_flag_lines(os.path.dirname(transcript_path))
 
     # ── 引擎与发送 ──
@@ -341,7 +341,7 @@ class ObsRelay:
         # 裸 obs(STATUS_PORT=0)部署下惰性自起一个(与旧行为一致)。
         if self._roster_poller is None:
             try:
-                from drivers.roster import RosterPoller
+                from .roster import RosterPoller
                 self._roster_poller = RosterPoller(self._workdir)
                 self._roster_poller.start()
             except Exception as e:
@@ -419,19 +419,25 @@ class ObsRelay:
                 backoff = min(backoff * 1.5, 10.0)
 
 
-def maybe_start_relay(live, bus, workdir: str | None = None,
-                      roster_poller=None) -> ObsRelay | None:
+def maybe_start_relay(live, bus, *, settings=None, roster_poller=None) -> ObsRelay | None:
     """OBSERVABILITY_URL 未设返回 None —— 宿主裸跑等场景零行为变化。
     token 可选:平台侧未配 token 时返回 503(响亮),relay 记 warn + 退避重试。
-    roster_poller:main() 与 status_server 共享的 RosterPoller(缺省 relay 惰性自起)。"""
-    url = os.getenv("OBSERVABILITY_URL", "").strip().rstrip("/")
+    settings:WorkerSettings(driver 装配;None 时回退自读 env,测试/独立使用兼容)。
+    roster_poller:driver 与 localserver 共享的 RosterPoller(缺省 relay 惰性自起)。"""
+    if settings is not None:
+        url = settings.observability_url
+        token = settings.observability_token or None
+        workdir = settings.workdir
+        worker_id = settings.worker_id
+    else:
+        url = os.getenv("OBSERVABILITY_URL", "").strip().rstrip("/")
+        token = os.getenv("OBSERVABILITY_TOKEN", "").strip() or None
+        workdir = os.getenv("ADAPTER_WORKDIR", "/work")
+        worker_id = os.getenv("WORKER_ID", "worker-1")
     if not url:
         log.info("obs relay disabled (OBSERVABILITY_URL unset)")
         return None
-    token = os.getenv("OBSERVABILITY_TOKEN", "").strip() or None
-    workdir = workdir or os.getenv("ADAPTER_WORKDIR", "/work")
     relay = ObsRelay(live, bus, workdir, url, token,
-                     worker_id=os.getenv("WORKER_ID", "worker-1"),
-                     roster_poller=roster_poller)
+                     worker_id=worker_id, roster_poller=roster_poller)
     relay.start()
     return relay

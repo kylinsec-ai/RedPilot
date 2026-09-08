@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: tsecbench-contracts
+Version: 0.1.0
+Summary: TsecBench shared contracts: vocabulary, snapshot schema, redact/text/fsio, digest fold, paths, assets
+Requires-Python: >=3.10

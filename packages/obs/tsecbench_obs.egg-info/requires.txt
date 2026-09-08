@@ -1,0 +1,7 @@
+tsecbench-contracts
+
+[platform]
+fastapi
+uvicorn
+pydantic
+python-dotenv

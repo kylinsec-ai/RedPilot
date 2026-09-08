@@ -1,0 +1,7 @@
+tsec-benchmark
+httpx
+tsecbench-contracts
+tsecbench-obs
+
+[dev]
+pyflakes

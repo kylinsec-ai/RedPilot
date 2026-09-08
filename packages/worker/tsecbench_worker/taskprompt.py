@@ -11,9 +11,9 @@ from __future__ import annotations
 import logging
 import os
 
-from adapter.task import AgentTask
+from tsecbench_worker.task import AgentTask
 
-log = logging.getLogger("adapter.taskprompt")
+log = logging.getLogger("tsecbench_worker.taskprompt")
 
 
 # ── 内网多阶段渗透编排（多 flag 题）──────────────────
