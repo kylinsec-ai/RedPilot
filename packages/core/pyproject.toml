@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tsecbench-core"
+version = "0.1.0"
+description = "TSecBench core benchmark platform: challenges lifecycle REST API"
+requires-python = ">=3.10"
+dependencies = ["fastapi", "uvicorn", "pydantic", "python-dotenv"]
+
+[tool.setuptools.packages.find]
+include = ["tsecbench*"]
