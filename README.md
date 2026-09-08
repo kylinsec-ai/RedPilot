@@ -17,15 +17,31 @@
                                                └───────────────────────┘
 ```
 
-- **平台 core**(`tsecbench/` + `main.py`):FastAPI 服务,管理跑分任务生命周期 —— 列题、起停题目实例(static/docker 供给)、可选 hint(扣分)、flag 提交判分(SHA-256,明文不落库)。状态持久化 SQLite。**无任何网页/控制台**。生产跑分走远端官方平台(`BENCHMARK_BASE_URL`),core 为协议兼容的本地方案。
-- **求解 worker**(`adapter/` + `drivers/benchmark_driver.py` + compose):单个带 VPN 的容器,一次开一道题、单会话 Pi Agent 求解、候选 flag 直接提交(平台判分/幂等即唯一闸门),刷完轮询待命。无多 worker 分片、无记忆/黑板/止损/skeptic 验证等重机制。
-- **本地观测平台 obs**(`obs/` + `Dockerfile.platform`):agent 日志入库并展示 —— worker 内置最小中继(`drivers/obs_relay.py`,订阅 LiveBus + transcript 字节续读)实时推送 run 生命周期/事件行/live 快照/roster 到平台 SQLite;FastAPI 同源托管 SPA 与只读 API(与旧 worker :8080 态势台字节兼容),新增 Runs 历史页。
+- **平台 core**(`packages/core/tsecbench/` + `main.py`):FastAPI 服务,管理跑分任务生命周期 —— 列题、起停题目实例(static/docker 供给)、可选 hint(扣分)、flag 提交判分(SHA-256,明文不落库)。状态持久化 SQLite。**无任何网页/控制台**。生产跑分走远端官方平台(`BENCHMARK_BASE_URL`),core 为协议兼容的本地方案。
+- **求解 worker**(`packages/worker/`,pip 包 `tsecbench-worker` + compose):单个带 VPN 的容器,一次开一道题、单会话 Pi Agent 求解、候选 flag 直接提交(平台判分/幂等即唯一闸门),刷完轮询待命。无多 worker 分片、无记忆/黑板/止损/skeptic 验证等重机制。
+- **本地观测平台 obs**(`packages/obs/`,pip 包 `tsecbench-obs` + `Dockerfile.platform`):agent 日志入库并展示 —— worker 内置最小中继(`tsecbench_worker.relay`,订阅 LiveBus + transcript 字节续读)实时推送 run 生命周期/事件行/live 快照/roster 到平台 SQLite;FastAPI 同源托管 SPA 与只读 API(与 worker :8080 本地态势台字节兼容),新增 Runs 历史页。
 - worker 平台接入直调官方 SDK `tsec-benchmark`(异步 `TSecBenchmarkAsync`,入口自带 VPN 预检;用法见 [`SDK_API.md`](SDK_API.md));平台服务端契约见 [`CHALLENGES_API.md`](CHALLENGES_API.md)。
+
+### 四包架构(monorepo)
+
+```
+packages/
+├── contracts/   # tsecbench-contracts — 零依赖契约单源:词汇(phase/run状态/事件kind/信封)、
+│                #   snapshot schema、redact/截断、原子IO、/work 路径约定、digest 折叠状态机、资产 mime 表
+├── core/        # tsecbench-core → import tsecbench(平台 core,自包含)
+├── worker/      # tsecbench-worker → import tsecbench_worker(编排/求解/中继/本地数据层)
+└── obs/         # tsecbench-obs → import obs(观测平台;基线纯 stdlib,[platform] extra 才带 fastapi)
+```
+
+依赖方向(测试强制):`contracts ← core/worker/obs`;core 无人依赖;worker 与 obs 互不 import
+—— 唯一例外是 worker 的 driver 导入 `obs.localserver`(注入式 stdlib 本地仪表板 :8080,
+协作者全部构造注入)。跨包语义改动只改 contracts 一处;`packages/contracts/tests/`
+含纯度门(零第三方依赖)与 fold-parity 测试(worker I/O 壳与 obs 无状态折叠同语义)。
 
 ## 运行平台 core
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install -e packages/contracts -e packages/core -e packages/obs -e packages/worker
 # 任务目录(JSON,含 token 与 challenges;每题 flag 明文写在此文件)
 export TSECBENCH_CONFIG=/path/to/tasks.json
 # 可选: TSECBENCH_DB_PATH(默认 ./data/tsecbench.sqlite3)、PORT(8000)、
@@ -67,7 +83,7 @@ docker compose logs -f      # 观察刷题进度
 |---|---|---|
 | `BENCHMARK_TOKEN` / `BENCHMARK_BASE_URL` | — | 平台凭据(必填) |
 | `DEEPSEEK_API_KEY` | — | LLM 凭据(默认 provider deepseek 时必填;pi 官方 env 名,仓库零读写) |
-| `SOLVER_MODEL` | `deepseek/deepseek-v4-flash` | 完整 `[provider/]model`,逐字透传(缺省值见 `adapter/config.py`) |
+| `SOLVER_MODEL` | `deepseek/deepseek-v4-flash` | 完整 `[provider/]model`,逐字透传(缺省值见 `packages/worker/tsecbench_worker/config.py`) |
 | `SOLVER_SESSION_SECONDS` | `1500` | 单会话时长上限 |
 | `PI_STALL_TIMEOUT` | `480` | pi 无输出判定卡死的秒数 |
 | `ADAPTER_WORKDIR` | `/work` | 解题工作目录根(compose 已设) |
@@ -80,9 +96,9 @@ docker compose logs -f      # 观察刷题进度
 ## 运行本地观测平台(obs)
 
 worker 求解过程中的 agent 日志(transcript 事件行、live 快照、run 生命周期、roster)由
-`drivers/obs_relay.py` 实时推送到平台入库,浏览器访问平台即看到与旧态势台同构的 UI +
+`tsecbench_worker.relay` 实时推送到平台入库,浏览器访问平台即看到与旧态势台同构的 UI +
 Runs 历史页。数据全部读平台库(SQLite WAL,`./data/obs.sqlite3`);worker 侧 :8080
-status_server 保留、仅作容器本地调试。
+obs.localserver 保留、仅作容器本地调试(注入式,协作者零 import)。
 
 ```bash
 # 容器方式(与 worker 同栈起):
@@ -155,10 +171,15 @@ cd frontend && npm ci && npm run build   # svelte-check + vite build → ../web/
 
 ## 目录
 
-- `tsecbench/` — 平台 core(纯 REST,远端跑分平台的本地协议复刻)
-- `obs/` — **本地观测平台**:FastAPI 装配 + SQLite(WAL,版本化迁移)存储/摄取/折叠/读端
-  (`app/db/store/schema/ingest/read/digest/redact/bus` + `tests/`)
-- `adapter/` — worker 侧组件库:config/task/taskprompt + `solver/`(Pi Agent)+ `live/`(快照/SSE bus)
+- `packages/` — **四包 monorepo**(各含 pyproject.toml 与独立测试;依赖方向 contracts←其余)
+  - `packages/contracts/` — 零依赖共享契约:词汇/快照 schema/脱敏与截断/原子 IO/路径约定/
+    digest 折叠状态机/资产 mime 表(+ purity/fold-parity 测试)
+  - `packages/core/tsecbench/` — 平台 core(纯 REST,远端跑分平台的本地协议复刻)
+  - `packages/obs/obs/` — **本地观测平台**:FastAPI 装配 + SQLite(WAL,版本化迁移)存储/
+    摄取/读端(`app/db/store/schema/ingest/read/bus` + `localserver.py` 本地实时源仪表板)
+  - `packages/worker/tsecbench_worker/` — worker 全量:`settings/config/task/taskprompt/
+    flags/transcripts/live/solver(Pi Agent)/orchestration/driver/roster/relay/
+    platform(平台抽象 ABC)/queue(jobs API 惰性)`
 - `skills/` — **pi skills 知识库**(按题型打法:web-recon-toolkit / known-cve-playbook /
   waf-bypass / sandbox-escape / cloud-security / network-pwn / reverse-engineering)。
   以 pi 原生 skill 格式(SKILL.md + name/description frontmatter)挂载到容器
@@ -166,11 +187,12 @@ cd frontend && npm ci && npm run build   # svelte-check + vite build → ../web/
   每题 workdir 的 CLAUDE.md 只留硬规则(flag 协议 + skill 指针)。改内容免重建镜像,
   compose bind-mount 下一题即生效;镜像构建时 COPY 烘焙。
 - `tools/` — 浏览器自动化助手脚本(pw_fetch.py / pw_example.py),挂载 `/opt/tools`
-- `drivers/benchmark_driver.py` — 串行求解主循环(唯一编排者,异步直调官方 SDK)
-- `drivers/obs_relay.py` — worker 最小观测中继(订阅 LiveBus + transcript 字节续读 → POST obs)
-- `drivers/status_server.py` + `drivers/roster.py` — 容器本地调试态势台(:8080,已非数据主源)
+- 串行求解主循环 = `packages/worker/tsecbench_worker/driver.py`(进程装配 + 心跳看门狗)+
+  `orchestration.py`(唯一编排者,异步直调官方 SDK)
+- 观测中继 = `packages/worker/tsecbench_worker/relay.py`(订阅 LiveBus + transcript 字节续读 → POST obs)
+- 本地态势台 = `packages/obs/obs/localserver.py`(:8080,已非数据主源;协作者注入)
 - `frontend/` — 态势台前端源码(Svelte 5 + TypeScript + Tailwind v4 + Vite;总览/题目/Runs 历史)
 - `web/` — 前端**构建产物**(提交入库),被平台与 worker 容器 bind-mount 共享
-- `entrypoint.sh` / `Dockerfile` / `Dockerfile.platform` / `requirements*.txt` /
+- `entrypoint.sh` / `Dockerfile` / `Dockerfile.platform` / `pytest.ini` /
   `docker-compose.yaml` — worker 与观测平台镜像/编排
 - `CHALLENGES_API.md` / `SDK_API.md` — 跑分平台服务端契约 / 官方 SDK 接入文档
