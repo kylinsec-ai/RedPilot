@@ -10,3 +10,6 @@ pi/
 *.log
 .env
 frontend/node_modules/
+.claude/
+packages/**/__pycache__/
+*.egg-info/

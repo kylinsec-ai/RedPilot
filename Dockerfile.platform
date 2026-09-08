@@ -15,10 +15,10 @@ RUN printf '[global]\nindex-url = https://mirrors.bfsu.edu.cn/pypi/web/simple\ne
 
 WORKDIR /app
 
-COPY requirements.platform.txt /app/requirements.platform.txt
-RUN pip install --no-cache-dir -r /app/requirements.platform.txt
-
-COPY obs /app/obs
+# 四包 monorepo:contracts + obs[platform](fastapi/uvicorn/pydantic/dotenv 走 extra)
+COPY packages/contracts /opt/packages/contracts
+COPY packages/obs /opt/packages/obs
+RUN pip install --no-cache-dir /opt/packages/contracts "/opt/packages/obs[platform]"
 
 # 数据与 SPA 产物由 compose bind-mount 提供: ./data:/app/data  ./web:/app/web:ro
 ENV OBSERVABILITY_DB=/app/data/obs.sqlite3 \

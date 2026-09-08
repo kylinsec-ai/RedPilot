@@ -72,13 +72,19 @@ print("[build] playwright smoke:", "OK" if ok else "title mismatch")
 assert ok
 PY
 
-# ── 4. Python 依赖 ──
-COPY requirements.txt /app/requirements.txt
-RUN pip3 install --break-system-packages -r /app/requirements.txt
+# ── 4. Python 依赖(四包 monorepo;editable 安装保留 compose 卷热补丁工作流) ──
+# --no-build-isolation:镜像 pip 走 BFSU 源,构建隔离会临时拉 setuptools;
+# apt 预装 python3-setuptools 后本地构建即可。
+# obs 只装基线(纯 stdlib + contracts):fastapi/pydantic 不进 Kali 镜像(瘦身既定决策)。
+RUN apt-get update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+        python3-setuptools && rm -rf /var/lib/apt/lists/*
+COPY packages/contracts /opt/packages/contracts
+COPY packages/obs /opt/packages/obs
+COPY packages/worker /opt/packages/worker
+RUN pip3 install --break-system-packages --no-build-isolation --no-cache-dir \
+        -e /opt/packages/contracts -e /opt/packages/obs -e /opt/packages/worker
 
-# ── 5. 复制适配器代码 ──
-COPY adapter /app/adapter
-COPY drivers /app/drivers
+# ── 5. 复制题面工具与运行资产 ──
 COPY tools /opt/tools
 COPY skills /root/.pi/agent/skills
 COPY web /app/web

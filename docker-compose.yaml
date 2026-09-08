@@ -96,9 +96,10 @@ services:
       - ./vpn:/vpn:ro
       # 可选: 自定义 pi 注册/凭据(models.json/auth.json,官方格式;镜像不再内置,按需启用)
       # - ./pi:/root/.pi/agent:ro
-      # 挂载宿主最新 driver/adapter/tools/skills/web(免重建镜像;status_server 按 mtime 热更 index.html)
-      - ./drivers:/app/drivers:ro
-      - ./adapter:/app/adapter:ro
+      # 挂载宿主最新包源(免重建镜像;editable 安装指向 /opt/packages/*,热补丁即生效)
+      - ./packages/contracts:/opt/packages/contracts:ro
+      - ./packages/obs:/opt/packages/obs:ro
+      - ./packages/worker:/opt/packages/worker:ro
       - ./tools:/opt/tools:ro
       # pi skills 自动发现目录(~/.pi/agent/skills):改 skill 内容免重建镜像,下一题即生效
       - ./skills:/root/.pi/agent/skills:ro

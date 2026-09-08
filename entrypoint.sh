@@ -95,4 +95,4 @@ else
 fi
 
 echo "[adapter] starting benchmark driver..."
-exec python3 /app/drivers/benchmark_driver.py
+exec python3 -m tsecbench_worker.driver
