@@ -113,64 +113,57 @@ hard题: 3600秒（1小时）
 
 ## 📊 监控系统使用
 
-### 1. 实时监控面板
+### 1. 实时日志面板
 
 ```bash
 cd /home/xiaohei/桌面/TsecBench-main
-bash monitor_realtime.sh
+docker logs -f tsecbench-worker-2     # worker-3 换成 tsecbench-worker-3
 ```
 
 **显示内容**:
-- Worker状态
-- 当前题目
-- 最近活动
-- Flag提交情况
+- Worker 当前题目与解题过程
+- Flag 提交情况
 
 **操作**:
-- 按 Ctrl+C 退出（Worker继续运行）
+- 按 Ctrl+C 退出（Worker 继续运行）
+
+图形化视图见 Web 控制台 http://192.168.31.143:8003/（舰队状态 / 进度 / Token 用量）。
 
 ---
 
-### 2. 监控总结
+### 2. 状态汇总
 
 ```bash
-bash summary_monitor.sh
+cat work/status/worker-*.json        # 各 worker 当前题目/心跳/活跃状态
+docker ps --filter name=tsecbench-worker
 ```
 
 **显示内容**:
-- Worker总体统计
-- Session完成数
-- 成功提交数
-- 平台数据汇总
-- CSV事件统计
+- Worker 总体状态与当前题目
+- 心跳新鲜度（last_beat）
+- 容器健康状态
 
 ---
 
-### 3. 健康监控
+### 3. 健康检查
 
-**后台自动运行**，检查：
-- Worker健康状态
-- 容器运行状态
-- VPN连接状态
+容器内置 healthcheck（判定驱动心跳 `/tmp/driver_heartbeat` 新鲜度）：
 
-**查看日志**:
 ```bash
-tail -f health_monitor.log
+docker ps --filter name=tsecbench-worker                     # STATUS 列显示 healthy
+docker inspect --format '{{.State.Health.Status}}' tsecbench-worker-2
 ```
+
+VPN 由驱动内看门狗每分钟检查，异常时打 `VPN check failed` 日志（不退出进程）。
 
 ---
 
 ### 4. 源代码检测
 
 ```bash
-bash check_all_code.sh
+.venv/bin/python -m pytest -q                    # 单元测试（本地 API/控制台）
+sudo python3 -m compileall -q adapter drivers    # 语法检查（需 root 写 __pycache__）
 ```
-
-**检查内容**:
-- Python语法
-- 关键模块
-- 逻辑验证
-- 容器同步
 
 ---
 
@@ -197,18 +190,18 @@ docker logs --since 10m tsecbench-worker-1
 
 ---
 
-### 重启Worker
+### 重启 / 热重载 Worker
 
 ```bash
-# 重启单个Worker
-docker restart tsecbench-worker-1
+# 解题 worker：用协作式热重载（等当前 visit 收尾后自动重启，零孤儿）
+touch work/.reload.wid1      # worker-2（wid1）
+touch work/.reload.wid2      # worker-3（wid2）
 
-# 重启所有Worker
-docker restart tsecbench-worker-1 tsecbench-worker-2 tsecbench-worker-3
-
-# 或使用docker-compose
-docker-compose restart
+# ⚠ 绝不重启 tsecbench-worker-1：它是 VPN/netns 提供者
+#   （network_mode: service:worker-1），重启会打断 worker-2/3 的共享网络。
 ```
+
+热重载机制见 `drivers/benchmark_driver.py::_reload_watch`（B7/B15）。
 
 ---
 
@@ -236,7 +229,7 @@ docker ps | grep tsecbench-worker
 curl http://localhost:8003/api/v1/agent/status | jq
 
 # 完整状态
-bash summary_monitor.sh
+cat work/status/worker-*.json
 ```
 
 ---
@@ -284,8 +277,9 @@ docker exec tsecbench-worker-1 env | grep SOLVER_API_KEY
 # 3. 测试网络
 docker exec tsecbench-worker-1 curl https://api.deepseek.com
 
-# 4. 重启Worker
-docker restart tsecbench-worker-1
+# 4. 重启解题 worker（协作式热重载，等当前 visit 收尾）
+touch work/.reload.wid1      # worker-2；worker-3 用 .reload.wid2
+# ⚠ 绝不重启 tsecbench-worker-1（VPN/netns 提供者）
 ```
 
 ---
@@ -354,12 +348,12 @@ tail -f /tmp/fastapi.log
 docker ps | grep tsecbench-worker
 
 # 2. 查看最近日志
-docker logs --since 5m tsecbench-worker-1 | tail -50
+docker logs --since 5m tsecbench-worker-2 | tail -50
 
-# 3. 重启Worker
-docker restart tsecbench-worker-1
+# 3. 重启解题 worker（协作式热重载）
+touch work/.reload.wid1      # worker-2；worker-3 用 .reload.wid2
 
-# 4. 如果还卡住，完全重启
+# 4. 如果还卡住，重建整个舰队（注意 worker-1 会一并重建）
 docker-compose down
 docker-compose up -d
 ```
@@ -407,14 +401,14 @@ dry_cutoff: 5
 ### 每天检查
 
 ```bash
-# 1. 查看总结
-bash summary_monitor.sh
+# 1. 查看各 worker 状态
+cat work/status/worker-*.json
 
-# 2. 检查健康日志
-tail -50 health_monitor.log
+# 2. 检查容器健康
+docker ps --filter name=tsecbench-worker
 
 # 3. 查看成功率
-docker logs tsecbench-worker-1 | grep "FLAG CORRECT" | wc -l
+docker logs tsecbench-worker-2 | grep "FLAG CORRECT" | wc -l
 ```
 
 ### 每周维护
@@ -491,18 +485,17 @@ docker-compose down           # 停止
 docker-compose restart        # 重启
 
 # === 监控 ===
-bash monitor_realtime.sh      # 实时监控
-bash summary_monitor.sh       # 查看总结
-docker logs -f tsecbench-worker-1  # 查看日志
+docker logs -f tsecbench-worker-2  # 实时日志（worker-3 同理）
+cat work/status/worker-*.json      # 各 worker 当前题目/心跳
 
 # === 状态检查 ===
-docker ps | grep tsecbench    # Worker状态
+docker ps --filter name=tsecbench-worker   # Worker状态
 curl localhost:8003/api/v1/agent/status | jq  # API状态
 
 # === 故障排查 ===
-docker logs --since 10m tsecbench-worker-1 | grep error  # 错误日志
-bash check_all_code.sh        # 代码检查
-docker restart tsecbench-worker-1  # 重启Worker
+docker logs --since 10m tsecbench-worker-2 | grep error  # 错误日志
+touch work/.reload.wid1       # 安全热重载 worker-2（worker-3 用 .reload.wid2）
+# ⚠ 绝不 docker restart tsecbench-worker-1（VPN/netns 提供者，会打断全队网络）
 
 # === Web界面 ===
 http://192.168.31.143:8003/   # 访问地址

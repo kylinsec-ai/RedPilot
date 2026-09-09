@@ -10,3 +10,14 @@ data/
 *.sqlite3-wal
 tsecbench-frontend/node_modules/
 tsecbench-frontend/dist/
+
+# ── 系统 ──
+.DS_Store
+*.swp
+
+# ── Node（如有）──
+node_modules/
+dist/
+
+# 遗留监控产物（supervisor.py 已删除）
+supervisor_report.txt
