@@ -34,7 +34,7 @@ from adapter.config import SolverConfig, ControllerConfig, build_verifier_config
 from adapter.progress import ChallengeProgress, extract_progress_from_result
 from adapter.task import AgentTask
 from adapter.verify import Verifier, flag_confidence, normalize_flag_body
-from adapter.solver import create_solver, extract_flags, SolveResult
+from adapter.solver import create_solver, extract_flags, extract_handoff, SolveResult
 from adapter.blackboard import Blackboard, goals_for_category
 from adapter.stoploss import StopLoss
 from adapter.scheduler import run_fleet
@@ -2217,6 +2217,15 @@ def solve_one(
             # 写入记忆：保留 agent 自写的结构化笔记，driver 事实进固定段
             # （_merge_memory 幂等替换，不再整体覆写 MEMORY.md）
             handoff = result.handoff or ""
+            if not handoff:
+                # B14：本场没产出续接块（预算耗尽/被杀的场次最常见）→ 保留上一场
+                # 的块。否则 _merge_memory 重建 driver 段会把上次交接抹掉，下一场
+                # 又从零摸索（c-05 跑了 10 场，MEMORY.md 仍只有 310B 噪音）。
+                try:
+                    with open(os.path.join(workdir, "MEMORY.md"), encoding="utf-8") as _mf:
+                        handoff = extract_handoff(_mf.read())
+                except Exception:
+                    handoff = ""
             mem_content = board.actionable_assets()
             if handoff:
                 mem_content += f"\n\n{handoff}"
@@ -2754,6 +2763,16 @@ def main():
         _monitor_loop(watch_dir=ctrl.workdir, raw_client=raw_client)
         return
 
+    # ── 协作式热重载 watcher（B15）──────────────────────
+    # 必须在这里启动：平台任务已结束时 driver 在初始 list_challenges 就 409，
+    # 直接进 _await_task 复查等待，根本走不到派发循环前的 watcher 启动点
+    # （实测 2026-09-09 19:44：touch .reload.wid1 无人消费）。放在 monitor
+    # 分支之后是刻意的——worker-1（wid0）是 VPN/netns 提供者，属禁区，
+    # 绝不能让 .reload.wid0 生效。
+    _reload_stop = threading.Event()
+    threading.Thread(target=_reload_watch, args=(_reload_stop,),
+                     daemon=True, name="reload-watch").start()
+
     # ── worker-2/3：按能力做题 ─────────────────────────
     # 先判断任务状态：平台对不受信 IP / VPN 未起时会返回 409 / 任务无效，
     # 这类失败并不代表任务真结束 —— 一律通过 _await_task 复查等待，
@@ -2892,9 +2911,7 @@ def main():
              len(challenges), challenges[0].unique_code, challenges[-1].unique_code)
 
     # 全自动派发：批量做完后不退出，周期拉新题继续派发
-    stop_event = threading.Event()
-    threading.Thread(target=_reload_watch, args=(stop_event,),
-                    daemon=True, name="reload-watch").start()
+    stop_event = _reload_stop   # B15：复用 main 开头启动的 watcher 事件
     auto_dispatch_loop(
         client,
         seed=challenges,

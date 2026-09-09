@@ -24,7 +24,7 @@ import subprocess
 import time
 from typing import Callable, Optional
 
-from .base import SolveResult, SolverBackend, extract_flags
+from .base import SolveResult, SolverBackend, extract_flags, extract_handoff
 
 log = logging.getLogger("adapter.solver.pi")
 
@@ -264,6 +264,8 @@ class PiAgentBackend(SolverBackend):
         turns = 0
         pending_calls = {}   # toolCallId -> args（tool_execution_end 不带 args）
         text_buf = ""      # 助手文本累积（text_delta 是增量）
+        text_parts: list = []   # 助手文本分段（B14 续接块回捞；只收助手文本，
+                                # 不收工具输出——避免把 cat MEMORY.md 回显的旧块当本场结论）
         thinking_buf = ""  # 思考流（忽略，不进入 observed_output）
 
         for attempt in range(max_retries + 1):
@@ -424,6 +426,7 @@ class PiAgentBackend(SolverBackend):
                             elif event_type in ("agent_end", "turn_end", "message_end"):
                                 if text_buf:
                                     all_output_parts.append(text_buf)
+                                    text_parts.append(text_buf)
                                     text_buf = ""
                                 # BUG: 模型层错误（如 402 Insufficient Balance / 认证失败）出现在
                                 # stopReason="error" + errorMessage，不匹配下方 error 事件分支，
@@ -448,6 +451,7 @@ class PiAgentBackend(SolverBackend):
                     # 末尾补上未 flush 的文本
                     if text_buf:
                         all_output_parts.append(text_buf)
+                        text_parts.append(text_buf)
 
                     proc.wait(timeout=30)
 
@@ -477,6 +481,9 @@ class PiAgentBackend(SolverBackend):
         result.duration_s = time.monotonic() - t0
         if all_output_parts:
             result.final_text = all_output_parts[-1]
+        # B14：续接块回捞。只扫助手文本（不含工具输出），预算耗尽/被杀
+        # 的场次同样能捞到会话中途写过的块。
+        result.handoff = extract_handoff("\n".join(text_parts))
 
         # 从 FLAG 文件读取
         self._read_flag_files(workdir, result.flags)

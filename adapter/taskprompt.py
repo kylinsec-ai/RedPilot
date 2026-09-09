@@ -197,6 +197,11 @@ def _reusable_artifacts(workdir: str) -> str:
     return ", ".join(label for _, label, _ in merged[:15])
 
 
+# 前次记忆注入上限（B14：2000 → 4000）。c-03 的 MEMORY.md 实测 9184 字节，
+# 旧上限只够「目标 + 部分侦察结论」，关键页面/已证死路都在截断之外。
+_PRIOR_MEMORY_MAX = 4000
+
+
 def build_task_prompt(
     task: AgentTask,
     board=None,
@@ -290,12 +295,16 @@ def build_task_prompt(
             sections.append(f"【当前目标】{goal.id}: {goal.description}")
 
     # ── 前次记忆 ──
-    if prior_memory_path and os.path.isfile(prior_memory_path) and session_idx > 0:
+    # B14：不再要求 session_idx > 0 —— 该计数每次 visit 从 0 重新起算，而
+    # MEMORY.md 正是跨 visit 的交接文件，复访首场恰恰最需要它（实测 c-05 首场
+    # 0 次注入、c-03 要到同 visit 第二场才注入）。文件存在性检查已排除
+    # 「该题从未做过」的情形。
+    if prior_memory_path and os.path.isfile(prior_memory_path):
         try:
             with open(prior_memory_path, "r", encoding="utf-8") as f:
                 prior = f.read().strip()
             if prior:
-                sections.append(f"## 前次会话记忆\n{prior[:2000]}")
+                sections.append(f"## 前次会话记忆\n{prior[:_PRIOR_MEMORY_MAX]}")
         except Exception:
             pass
 

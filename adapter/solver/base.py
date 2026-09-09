@@ -50,6 +50,70 @@ def extract_flags(text: str) -> list[str]:
     return list(found)
 
 
+# ── 续接块（B14）──────────────────────────────────────────────
+# prompt 要求 agent 未解出时在结尾输出「已达成原语/已证死路/下一步」，
+# 但 SolveResult.handoff 全仓没有赋值点 → 最有价值的跨场交接信息（已证
+# 死路、下一步）100% 丢失。这里提供从文本回捞的解析器，solver 与 driver 共用。
+HANDOFF_KEYS = ("已达成原语", "已证死路", "下一步")
+_HANDOFF_VALUE_MAX = 400      # 单字段保留上限
+_HANDOFF_TOTAL_MAX = 1600     # 单块扫描窗口上限
+_HANDOFF_PLACEHOLDER_RX = re.compile(r"^<[^>]{0,40}>$")
+
+
+def extract_handoff(text: str) -> str:
+    """从文本中回捞最后一次出现的续接块。
+
+    - 块起点取最后一次「已达成原语」（完整块开头）；只有部分字段时退到
+      最后一个已出现的键
+    - 字段之间允许空行（真实块就是空行分隔）；空行后若下一个非空行是新
+      字段键则继续，否则视为块结束；markdown 标题/代码围栏也终止块
+    - 占位符（`<进展>` 等模板原文）与空值丢弃
+    """
+    if not text:
+        return ""
+    pos = -1
+    for key in HANDOFF_KEYS:
+        pos = text.rfind(key)
+        if pos >= 0:
+            break
+    if pos < 0:
+        return ""
+    lines = text[pos:pos + _HANDOFF_TOTAL_MAX].splitlines()
+    fields: list[list[str]] = []
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        key = next((k for k in HANDOFF_KEYS if s.startswith(k)), None)
+        if not key:
+            i += 1
+            continue
+        fields.append([key, s[len(key):].lstrip(" \t:：*").strip()])
+        i += 1
+        while i < len(lines):
+            s2 = lines[i].strip()
+            if any(s2.startswith(k) for k in HANDOFF_KEYS):
+                break                      # 下一个字段，交回外层
+            if not s2:
+                j = i + 1
+                while j < len(lines) and not lines[j].strip():
+                    j += 1
+                nxt = lines[j].strip() if j < len(lines) else ""
+                i = j if (nxt and any(nxt.startswith(k) for k in HANDOFF_KEYS)) else len(lines)
+                break
+            if s2.startswith(("#", "```", "---")):
+                i = len(lines)
+                break
+            fields[-1][1] = (fields[-1][1] + " " + s2).strip() if fields[-1][1] else s2
+            i += 1
+    out = []
+    for k, v in fields:
+        v = v.strip().strip("*").strip()
+        if not v or _HANDOFF_PLACEHOLDER_RX.match(v):
+            continue
+        out.append(f"{k}: {v[:_HANDOFF_VALUE_MAX]}")
+    return "\n".join(out)
+
+
 @dataclass
 class SolveResult:
     """Agent 会话执行结果（各后端统一输出）"""
