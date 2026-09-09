@@ -54,10 +54,16 @@ level, total_score, flags, hint?, hint_cost_radio?, container_addr?, image?,
 container_port?, docker_network?}]}]}`,或直接传对象/数组;`TSECBENCH_TASKS_JSON`
 可传内联 JSON。鉴权:`BENCHMARK_TOKEN` 请求头(缺失/无效返回 404 task_not_found)。
 
+> 安全边界:`/openapi/v1/vpn/*`(上传/启停平台级 openvpn,进程以 root 运行)属管理
+> 端点,仅接受 `TSECBENCH_ADMIN_TOKEN` 请求头,与参与方任务 token 严格隔离;
+> 上传配置会拒绝脚本执行类指令(`script-security`/`up`/`down`/`plugin` 等)并以
+> `--script-security 1` 启动。多参与方共享平台时,`TSECBENCH_ADMIN_TOKEN` 只由运营者持有。
+
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
 | `TSECBENCH_CONFIG` / `TSECBENCH_TASKS_JSON` | unset | 任务目录(文件路径 / 内联 JSON) |
-| `BENCHMARK_TOKEN` | unset | 请求鉴权 token(也注入任务定义) |
+| `BENCHMARK_TOKEN` | unset | 任务请求鉴权 token(也注入任务定义);**仅限 `/openapi/v1/challenges/*`** |
+| `TSECBENCH_ADMIN_TOKEN` | unset | 管理端点(`/openapi/v1/vpn/*` 平台级 openvpn 生命周期)专用凭据;未配置 → 管理端点 503 拒用(fail closed);参与方任务 token 一律不可触达 |
 | `TSECBENCH_DB_PATH` | `./data/tsecbench.sqlite3` | SQLite 路径 |
 | `TSECBENCH_MAX_ACTIVE_CHALLENGES` | `3` | 同时活跃题目实例上限 |
 | `TSECBENCH_PROVISIONER` | `static` | 题目供给: static(认 container_addr)/ docker |
@@ -107,6 +113,8 @@ docker compose logs -f      # 观察刷题进度
 | `WATCHDOG_MAX_IDLE_SECONDS` | `300` | 心跳容忍(compose healthcheck) |
 | `OBSERVABILITY_URL` | `http://platform:8090` | obs 摄取地址;compose 内自动指向 service;宿主直跑 driver 设 `http://127.0.0.1:8090`;**未设则中继整体禁用**(worker 行为零变化) |
 | `OBSERVABILITY_TOKEN` | — | 与平台同值;只配 URL 忘配 token 时平台 ingest 全灰(503,响亮而非静默丢日志) |
+| `STATUS_BIND` | `127.0.0.1` | 状态服务(容器内 :8080)监听地址;数据无鉴权 → 默认仅回环。**compose 内须显式 `0.0.0.0`**(docker-proxy 需全网卡转发),宿主侧暴露由 `STATUS_HOST_IP` 收口 |
+| `STATUS_HOST_IP` | `127.0.0.1` | compose 宿主侧发布绑定(默认回环);LAN/远程查看才设 `0.0.0.0`(自担风险) |
 
 ## 运行本地观测平台(obs)
 
@@ -132,10 +140,14 @@ OBSERVABILITY_DB=$PWD/data/obs.sqlite3 \
 | `OBSERVABILITY_TOKEN` | — | ingest 鉴权(`X-Observability-Token` 常量时间比较);未配 → ingest 响亮 503 |
 | `OBSERVABILITY_DB` | `./data/obs.sqlite3` | SQLite 路径(父目录自动建) |
 | `OBSERVABILITY_WEB` | —(未配则 / 返回 404 说明) | SPA 产物目录;容器内 `/app/web` |
-| `OBSERVABILITY_HOST` / `OBSERVABILITY_PORT` | `0.0.0.0` / `8090` | uvicorn 监听(通常由 CMD 传入) |
+| `OBSERVABILITY_HOST` / `OBSERVABILITY_PORT` | `0.0.0.0` / `8090` | uvicorn 监听(通常由 CMD 传入);容器内须 0.0.0.0(worker 中继走 compose 网络) |
+| `OBS_PORT` / `OBS_HOST_IP`(compose 宿主侧) | `8090` / `127.0.0.1` | 发布端口 / 绑定地址;默认回环 —— 读端无鉴权,见下 |
 
 摄取端点(`/api/internal/*`)仅接受带 token 的 POST;读端(`/api/status|roster|challenge|
-timeline|transcript|runs...`、SSE `/api/events`、静态)只读开放。语义注:
+timeline|transcript|runs...`、SSE `/api/events`、静态)只读开放 —— 刻意无鉴权,但读端
+返回**已接受 flag 明文与完整 agent 实录**(评测答案材料):compose 默认只把 8090 发布到
+**宿主回环**(`host_ip: 127.0.0.1`;浏览器 `http://localhost:8090` 即可,远程查看请走
+SSH 隧道;确需局域网放行时显式设 `OBS_HOST_IP=0.0.0.0`,答案泄露风险自担)。语义注:
 
 - 事件行为原文 JSONL(与 transcript 同信任域);`message_update` 流式增量在 worker 侧
   丢弃,故 raw 面板/事件页不含增量(实时感由 SSE 快照 + 时间线轮询维持)。
@@ -178,7 +190,8 @@ cd frontend && npm ci && npm run build   # svelte-check + vite build → ../web/
 
 - 依赖全部在 `devDependencies`,运行时无任何 JS 依赖;产物已在浏览器端就绪。
 - **数据源已是观测平台**:平台服务(obs :8090)同源托管 `web/` 并提供全部 `/api/*`
-  (含 SSE `/api/events` 流式);worker 容器 :8080 的 status_server 保留,仅容器本地调试。
+  (含 SSE `/api/events` 流式);worker 容器 :8080 的 status_server 保留,仅容器本地调试
+  (宿主侧默认仅回环发布,容器内监听由 `STATUS_BIND` 控制 —— 见 worker 环境变量表)。
 - 本地开发:`npm run dev`(Vite :5173)会把 `/api` 代理到 `127.0.0.1:8090`(宿主裸跑的
   观测平台),含 SSE 流式直通。
 - 版本注意:typescript 必须锁 6.x(`svelte-check` 不支持 7.x Go 版);package-lock.json

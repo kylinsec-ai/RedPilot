@@ -16,6 +16,38 @@ from typing import Any
 
 from .errors import APIError
 
+# 上传配置中禁止的 OpenVPN 指令。openvpn 以平台进程用户(典型部署为 root)运行,
+# 配置本身即代码:script-security≥2 + up/down/tls-verify 等可执行任意命令,
+# log/status/writepid 等可按任意路径写文件,chroot/user/group/cd 可改变运行上下文。
+# config(文件包含)可绕过本校验加载外部危险指令;其余经 --script-security 1 兜底。
+# 命中任一指令 → 400 拒收(fail loud),而不是剥离后静默放行。
+_FORBIDDEN_DIRECTIVES = frozenset({
+    # 脚本执行
+    "script-security", "up", "down", "route-up", "route-pre-down",
+    "ipchange", "tls-verify", "learn-address", "auth-user-pass-verify",
+    "client-connect", "client-disconnect", "plugin", "iproute",
+    # 任意路径文件写
+    "log", "log-append", "status", "writepid",
+    # 文件包含(绕过逐行校验)
+    "config",
+    # 运行上下文/提权语义
+    "chroot", "user", "group", "cd", "tmp-dir",
+})
+
+
+def _validate_config(content: str) -> None:
+    """逐行检查禁止指令黑名单;命中 → APIError(400)。注释/空行跳过。"""
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        keyword = line.split(None, 1)[0].lower()
+        if keyword in _FORBIDDEN_DIRECTIVES:
+            raise APIError(
+                400, "invalid_vpn_config",
+                f"VPN 配置含被禁指令 '{keyword}'"
+                " (script-security/up/down/plugin/log/status 等执行与文件写指令一律拒绝)")
+
 
 @dataclass(frozen=True)
 class VPNStatus:
@@ -82,6 +114,7 @@ class VPNManager:
     def save_config(self, content: str) -> VPNStatus:
         if not content or not content.strip():
             raise APIError(400, "invalid_vpn_config", "VPN 配置内容为空")
+        _validate_config(content)
         self._ensure_dir()
         was_running = self.status().running
         self.config_path.write_text(content, encoding="utf-8")
@@ -100,6 +133,9 @@ class VPNManager:
             raise APIError(400, "vpn_config_missing", "尚未上传 VPN 配置文件")
         self._ensure_dir()
         try:
+            # 注意 argv 顺序:--config 之后追加的选项晚于配置解析,覆盖配置内的
+            # script-security 设定(双重防线:上传校验拒绝 + 启动参数钉死为 1,
+            # 即仅允许内置 ip/route 等,用户脚本一律不执行)。
             subprocess.run(
                 [
                     "openvpn",
@@ -110,6 +146,8 @@ class VPNManager:
                     self.log_path.name,
                     "--writepid",
                     self.pid_path.name,
+                    "--script-security",
+                    "1",
                 ],
                 check=True,
                 capture_output=True,

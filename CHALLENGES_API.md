@@ -34,6 +34,9 @@ BENCHMARK_TOKEN: a1b2c3d4-e5f6-7890-abcd-ef1234567890
 
 > 若 token 无效或缺失，返回 `404 task_not_found` 错误。
 
+> 注:平台另存在管理端点(`/openapi/v1/vpn/*`,openvpn 生命周期),由独立的
+> `TSECBENCH_ADMIN_TOKEN` 请求头保护,**任务 token 不可触达**;任务方请勿尝试调用。
+
 ---
 
 ## 2. 接口列表与调用流程

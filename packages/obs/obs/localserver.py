@@ -441,7 +441,8 @@ def _make_handler(live, bus, workdir: str, web_dir: str, poller=None, digest=Non
 def serve_forever_in_thread(live, bus, port: int, *,
                             workdir: str | None = None,
                             web_dir: str | None = None,
-                            poller=None, digest=None) -> threading.Thread | None:
+                            poller=None, digest=None,
+                            host: str = "0.0.0.0") -> threading.Thread | None:
     """起守护线程服务;port<=0 则禁用(回归:求解不受影响)。
 
     协作者全部构造注入(本模块零 worker import,装配责任在调用方):
@@ -449,6 +450,9 @@ def serve_forever_in_thread(live, bus, port: int, *,
       poller   —— 题目总览轮询(worker 的 RosterPoller 或 None);
       digest   —— transcript 时间线折叠壳(worker 的 TranscriptDigest 或 None)。
     worker 的 main() 负责共享同一个 poller(避免双 60s 轮询线程双写 roster.json)。
+
+    host: 监听地址。仪表板数据无鉴权(实时 FLAG/完整实录),默认应由调用方传入
+    回环地址;本函数缺省 0.0.0.0 仅为 docker-proxy 转发兼容(容器需全网卡监听)。
     """
     if not port or port <= 0:
         log.info("local status server disabled (STATUS_PORT=%s)", port)
@@ -464,9 +468,9 @@ def serve_forever_in_thread(live, bus, port: int, *,
                                                     "..", "..", "..", "web")))
     try:
         srv = ThreadingHTTPServer(
-            ("0.0.0.0", port), _make_handler(live, bus, workdir, web_dir, poller, digest))
+            (host, port), _make_handler(live, bus, workdir, web_dir, poller, digest))
     except Exception:
-        log.exception("local status server bind :%d failed (solving continues)", port)
+        log.exception("local status server bind %s:%d failed (solving continues)", host, port)
         return None
 
     t = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 1},

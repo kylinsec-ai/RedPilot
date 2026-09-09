@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .config import Settings
-from .errors import APIError
+from .errors import APIError, admin_not_configured, admin_required
 from .models import parse_task_config
 from .provisioner import ContainerProvisioner, provisioner_for
 from .service import ChallengeService
@@ -106,6 +107,18 @@ def create_app(
     def authenticated_token(benchmark_token: str | None = Header(default=None, alias="BENCHMARK_TOKEN")) -> str:
         return service.authenticate(benchmark_token)
 
+    def authenticated_admin(admin_token: str | None = Header(default=None, alias="TSECBENCH_ADMIN_TOKEN")) -> None:
+        """管理端点凭据(openvpn 生命周期等平台全局特权操作)。
+
+        与参与方任务 token 严格分离:未配置 TSECBENCH_ADMIN_TOKEN → 503 fail closed,
+        缺失/不符 → 401(常量时间比较)。任一任务 token 都不可触达这些端点。
+        """
+        expected = settings.admin_token
+        if not expected:
+            raise admin_not_configured()
+        if admin_token is None or not hmac.compare_digest(admin_token.encode(), expected.encode()):
+            raise admin_required()
+
     @app.get(
         "/openapi/v1/challenges",
         response_model=list[ChallengeResponse],
@@ -158,21 +171,21 @@ def create_app(
     ) -> dict:
         return service.close(token, unique_code)
 
-    # ---- OpenVPN lifecycle ----
+    # ---- OpenVPN lifecycle(平台全局特权操作;仅 TSECBENCH_ADMIN_TOKEN,参与方 token 不可达)----
     @app.get("/openapi/v1/vpn/status", tags=["vpn"])
-    def vpn_status(token: str = Depends(authenticated_token)) -> dict:
+    def vpn_status(_admin: str = Depends(authenticated_admin)) -> dict:
         return app.state.vpn.as_dict()
 
     @app.post("/openapi/v1/vpn/config", response_model=None, tags=["vpn"])
-    def vpn_upload(payload: VPNConfigRequest, token: str = Depends(authenticated_token)) -> dict:
+    def vpn_upload(payload: VPNConfigRequest, _admin: str = Depends(authenticated_admin)) -> dict:
         return app.state.vpn.as_dict(app.state.vpn.save_config(payload.content))
 
     @app.post("/openapi/v1/vpn/start", tags=["vpn"])
-    def vpn_start(token: str = Depends(authenticated_token)) -> dict:
+    def vpn_start(_admin: str = Depends(authenticated_admin)) -> dict:
         return app.state.vpn.as_dict(app.state.vpn.start())
 
     @app.post("/openapi/v1/vpn/stop", tags=["vpn"])
-    def vpn_stop(token: str = Depends(authenticated_token)) -> dict:
+    def vpn_stop(_admin: str = Depends(authenticated_admin)) -> dict:
         return app.state.vpn.as_dict(app.state.vpn.stop())
 
     return app

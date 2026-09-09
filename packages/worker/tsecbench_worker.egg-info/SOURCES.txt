@@ -1,5 +1,6 @@
 pyproject.toml
 tests/test_obs_relay.py
+tests/test_provider_failure_guard.py
 tsecbench_worker/__init__.py
 tsecbench_worker/config.py
 tsecbench_worker/driver.py

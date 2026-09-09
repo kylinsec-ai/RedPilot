@@ -225,8 +225,11 @@ def main() -> None:
         log.exception("obs relay start failed (platform ingestion disabled)")
         _RELAY = None
     try:
+        # 数据无鉴权 → 默认只绑回环(STATUS_BIND);compose 内编排显式 0.0.0.0(proxy 转发),
+        # 宿主侧再默认收成回环发布 —— 见 docker-compose.yaml 注释
         _serve_local(_LIVE, _BUS, settings.status_port,
-                     workdir=settings.workdir, poller=roster_poller)
+                     workdir=settings.workdir, poller=roster_poller,
+                     host=settings.status_bind)
     except Exception:
         log.exception("local status server failed to start (solving continues)")
 

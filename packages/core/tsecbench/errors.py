@@ -28,6 +28,16 @@ def task_not_found() -> APIError:
     return APIError(404, "task_not_found", "Task not found")
 
 
+def admin_not_configured() -> APIError:
+    return APIError(503, "admin_token_not_configured",
+                    "平台未配置 TSECBENCH_ADMIN_TOKEN,管理端点不可用")
+
+
+def admin_required() -> APIError:
+    return APIError(401, "admin_token_required",
+                    "缺少或无效的管理凭据(TSECBENCH_ADMIN_TOKEN 请求头)")
+
+
 def challenge_not_found() -> APIError:
     return APIError(404, "challenge_not_found", "Challenge not found")
 

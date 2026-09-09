@@ -20,8 +20,12 @@ services:
       OBSERVABILITY_DB: /app/data/obs.sqlite3
       OBSERVABILITY_WEB: /app/web
     ports:
-      # 宿主侧端口由 OBS_PORT 控制;容器侧 = OBSERVABILITY_PORT(uvicorn CMD 同源读取)
-      - "${OBS_PORT:-8090}:${OBSERVABILITY_PORT:-8090}"
+      # 读端 API 无鉴权且含 flag 明文/完整实录 → 宿主侧默认只绑回环(localhost 浏览器即可)。
+      # 需要局域网/远程查看时显式放行:OBS_HOST_IP=0.0.0.0 docker compose up -d platform
+      # (容器侧仍须 0.0.0.0 监听:compose 网络内 worker 中继走 platform:8090)
+      - target: ${OBSERVABILITY_PORT:-8090}
+        host_ip: ${OBS_HOST_IP:-127.0.0.1}
+        published: ${OBS_PORT:-8090}
     volumes:
       # data/ 首次有 compose 挂载:SQLite(+wal/shm)与 vpn/ 一样持久化在宿主机
       - ./data:/app/data
@@ -82,7 +86,10 @@ services:
       # ── 人读态势台（只读 :8080；STATUS_PORT=0 禁用求解器内服务，
       #    但 0 不能出现在下方 ports 映射里（compose 校验直接失败，容器起不来），
       #    禁用时请一并注释掉整个 ports 段）──
+      # STATUS_BIND 须为 0.0.0.0：docker-proxy 经容器全网卡地址转发；
+      #    宿主侧暴露面由 ports 段的 host_ip 单独收口（默认回环）
       STATUS_PORT: ${STATUS_PORT:-8080}
+      STATUS_BIND: ${STATUS_BIND:-0.0.0.0}
       WORKER_ID: ${WORKER_ID:-worker-1}
       # ── 观测平台摄取(可选):compose 网络内以 service DNS 可达;
       #    宿主直跑 driver 时设 OBSERVABILITY_URL=http://127.0.0.1:8090 ──
@@ -91,8 +98,13 @@ services:
       # ── VPN 配置路径 (容器内, entrypoint 读取;文件不存在则跳过) ──
       ADAPTER_VPN_CONFIG: /vpn/client.ovpn
     ports:
-      # 容器侧端口与 STATUS_PORT 保持一致(旧写法固定 8080,改 STATUS_PORT 会失联)
-      - "${STATUS_PORT:-8080}:${STATUS_PORT:-8080}"
+      # 容器侧端口与 STATUS_PORT 保持一致(旧写法固定 8080,改 STATUS_PORT 会失联)。
+      # 宿主侧默认只绑回环:态势台数据无鉴权且含实时 FLAG/完整实录,LAN 一律不可达;
+      # 需要远程查看时显式放行 STATUS_HOST_IP=0.0.0.0(务必自评估暴露面)。
+      # STATUS_PORT=0 禁用时仍须注释掉整个 ports 段(0 通不过 compose 校验)。
+      - target: ${STATUS_PORT:-8080}
+        host_ip: ${STATUS_HOST_IP:-127.0.0.1}
+        published: ${STATUS_PORT:-8080}
     volumes:
       - ./work:/work
       - ./vpn:/vpn:ro

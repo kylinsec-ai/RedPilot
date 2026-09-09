@@ -19,6 +19,8 @@ class Settings:
     config_path: str | None = None
     inline_config: str | None = None
     benchmark_token: str | None = None
+    # 管理端点(openvpn 生命周期等平台全局特权操作)独立凭据;None → 端点 503 拒用(fail closed)
+    admin_token: str | None = None
     max_active_challenges: int = 3
     provisioner: str = "static"
     host: str = "0.0.0.0"
@@ -35,6 +37,8 @@ class Settings:
         inline_config = os.getenv("TSECBENCH_TASKS_JSON")
         token_value = os.getenv("BENCHMARK_TOKEN", "").strip()
         token = token_value or None
+        admin_value = os.getenv("TSECBENCH_ADMIN_TOKEN", "").strip()
+        admin_token = admin_value or None
         try:
             max_active = int(os.getenv("TSECBENCH_MAX_ACTIVE_CHALLENGES", "3"))
             port = int(os.getenv("PORT", "8000"))
@@ -49,6 +53,7 @@ class Settings:
             config_path=config_path,
             inline_config=inline_config,
             benchmark_token=token,
+            admin_token=admin_token,
             max_active_challenges=max_active,
             provisioner=os.getenv("TSECBENCH_PROVISIONER", "static").lower(),
             host=os.getenv("HOST", "0.0.0.0"),
