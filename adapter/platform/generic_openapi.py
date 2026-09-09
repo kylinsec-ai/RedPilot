@@ -24,6 +24,7 @@ from .base import (
     APIError, Challenge, ChallengeNotFound, CloseResult, DuplicateSubmit,
     HintResult, InvalidState, PlatformBackend, ResourceUnavailable,
     StartResult, SubmitResult, TaskNotFound, VpnCheckError, VpnCheckResult,
+    _parse_tags,
 )
 
 log = logging.getLogger("adapter.platform.generic")
@@ -215,6 +216,9 @@ class GenericOpenAPIBackend(PlatformBackend):
                 is_completed=bool(_resolve(c, fields.get("is_completed", "is_completed"), False)),
                 container_status=_resolve(c, fields.get("container_status", "container_status"), "stopped") or "stopped",
                 container_addr=list(_resolve(c, fields.get("container_addr", "container_addr"), []) or []),
+                category=_resolve(c, fields.get("category", "category"), "")
+                         or _resolve(c, "type", "") or _resolve(c, "challenge_type", ""),
+                tags=_parse_tags(_resolve(c, fields.get("tags", "tags"), [])),
             ))
         return out
 

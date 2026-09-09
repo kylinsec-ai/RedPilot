@@ -21,7 +21,9 @@ AGENT_ENV_FILE = PROJECT_ROOT / ".agent.env"
 WORK_STATUS_DIR = PROJECT_ROOT / "work" / "status"
 WORKER_NAMES = ["tsecbench-worker-1", "tsecbench-worker-2", "tsecbench-worker-3"]
 
-ENV_KEYS = ("BENCHMARK_BASE_URL", "BENCHMARK_TOKEN", "SOLVER_API_KEY")
+ENV_KEYS = ("BENCHMARK_BASE_URL", "BENCHMARK_TOKEN", "SOLVER_API_KEY",
+             "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL",
+             "SOLVER_SESSION_SECONDS", "ADAPTER_PI_THINKING")
 
 
 def _run(args: list[str], *, timeout: float = 60, env: dict | None = None) -> subprocess.CompletedProcess[str]:
@@ -56,10 +58,26 @@ def load_agent_env() -> dict[str, str]:
     return env
 
 
+def _thinking_value(values: dict) -> str:
+    """Web 端「思考模式（Thinking）」→ ADAPTER_PI_THINKING 映射。
+
+    llmThinking(bool) + llmReasoningEffort(low/medium/high)：
+    - 勾选开  → effort 原样（low/medium/high）
+    - 未勾选  → off
+    """
+    eff = str(values.get("llmReasoningEffort") or "low").lower()
+    if any(k in values and values[k] for k in ("llmThinking",)):
+        return eff if eff in ("low", "medium", "high") else "off"
+    return "off"
+
+
 def save_agent_env(values: dict[str, str]) -> None:
     """将 Agent 配置写入 .agent.env（隐藏 Key）。"""
     current = load_agent_env()
-    current.update({k: v for k, v in values.items() if k in ENV_KEYS})
+    normalized = {k: v for k, v in values.items() if k in ENV_KEYS}
+    if ("llmThinking" in values) or ("llmReasoningEffort" in values):
+        normalized["ADAPTER_PI_THINKING"] = _thinking_value(values)
+    current.update(normalized)
     lines = ["# TSecBench Agent 舰队配置（由控制台写入，请勿提交）"]
     for key in ENV_KEYS:
         lines.append(f"{key}={current.get(key, '')}")
@@ -75,7 +93,7 @@ def _worker_status_file(worker: str) -> Path:
 def _parse_worker_stats_from_logs(worker: str) -> dict[str, Any]:
     """从 worker 容器日志解析战绩（镜像内旧 driver 无状态文件时使用）。
 
-    日志格式: FLAG CORRECT on d-01: flag{...} (+200 pts, total 200)
+    日志格式: FLAG CORRECT on <code>: flag{...} (+200 pts, total 200)
     """
     import re
 
@@ -149,13 +167,14 @@ def _aggregate_events() -> dict[str, Any]:
             code = payload.get("code")
             active.pop(code, None)
         elif etype == "flag_submit":
+            code = payload.get("code")
             if payload.get("correct"):
                 summary["flags_submitted"] += 1
                 summary["total_earned"] += int(payload.get("awarded", 0) or 0)
                 flag = payload.get("flag") or ""
                 if flag and flag not in summary["flags_found"]:
                     summary["flags_found"].append(flag)
-                if code not in solved_codes:
+                if code and code not in solved_codes:
                     solved_codes.add(code)
                     summary["solved"] += 1
     # 进行中的题目（最近 session_start 且尚未 session_end）
@@ -227,6 +246,19 @@ def fleet_status() -> dict[str, Any]:
     summary["flags_found"] = summary["flags_found"][:20]
     summary["fleet_events"] = events["last_events"]
 
+    # 派单队列（供网页区分"派单中/自动解题"状态）
+    priority = {}
+    try:
+        if PRIORITY_FILE.exists():
+            for line in PRIORITY_FILE.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "|" in line:
+                    code, wid = line.split("|", 1)
+                    priority[code.strip()] = int(wid.strip()) if wid.strip().isdigit() else -1
+    except OSError:
+        pass
+    summary["priority"] = priority
+
     # 单题定向容器（网页「单独自动解」拉起的 tsecbench-single-*）
     singles: list[dict[str, Any]] = []
     result = _run(["docker", "ps", "-a", "--filter", "name=tsecbench-single-",
@@ -266,16 +298,49 @@ def fleet_start() -> dict[str, Any]:
 
 
 def _rotate_stats() -> None:
-    """轮转事件日志与状态文件：备份旧文件，让统计只反映当前任务周期。"""
+    """新任务周期开始：重置所有记忆与战绩，防止跨轮作弊。
+
+    - 清空事件文件（战绩只统计本轮；历史轮转备份一并删除）
+    - 删除全部题目工作目录（MEMORY.md / FLAG / blackboard / 转录 / 工具产物）
+    - 删除根级共享黑板
+    - 清理旧 worker 状态文件
+    - 清理 flag 归属登记（status/owners-worker-*.json）与历史任务优先题号（priority.txt）
+      —— 两者跨轮保留设计，任务轮换时不清即成「外部历史答题记忆」（合规红线）
+    保留：status/ 心跳运行文件（自动重建）、_events.jsonl（截断清空）、monitor.log
+    """
     import time
 
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    events = PROJECT_ROOT / "work" / "_events.jsonl"
+    work_dir = PROJECT_ROOT / "work"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. 清空事件日志（截断保留 inode：worker 以 O_APPEND 追加，句柄不破坏）
+    events = work_dir / "_events.jsonl"
     try:
         if events.exists() and events.stat().st_size > 0:
-            events.rename(PROJECT_ROOT / "work" / f"_events.{stamp}.jsonl.bak")
+            with events.open("r+b") as f:
+                f.truncate(0)
     except OSError:
         pass
+
+    # 2. 清空题目工作目录与共享黑板（防跨轮记忆作弊）
+    keep = {"status", "_events.jsonl", "monitor.log", "_blackboard.json.bak"}
+    try:
+        for child in work_dir.iterdir():
+            if child.name in keep or child.name.startswith("_events."):
+                continue
+            if child.is_dir():
+                import shutil
+                shutil.rmtree(child, ignore_errors=True)
+                log_sys = child  # noqa
+            else:
+                try:
+                    child.unlink()
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+    # 3. 清理旧 worker 状态文件
     try:
         for old in (WORK_STATUS_DIR.glob("worker-*.json") if WORK_STATUS_DIR.exists() else []):
             try:
@@ -284,10 +349,43 @@ def _rotate_stats() -> None:
                 pass
     except OSError:
         pass
+
+    # 清理 flag 归属登记（跨轮保留设计 → 任务轮换时不清即成外部历史答题记忆）
+    try:
+        for f in (work_dir / "status").glob("owners-worker-*.json"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
     # 兜底：事件文件即使为空也保证存在（driver obs 会追加）
     try:
-        PROJECT_ROOT.joinpath("work").mkdir(parents=True, exist_ok=True)
         events.touch(exist_ok=True)
+    except OSError:
+        pass
+
+    # 4. 清空历史事件备份（防外部答题记忆残留）
+    try:
+        for bak in work_dir.glob("_events.*.bak"):
+            try:
+                bak.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+    # 5. 清空浏览器会话记录（含 console_ai_history 答题历史 / 远端题目状态）
+    import shutil
+    sessions_dir = PROJECT_ROOT / "data" / "fastapi_sessions"
+    try:
+        if sessions_dir.is_dir():
+            for f in sessions_dir.glob("*.json"):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
     except OSError:
         pass
 
@@ -306,6 +404,198 @@ def worker_logs(worker: str, tail: int = 200) -> str:
     if result.returncode != 0:
         raise APIError(404, "worker_not_found", f"容器 {worker} 不存在或未运行")
     return result.stdout + result.stderr
+
+# ── 实时对话流（transcript）─────────────────────────────
+# driver 把 pi 每轮事件的 JSONL（session/turn/tool_call/thinking/text…）
+# 实时追加到 work/<code>/_transcripts/roundX_sessionY.jsonl（共享挂载，宿主直读）。
+# 这里提供「会话列表 + 按行增量读取」，前端轮询即可看到 Agent 正在调什么工具。
+
+def _safe_transcript(rel: str) -> Path | None:
+    """只允许定位到 work/<code>/_transcripts/*.jsonl，防路径穿越。"""
+    if not rel or "\\" in rel:
+        return None
+    try:
+        p = (PROJECT_ROOT / "work" / rel).resolve()
+        p.relative_to((PROJECT_ROOT / "work").resolve())
+    except (ValueError, OSError):
+        return None
+    if p.parent.name != "_transcripts" or p.suffix != ".jsonl":
+        return None
+    return p
+
+
+def list_transcripts() -> dict[str, Any]:
+    """扫描各题 _transcripts 下的会话文件（按 code/round/session 聚合元信息）。"""
+    files: list[dict[str, Any]] = []
+    work_dir = PROJECT_ROOT / "work"
+    if work_dir.is_dir():
+        for d in sorted(p for p in work_dir.iterdir() if p.is_dir()):
+            tdir = d / "_transcripts"
+            if not tdir.is_dir():
+                continue
+            for f in sorted(tdir.glob("*.jsonl")):
+                try:
+                    st = f.stat()
+                    lines = sum(1 for _ in f.open(encoding="utf-8", errors="replace"))
+                except OSError:
+                    continue
+                files.append({
+                    "code": d.name,
+                    "file": f"{d.name}/_transcripts/{f.name}",
+                    "name": f.name,
+                    "size": st.st_size,
+                    "lines": lines,
+                    "mtime": int(st.st_mtime),
+                })
+    files.sort(key=lambda x: x["mtime"], reverse=True)
+    return {"files": files}
+
+
+def read_transcript(rel: str, line: int = 0, limit: int = 300) -> dict[str, Any]:
+    """从第 line 行（0=全部）开始增量读取某 transcript，返回解析后的事件数组。"""
+    p = _safe_transcript(rel)
+    if p is None or not p.exists():
+        raise APIError(404, "transcript_not_found", "transcript 文件不存在")
+    start = max(0, int(line or 0))
+    cap = max(1, min(500, int(limit or 300)))
+    events: list[dict[str, Any]] = []
+    total = 0
+    with p.open(encoding="utf-8", errors="replace") as fh:
+        for i, raw in enumerate(fh, 1):
+            total = i
+            if i < start or len(events) >= cap:
+                continue
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                events.append(json.loads(raw))
+            except json.JSONDecodeError:
+                events.append({"type": "raw", "line": raw})
+    return {"file": rel, "from_line": start, "total_lines": total, "events": events}
+
+
+# ── LLM Token 用量统计（transcripts 聚合）─────────────────
+# pi 每条 assistant 消息的 message_end.usage 携带 input/output/cacheRead/
+# cacheWrite（totalTokens = input+cacheRead+output；推理 token 已计入 output，
+# provider 不单列）。transcript 为 append-only JSONL：offset 增量读取 +
+# 进程内缓存，页面轮询零成本。
+
+_USAGE_FIELDS = ("input", "output", "cacheRead", "cacheWrite")
+_usage_cache: dict[str, dict[str, Any]] = {}
+_usage_lock = threading.Lock()
+
+
+def _usage_file_totals(f: Path) -> dict[str, Any] | None:
+    """单 transcript 的累计用量（offset 增量读取，缓存于 _usage_cache）。"""
+    key = str(f)
+    try:
+        size = f.stat().st_size
+    except OSError:
+        return None
+    ent = _usage_cache.get(key)
+    if ent is None or size < ent["offset"]:
+        ent = {"offset": 0, "totals": {k: 0 for k in _USAGE_FIELDS}, "calls": 0, "model": ""}
+    totals = ent["totals"]
+    if size == ent["offset"]:
+        return {**totals, "calls": ent["calls"], "model": ent["model"]}
+    try:
+        with f.open("rb") as fh:
+            fh.seek(ent["offset"])
+            chunk = fh.read()
+    except OSError:
+        return {**totals, "calls": ent["calls"], "model": ent["model"]}
+    last_nl = chunk.rfind(b"\n")
+    if last_nl < 0:
+        return {**totals, "calls": ent["calls"], "model": ent["model"]}   # 尚无完整新行
+    for raw in chunk[:last_nl].split(b"\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        if ev.get("type") != "message_end":
+            continue
+        m = ev.get("message") or {}
+        if m.get("role") != "assistant":
+            continue
+        u = m.get("usage") or {}
+        for k in _USAGE_FIELDS:
+            totals[k] += u.get(k) or 0
+        ent["calls"] += 1
+        if m.get("model"):
+            ent["model"] = m["model"]
+    ent["offset"] += last_nl + 1
+    _usage_cache[key] = ent
+    return {**totals, "calls": ent["calls"], "model": ent["model"]}
+
+
+def usage_summary() -> dict[str, Any]:
+    """聚合全部题目的 LLM token 用量：舰队总览 + 按题分项（网页用量面板）。"""
+    work_dir = PROJECT_ROOT / "work"
+    per_code: dict[str, dict[str, Any]] = {}
+    model = ""
+    seen: set[str] = set()
+    if work_dir.is_dir():
+        with _usage_lock:
+            for d in sorted(p for p in work_dir.iterdir() if p.is_dir()):
+                tdir = d / "_transcripts"
+                if not tdir.is_dir():
+                    continue
+                agg = {k: 0 for k in _USAGE_FIELDS}
+                calls = sessions = 0
+                for f in sorted(tdir.glob("*.jsonl")):
+                    seen.add(str(f))
+                    st = _usage_file_totals(f)
+                    if st is None:
+                        continue
+                    sessions += 1
+                    for k in _USAGE_FIELDS:
+                        agg[k] += st[k]
+                    calls += st["calls"]
+                    model = st["model"] or model
+                if sessions:
+                    per_code[d.name] = {**agg, "calls": calls, "sessions": sessions}
+            # 任务轮转/清理后消失的文件：同步清缓存，防陈旧数据混入新周期
+            for gone in [p for p in _usage_cache if p not in seen]:
+                _usage_cache.pop(gone, None)
+
+    rows = []
+    fleet = {k: 0 for k in _USAGE_FIELDS}
+    fleet_calls = fleet_sessions = 0
+    for code, t in per_code.items():
+        denom = t["cacheRead"] + t["input"]
+        rows.append({
+            "code": code,
+            "sessions": t["sessions"],
+            "calls": t["calls"],
+            "input": t["input"],
+            "output": t["output"],
+            "cacheRead": t["cacheRead"],
+            "cacheWrite": t["cacheWrite"],
+            "totalTokens": t["input"] + t["output"] + t["cacheRead"] + t["cacheWrite"],
+            "cacheHit": round(100.0 * t["cacheRead"] / denom, 1) if denom else 0.0,
+        })
+        for k in _USAGE_FIELDS:
+            fleet[k] += t[k]
+        fleet_calls += t["calls"]
+        fleet_sessions += t["sessions"]
+    rows.sort(key=lambda r: -r["totalTokens"])
+    denom = fleet["cacheRead"] + fleet["input"]
+    return {
+        "summary": {
+            **fleet,
+            "calls": fleet_calls,
+            "sessions": fleet_sessions,
+            "totalTokens": fleet["input"] + fleet["output"] + fleet["cacheRead"] + fleet["cacheWrite"],
+            "cacheHit": round(100.0 * fleet["cacheRead"] / denom, 1) if denom else 0.0,
+            "model": model,
+            "challenges": len(rows),
+        },
+        "challenges": rows,
+    }
 
 
 # ── 派单给舰队（网页「Agent 解此题」）───────────────────

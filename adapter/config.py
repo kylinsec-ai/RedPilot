@@ -24,12 +24,12 @@ def _env(name: str, default: str | None = None) -> str | None:
 
 _SOLVER_PRESETS = {
     "deepseek": {
-        "base_url": "https://api.deepseek.com/anthropic",
+        "base_url": "https://api.deepseek.com",
         "model": "deepseek-v4-flash",
         "small_fast_model": "deepseek-v4-flash",
     },
     "deepseek-1m": {
-        "base_url": "https://api.deepseek.com/anthropic",
+        "base_url": "https://api.deepseek.com",
         "model": "deepseek-v4-pro[1m]",
         "small_fast_model": "deepseek-v4-flash",
         "subagent_model": "deepseek-v4-flash",
@@ -38,12 +38,12 @@ _SOLVER_PRESETS = {
         "api_timeout_ms": "3000000",
     },
     "glm": {
-        "base_url": "https://open.bigmodel.cn/api/anthropic",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
         "model": "glm-5.3",
         "small_fast_model": "glm-5.3",
     },
     "glm-1m": {
-        "base_url": "https://open.bigmodel.cn/api/anthropic",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
         "model": "glm-5.3",
         "small_fast_model": "glm-5.3",
         "auto_compact_window": "1000000",
@@ -88,16 +88,22 @@ class SolverConfig:
     def from_env(cls) -> "SolverConfig":
         provider = (_env("SOLVER_PROVIDER") or _env("ADAPTER_PROVIDER", "deepseek") or "deepseek").lower()
         preset = _SOLVER_PRESETS.get(provider, _SOLVER_PRESETS["deepseek"])
-        base = _env("SOLVER_BASE_URL", preset["base_url"]) or preset["base_url"]
+        # 网关优先：网页 Agent 舰队页配置的 ANTHROPIC_* 覆盖预设
+        base = (_env("ANTHROPIC_BASE_URL")
+                or _env("SOLVER_BASE_URL", preset["base_url"]) or preset["base_url"])
         if _env("SOLVER_GATEWAY", "0") == "1":
             base = _to_gateway(base)
-        key = (_env("SOLVER_API_KEY") or _env("ANTHROPIC_AUTH_TOKEN")
-               or _env("ANTHROPIC_API_KEY") or "")
+        # 网关 key 优先：配置了 ANTHROPIC_AUTH_TOKEN 时用网关 key，
+        # SOLVER_API_KEY 仅在未配置 ANTHROPIC 时作为兜底
+        key = (_env("ANTHROPIC_AUTH_TOKEN")
+               or _env("ANTHROPIC_API_KEY")
+               or _env("SOLVER_API_KEY") or "")
         return cls(
             provider=provider,
             base_url=base.rstrip("/"),
             api_key=key,
-            model=_env("SOLVER_MODEL", preset["model"]) or preset["model"],
+            model=(_env("ANTHROPIC_MODEL")
+                   or _env("SOLVER_MODEL", preset["model"]) or preset["model"]),
             small_fast_model=_env("SOLVER_SMALL_FAST_MODEL", preset["small_fast_model"]) or preset["small_fast_model"],
             max_turns=int(_env("SOLVER_MAX_TURNS", "60") or "60"),
             session_seconds=int(_env("SOLVER_SESSION_SECONDS", "1500") or "1500"),
@@ -170,7 +176,7 @@ def build_verifier_config(solver: SolverConfig) -> LLMConfig:
 # ── 控制器配置 ─────────────────────────────────────────────
 
 # 各难度单次会话时间盒（秒）— 简单/中等/困难解题耗时不同，分开配置
-_DEFAULT_TIMEBOX = {"easy": 240, "medium": 480, "hard": 900}
+_DEFAULT_TIMEBOX = {"easy": 3600, "medium": 3600, "hard": 3600}
 # 轮次时间盒乘数（越靠后的轮次给越多时间）
 _DEFAULT_ROUND_FACTORS = [1.0, 1.7, 3.0, 4.0]
 
@@ -192,9 +198,9 @@ class ControllerConfig:
     secs_per_turn: float
     keepalive_max: int
     platform_mode: str = "tsecbench-http"   # 平台接入模式: tsecbench-http / tsecbench-sdk / generic
-    timebox_easy: int = 240
-    timebox_medium: int = 480
-    timebox_hard: int = 900
+    timebox_easy: int = 3600  # 1小时
+    timebox_medium: int = 3600  # 1小时
+    timebox_hard: int = 3600  # 1小时
     round_factors: list = field(default_factory=lambda: list(_DEFAULT_ROUND_FACTORS))
 
     def timebox_for_difficulty(self, difficulty: str | None) -> int:

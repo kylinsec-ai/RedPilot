@@ -86,6 +86,23 @@ class SkillStore:
         (r"forensic|memory.?dump|volatility|carv|stego|隐写|取证|流量", 3.0, "forensics"),
         (r"aws|s3|iam|cloud|容器逃逸|metadata|云", 3.0, "cloud"),
         (r"bypass|evas|waf|antivirus|obfuscat|检测|规避|对抗", 3.0, "evasion"),
+        # java-exploit: Java 生态应用利用（4.0 压过 web，Java 特征必进 top-2）
+        (r"java.?反序列化|反序列化.{0,4}java", 3.5, "java-exploit"),
+        (r"fastjson|shiro|rememberme|log4j|jndi|autotype|templateimpl|actuator|heapdump|jolokia|spel|weblogic|jackson|struts|spring|commons.?collections|gadget|ysoserial|cc\d|hessian|内存马", 4.0, "java-exploit"),
+        # web-deep: Web 利用深度（指纹/绕过矩阵/原语放大）
+        (r"sql.?inject|注入|盲注|union|load_file|outfile|xp_cmdshell|gopher|tamper|waf|上传|upload|后缀|bypass|命令注入|命令执行|file.?upload|xxe|xml|ssti|lfi|rfi", 2.5, "web-deep"),
+        # web-attack: 进阶 Web 攻击
+        (r"cors|jwt|graphql|prototype.?pollution|race.?condition|条件竞争|cache.?poison|request.?smuggl|host.?header|websocket|subdomain.?takeover|idor|限流|rate.?limit", 3.0, "web-attack"),
+        # post-exploit: 后渗透
+        (r"post.?exploit|提权|privilege.?escal|lateral|横向移动|container.?escape|容器逃逸|credential.?harvest|凭证|persist|持久化|kerberoast|pass.?the.?hash|DCSync|IMDS|metadata", 3.0, "post-exploit"),
+        # ad: Active Directory 域渗透
+        (r"active.?directory|kerberos|域控|domain.?controller|bloodhound|ADCS|kerberoast|ASREP|委派|delegation|golden.?ticket|silver.?ticket|域信任|domain.?trust|LDAP|SMB.*域|gpp.?password|cpassword|Shadow.?Credential|RBCD", 3.0, "ad"),
+        # cicd: CI/CD 管线攻击
+        (r"github.?actions|jenkins|gitlab.?ci|pipeline|workflow|CI.?CD|supply.?chain|artifact|runner|OIDC.?token|workflow.?inject|script.?console|cicd", 3.0, "cicd"),
+        # llm: LLM/AI 安全
+        (r"prompt.?inject|jailbreak|LLM|大模型|system.?prompt|越狱|chatbot|RAG|excessive.?agency|模型.*安全|AI.*安全|DAN.?mode|tool.?calling", 3.0, "llm"),
+        # ebpf: eBPF 内核级攻击
+        (r"ebpf|bpf|kprobe|tracepoint|XDP|内核.*后门|rootkit|bpftrace|bpftool|CAP_BPF|内核.*凭证|SSL_read.*hook|网络.*拦截.*内核", 3.0, "ebpf"),
     ]
 
     def __init__(self, skills_dir: str = None):

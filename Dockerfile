@@ -23,18 +23,27 @@ RUN set -eux; arch="$(uname -m)"; case "$arch" in x86_64) NA=x64;; aarch64|arm64
     npm install -g --ignore-scripts @earendil-works/pi-coding-agent; \
     pi --version || true
 
+# ── 2.1 TsecBench 框架护栏: 给 pi 内置 bash 工具打默认超时+ulimit+重复短路补丁 ──
+# （adapter/pi_ext/patch_pi_bash.py 也 bind-mount 进容器，运行中可随时就地重打）
+COPY adapter/pi_ext/patch_pi_bash.py /app/adapter/pi_ext/patch_pi_bash.py
+RUN python3 /app/adapter/pi_ext/patch_pi_bash.py && \
+    node --check /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/bash.js
+
 # ── 3. Pi Agent 模型配置 (DeepSeek OpenAI 兼容) ──
+# 默认使用平台网关 (mcai.mycc.edu.cn/v1) + 网关实际模型 id；
+# 运行时 adapter/solver/pi_agent.py 会依据 ANTHROPIC_BASE_URL/ANTHROPIC_MODEL
+# 在每个题目 .pi-home 里重新生成该文件，这里只是镜像冷启动的兜底。
 RUN mkdir -p /root/.pi/agent && \
     printf '%s\n' \
     '{' \
     '  "providers": {' \
     '    "deepseek": {' \
-    '      "baseUrl": "https://api.deepseek.com",' \
+    '      "baseUrl": "https://mcai.mycc.edu.cn/v1",' \
     '      "api": "openai-completions",' \
     '      "apiKey": "$DEEPSEEK_API_KEY",' \
     '      "models": [' \
     '        {' \
-    '          "id": "deepseek-v4-flash",' \
+    '          "id": "deepseek-v4-flash-0731",' \
     '          "name": "DeepSeek V4 Flash",' \
     '          "contextWindow": 1000000,' \
     '          "maxTokens": 384000,' \

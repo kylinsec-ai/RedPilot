@@ -1,99 +1,204 @@
-# ══════════════════════════════════════════════════════════════
-# TsecBench 适配器 — 3-worker 编排
-# 一个容器 = 一个 Pi Agent，一次只解一道题；3 个 worker 分片并行。
-# VPN 服务端每用户限 1 连接：worker-1 负责连 VPN，
-# worker-2/3 通过 network_mode: service:worker-1 共享其网络栈访问靶场。
-# 新增 worker: 复制一个服务块，ADAPTER_WORKER_ID 递增，共享 worker-1 网络。
-# ══════════════════════════════════════════════════════════════
-
-x-worker-common: &worker-common
-  build:
-    context: .
-    dockerfile: Dockerfile
+services:
+  worker-1:
+    build: &id001
+      context: .
+      dockerfile: Dockerfile
+    cap_add:
+    - NET_ADMIN
+    - NET_RAW
+    container_name: tsecbench-worker-1
+    devices:
+    - /dev/net/tun:/dev/net/tun
+    environment:
+      ADAPTER_ROLE: monitor
+      ADAPTER_MAX_CONCURRENCY: ${ADAPTER_MAX_CONCURRENCY:-3}
+      ADAPTER_PLATFORM: ${ADAPTER_PLATFORM:-tsecbench-http}
+      ADAPTER_PROVIDER: ${ADAPTER_PROVIDER:-deepseek}
+      ADAPTER_ROUND_TIMEBOXES: ${ADAPTER_ROUND_TIMEBOXES:-480,820,1500,2000}
+      ADAPTER_SKILLS_DIR: ${ADAPTER_SKILLS_DIR:-}
+      ADAPTER_SOLVER_MODEL: ${ADAPTER_SOLVER_MODEL:-}
+      ADAPTER_OFFLINE_MODE: ${ADAPTER_OFFLINE_MODE:-1}
+      ADAPTER_TOTAL_SECONDS: ${ADAPTER_TOTAL_SECONDS:-21300}
+      ADAPTER_TURN_TIMEOUT_SECONDS: '60'
+      ADAPTER_USE_HINTS: ${ADAPTER_USE_HINTS:-0}
+      ADAPTER_VPN_CONFIG: /vpn/client.ovpn
+      ADAPTER_WORKDIR: /work
+      ADAPTER_WORKER_CONCURRENCY: ${ADAPTER_WORKER_CONCURRENCY:-1}
+      ADAPTER_WORKER_COUNT: '3'
+      ADAPTER_WORKER_ID: '0'
+      BENCHMARK_BASE_URL: ${BENCHMARK_BASE_URL}
+      BENCHMARK_TOKEN: ${BENCHMARK_TOKEN}
+      DEEPSEEK_API_KEY: ${SOLVER_API_KEY}
+      PI_STALL_TIMEOUT: '900'
+      PLATFORM_SPEC_FILE: ${PLATFORM_SPEC_FILE:-}
+      SOLVER_API_KEY: ${SOLVER_API_KEY}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      SOLVER_GATEWAY: ${SOLVER_GATEWAY:-0}
+      SOLVER_TIMEOUT_MS: '300000'
+      SOLVER_SESSION_SECONDS: ${SOLVER_SESSION_SECONDS:-1500}
+      ADAPTER_PI_THINKING: ${ADAPTER_PI_THINKING:-}
+    healthcheck: &id002
+      interval: 60s
+      retries: 3
+      start_period: 300s
+      test:
+      - CMD-SHELL
+      - test -f /tmp/driver_heartbeat && [ $(( $(date +%s) - $(stat -c %Y /tmp/driver_heartbeat)
+        )) -lt ${WATCHDOG_MAX_IDLE_SECONDS:-300} ]
+      timeout: 10s
+    image: tsecbench-adapter:latest
+    restart: on-failure
+    shm_size: 2gb
+    stdin_open: true
+    tty: true
+    volumes: &id003
+    - ./work:/work
+    - ./vpn:/vpn:ro
+    - ./drivers:/app/drivers:ro
+    - ./adapter:/app/adapter:ro
+    - ./skills:/app/skills:ro
+  worker-2:
+    build: *id001
+    container_name: tsecbench-worker-2
+    depends_on:
+      worker-1:
+        condition: service_healthy
+    environment:
+      # 日志时间戳对齐宿主时区（容器默认 UTC 差 8h，监控核对日志必踩坑；
+      # 仅 w2/w3——worker-1 永不重建，改了也不生效，保持原样）
+      TZ: Asia/Shanghai
+      # 两个解题目 worker 能力完全一致（web,cloud,pwn,reverse,forensics,
+      # crypto,pentest,evasion,misc），不按角色区分——任何技能类题两个 worker 都能解。
+      # 无法分类(unknown)的题按 unique_code 哈希均匀分流到各解题目 worker。
+      # ADAPTER_EXTRA_CAPABILITIES 保留空默认（兼容：若宿主显式设置仍会并入）。
+      ADAPTER_CAPABILITIES: ${ADAPTER_CAPABILITIES_W2:-web,cloud,pwn,reverse,forensics,crypto,pentest,evasion,misc}
+      ADAPTER_EXTRA_CAPABILITIES: ${ADAPTER_EXTRA_CAPABILITIES_W2:-}
+      # 全自动派发循环参数：轮询间隔 / 挂掉题重试冷却 / 每题最大自动重试次数
+      ADAPTER_AUTO_POLL: ${ADAPTER_AUTO_POLL:-60}
+      ADAPTER_DROP_RETRY: ${ADAPTER_DROP_RETRY:-600}
+      ADAPTER_AUTO_MAX_RETRY: ${ADAPTER_AUTO_MAX_RETRY:-3}
+      ADAPTER_API_BACKOFF: ${ADAPTER_API_BACKOFF:-600}
+      ADAPTER_MAX_CONCURRENCY: ${ADAPTER_MAX_CONCURRENCY:-3}
+      ADAPTER_PLATFORM: ${ADAPTER_PLATFORM:-tsecbench-http}
+      ADAPTER_PROVIDER: ${ADAPTER_PROVIDER:-deepseek}
+      ADAPTER_ROUND_TIMEBOXES: ${ADAPTER_ROUND_TIMEBOXES:-480,820,1500,2000}
+      ADAPTER_SKILLS_DIR: ${ADAPTER_SKILLS_DIR:-}
+      ADAPTER_SOLVER_MODEL: ${ADAPTER_SOLVER_MODEL:-}
+      ADAPTER_OFFLINE_MODE: ${ADAPTER_OFFLINE_MODE:-1}
+      ADAPTER_TOTAL_SECONDS: ${ADAPTER_TOTAL_SECONDS:-21300}
+      ADAPTER_TURN_TIMEOUT_SECONDS: '60'
+      ADAPTER_USE_HINTS: ${ADAPTER_USE_HINTS:-0}
+      ADAPTER_VPN_CONFIG: ''
+      ADAPTER_WORKDIR: /work
+      ADAPTER_WORKER_CONCURRENCY: ${ADAPTER_WORKER_CONCURRENCY:-1}
+      ADAPTER_WORKER_COUNT: '3'
+      ADAPTER_WORKER_ID: '1'
+      BENCHMARK_BASE_URL: ${BENCHMARK_BASE_URL}
+      BENCHMARK_TOKEN: ${BENCHMARK_TOKEN}
+      DEEPSEEK_API_KEY: ${SOLVER_API_KEY}
+      PI_STALL_TIMEOUT: '900'
+      # bash-guard 扩展: pi bash 工具强制 timeout/ulimit + 自引用写拦截 (P0 防盘爆)
+      PI_BASH_TIMEOUT_SECONDS: ${PI_BASH_TIMEOUT_SECONDS:-600}
+      PI_BASH_MAX_FILE_MB: ${PI_BASH_MAX_FILE_MB:-4096}
+      ADAPTER_PI_EXTENSIONS: ${ADAPTER_PI_EXTENSIONS:-/app/adapter/pi_ext/bash_guard.js}
+      PLATFORM_SPEC_FILE: ${PLATFORM_SPEC_FILE:-}
+      SOLVER_API_KEY: ${SOLVER_API_KEY}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      SOLVER_GATEWAY: ${SOLVER_GATEWAY:-0}
+      SOLVER_TIMEOUT_MS: '300000'
+      SOLVER_SESSION_SECONDS: ${SOLVER_SESSION_SECONDS:-1500}
+      ADAPTER_PI_THINKING: ${ADAPTER_PI_THINKING:-}
+    healthcheck: *id002
+    image: tsecbench-adapter:latest
+    network_mode: service:worker-1
+    restart: on-failure
+    shm_size: 2gb
+    stdin_open: true
+    tty: true
+    volumes: *id003
+  worker-3:
+    build: *id001
+    container_name: tsecbench-worker-3
+    depends_on:
+      worker-1:
+        condition: service_healthy
+    environment:
+      # 日志时间戳对齐宿主时区（容器默认 UTC 差 8h，监控核对日志必踩坑；
+      # 仅 w2/w3——worker-1 永不重建，改了也不生效，保持原样）
+      TZ: Asia/Shanghai
+      # 与 worker-2 能力一致（web,cloud,pwn,reverse,forensics,crypto,pentest,evasion,misc）
+      # 两个解题目 worker 同质不分工；unknown 题按 unique_code 哈希分流。
+      ADAPTER_CAPABILITIES: ${ADAPTER_CAPABILITIES_W3:-web,cloud,pwn,reverse,forensics,crypto,pentest,evasion,misc}
+      ADAPTER_MAX_CONCURRENCY: ${ADAPTER_MAX_CONCURRENCY:-3}
+      ADAPTER_PLATFORM: ${ADAPTER_PLATFORM:-tsecbench-http}
+      ADAPTER_PROVIDER: ${ADAPTER_PROVIDER:-deepseek}
+      ADAPTER_ROUND_TIMEBOXES: ${ADAPTER_ROUND_TIMEBOXES:-480,820,1500,2000}
+      ADAPTER_SKILLS_DIR: ${ADAPTER_SKILLS_DIR:-}
+      ADAPTER_SOLVER_MODEL: ${ADAPTER_SOLVER_MODEL:-}
+      ADAPTER_OFFLINE_MODE: ${ADAPTER_OFFLINE_MODE:-1}
+      ADAPTER_TOTAL_SECONDS: ${ADAPTER_TOTAL_SECONDS:-21300}
+      ADAPTER_TURN_TIMEOUT_SECONDS: '60'
+      ADAPTER_USE_HINTS: ${ADAPTER_USE_HINTS:-0}
+      ADAPTER_VPN_CONFIG: ''
+      ADAPTER_WORKDIR: /work
+      ADAPTER_WORKER_CONCURRENCY: ${ADAPTER_WORKER_CONCURRENCY:-1}
+      ADAPTER_WORKER_COUNT: '3'
+      ADAPTER_WORKER_ID: '2'
+      BENCHMARK_BASE_URL: ${BENCHMARK_BASE_URL}
+      BENCHMARK_TOKEN: ${BENCHMARK_TOKEN}
+      DEEPSEEK_API_KEY: ${SOLVER_API_KEY}
+      PI_STALL_TIMEOUT: '900'
+      # bash-guard 扩展: pi bash 工具强制 timeout/ulimit + 自引用写拦截 (P0 防盘爆)
+      PI_BASH_TIMEOUT_SECONDS: ${PI_BASH_TIMEOUT_SECONDS:-600}
+      PI_BASH_MAX_FILE_MB: ${PI_BASH_MAX_FILE_MB:-4096}
+      ADAPTER_PI_EXTENSIONS: ${ADAPTER_PI_EXTENSIONS:-/app/adapter/pi_ext/bash_guard.js}
+      PLATFORM_SPEC_FILE: ${PLATFORM_SPEC_FILE:-}
+      SOLVER_API_KEY: ${SOLVER_API_KEY}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      SOLVER_GATEWAY: ${SOLVER_GATEWAY:-0}
+      SOLVER_TIMEOUT_MS: '300000'
+      SOLVER_SESSION_SECONDS: ${SOLVER_SESSION_SECONDS:-1500}
+      ADAPTER_PI_THINKING: ${ADAPTER_PI_THINKING:-}
+    healthcheck: *id002
+    image: tsecbench-adapter:latest
+    network_mode: service:worker-1
+    restart: on-failure
+    shm_size: 2gb
+    stdin_open: true
+    tty: true
+    volumes: *id003
+x-env:
+  ADAPTER_MAX_CONCURRENCY: ${ADAPTER_MAX_CONCURRENCY:-3}
+  ADAPTER_PLATFORM: ${ADAPTER_PLATFORM:-tsecbench-http}
+  ADAPTER_PROVIDER: ${ADAPTER_PROVIDER:-deepseek}
+  ADAPTER_ROUND_TIMEBOXES: ${ADAPTER_ROUND_TIMEBOXES:-480,820,1500,2000}
+  ADAPTER_SKILLS_DIR: ${ADAPTER_SKILLS_DIR:-}
+  ADAPTER_SOLVER_MODEL: ${ADAPTER_SOLVER_MODEL:-}
+  ADAPTER_OFFLINE_MODE: ${ADAPTER_OFFLINE_MODE:-1}
+  # 可选：unique_code 前缀→分类 JSON 表（默认空=全动态）。格式示例（占位前缀，勿用真实赛题代号）：'{"prefix-a":"web","prefix-d":"cloud"}'
+  ADAPTER_CODE_PREFIX_CATEGORY: ${ADAPTER_CODE_PREFIX_CATEGORY:-}
+  ADAPTER_TOTAL_SECONDS: ${ADAPTER_TOTAL_SECONDS:-21300}
+  ADAPTER_USE_HINTS: ${ADAPTER_USE_HINTS:-0}
+  ADAPTER_VPN_CONFIG: /vpn/client.ovpn
+  ADAPTER_WORKDIR: /work
+  ADAPTER_WORKER_CONCURRENCY: ${ADAPTER_WORKER_CONCURRENCY:-1}
+  BENCHMARK_BASE_URL: ${BENCHMARK_BASE_URL}
+  BENCHMARK_TOKEN: ${BENCHMARK_TOKEN}
+  PLATFORM_SPEC_FILE: ${PLATFORM_SPEC_FILE:-}
+  SOLVER_API_KEY: ${SOLVER_API_KEY}
+  SOLVER_GATEWAY: ${SOLVER_GATEWAY:-0}
+x-worker-common:
+  build: *id001
+  healthcheck: *id002
   image: tsecbench-adapter:latest
-  restart: unless-stopped
+  restart: on-failure
   shm_size: 2gb
   stdin_open: true
   tty: true
-  # ── Watchdog: driver 心跳超时自动重启 ──
-  healthcheck:
-    test: ["CMD-SHELL", "test -f /tmp/driver_heartbeat && [ $(( $(date +%s) - $(stat -c %Y /tmp/driver_heartbeat) )) -lt ${WATCHDOG_MAX_IDLE_SECONDS:-300} ]"]
-    interval: 60s
-    timeout: 10s
-    retries: 3
-    start_period: 300s
-  volumes:
-    - ./work:/work
-    - ./vpn:/vpn:ro
-    # 挂载宿主最新 driver/adapter（免重建镜像）
-    - ./drivers:/app/drivers:ro
-    - ./adapter:/app/adapter:ro
-
-x-env: &env
-  # ── 平台凭据 (必填，跑分任务下发) ──
-  BENCHMARK_TOKEN: ${BENCHMARK_TOKEN}
-  BENCHMARK_BASE_URL: ${BENCHMARK_BASE_URL}
-  # ── 平台接入模式 (tsecbench-http / tsecbench-sdk / generic) ──
-  ADAPTER_PLATFORM: ${ADAPTER_PLATFORM:-tsecbench-http}
-  PLATFORM_SPEC_FILE: ${PLATFORM_SPEC_FILE:-}
-  # ── 模型配置 ──
-  SOLVER_API_KEY: ${SOLVER_API_KEY}
-  ADAPTER_PROVIDER: ${ADAPTER_PROVIDER:-deepseek}
-  SOLVER_GATEWAY: ${SOLVER_GATEWAY:-0}
-  # ── 求解引擎: Pi Agent (固定) ──
-  ADAPTER_SOLVER_MODEL: ${ADAPTER_SOLVER_MODEL:-}
-  ADAPTER_SKILLS_DIR: ${ADAPTER_SKILLS_DIR:-}
-  # ── 运行参数 ──
-  ADAPTER_MAX_CONCURRENCY: ${ADAPTER_MAX_CONCURRENCY:-3}
-  ADAPTER_TOTAL_SECONDS: ${ADAPTER_TOTAL_SECONDS:-21300}
-  ADAPTER_ROUND_TIMEBOXES: ${ADAPTER_ROUND_TIMEBOXES:-480,820,1500,2000}
-  ADAPTER_USE_HINTS: ${ADAPTER_USE_HINTS:-0}
-  ADAPTER_WORKDIR: /work
-  # ── Worker 水平扩展（一个容器 = 一个 Pi Agent，一次解一道题）──
-  ADAPTER_WORKER_CONCURRENCY: ${ADAPTER_WORKER_CONCURRENCY:-1}
-  # ── VPN 配置路径 ──
-  ADAPTER_VPN_CONFIG: /vpn/client.ovpn
-
-services:
-  # ── worker-1: 唯一 VPN 持有者（NET_ADMIN + tun）──
-  worker-1:
-    <<: *worker-common
-    container_name: tsecbench-worker-1
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    environment:
-      <<: *env
-      ADAPTER_WORKER_ID: "0"
-      ADAPTER_WORKER_COUNT: "3"
-
-  # ── worker-2/3: 共享 worker-1 网络栈访问靶场（不连 VPN）──
-  worker-2:
-    <<: *worker-common
-    container_name: tsecbench-worker-2
-    network_mode: service:worker-1
-    depends_on:
-      worker-1:
-        condition: service_healthy
-    environment:
-      <<: *env
-      ADAPTER_WORKER_ID: "1"
-      ADAPTER_WORKER_COUNT: "3"
-      ADAPTER_VPN_CONFIG: ""
-
-  worker-3:
-    <<: *worker-common
-    container_name: tsecbench-worker-3
-    network_mode: service:worker-1
-    depends_on:
-      worker-1:
-        condition: service_healthy
-    environment:
-      <<: *env
-      ADAPTER_WORKER_ID: "2"
-      ADAPTER_WORKER_COUNT: "3"
-      ADAPTER_VPN_CONFIG: ""
-
-# worker 工作目录已 bind-mount 到宿主机 ./work（Web 面板读取状态），无需命名卷
+  volumes: *id003

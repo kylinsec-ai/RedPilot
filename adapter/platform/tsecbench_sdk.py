@@ -96,6 +96,8 @@ class TSecBenchSDKBackend(PlatformBackend):
                 is_completed=bool(getattr(c, "is_completed", False)),
                 container_status=getattr(c, "container_status", "stopped"),
                 container_addr=list(getattr(c, "container_addr", []) or []),
+                category=getattr(c, "category", "") or getattr(c, "type", "") or "",
+                tags=list(getattr(c, "tags", []) or []),
             )
             for c in items
         ]

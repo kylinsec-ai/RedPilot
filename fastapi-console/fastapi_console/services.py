@@ -29,6 +29,9 @@ from .agent import (  # noqa: E402
     worker_logs,
     solve_one,
     single_status,
+    list_transcripts,
+    read_transcript,
+    usage_summary,
 )
 from .solver import SYSTEM_PROMPT, ask_llm, extract_flags  # noqa: E402
 

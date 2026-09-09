@@ -40,6 +40,9 @@ from .services import (
     submit_flag,
     vpn,
     worker_logs,
+    list_transcripts,
+    read_transcript,
+    usage_summary,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -102,6 +105,12 @@ def settings_page(request: Request):
     return templates.TemplateResponse(request,
         "settings.html", _page_context(request, title="设置", kicker="SYSTEM / CONFIG")
     )
+
+
+
+@app.get("/test-verifier", response_class=HTMLResponse)
+def test_verifier(request: Request):
+    return templates.TemplateResponse(request, "test_verifier.html", {"request": request})
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -322,6 +331,22 @@ def api_agent_logs(worker: str = "tsecbench-worker-1", tail: int = 200):
         return _error(exc)
 
 
+@app.get("/api/v1/agent/transcripts")
+def api_agent_transcripts():
+    try:
+        return list_transcripts()
+    except APIError as exc:
+        return _error(exc)
+
+
+@app.get("/api/v1/agent/transcript")
+def api_agent_transcript(file: str = "", line: int = 0, limit: int = 300):
+    try:
+        return read_transcript(file, line, limit)
+    except APIError as exc:
+        return _error(exc)
+
+
 @app.post("/api/v1/agent/solve-one")
 def api_agent_solve_one(request: Request, payload: AiPayload):
     try:
@@ -333,6 +358,12 @@ def api_agent_solve_one(request: Request, payload: AiPayload):
 @app.get("/api/v1/agent/single-status")
 def api_agent_single_status(request: Request, unique_code: str = ""):
     return single_status(unique_code)
+
+
+@app.get("/api/v1/agent/usage")
+def api_agent_usage():
+    """LLM token 用量总览（transcripts 聚合，供舰队页用量面板）。"""
+    return usage_summary()
 
 
 # ── 管理后台 API ─────────────────────────────────────
@@ -385,6 +416,97 @@ def api_state(request: Request):
         "remote": bool(remote),
         "vpn": vpn.as_dict(),
     }
+
+
+
+# ── 验证器控制 API ────────────────────────────────────────
+class VerifierConfigPayload(BaseModel):
+    skeptic_enabled: bool = True
+    skeptic_votes: int = Field(ge=1, le=5, default=1)
+    force_approve_grounded: bool = True
+
+@app.get("/api/v1/verifier/config")
+def api_verifier_get_config():
+    """获取当前验证器配置"""
+    config_file = Path(__file__).parent.parent.parent / "work" / "verifier_config.json"
+    if config_file.exists():
+        try:
+            with open(config_file, 'r') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "skeptic_enabled": True,
+        "skeptic_votes": 1,
+        "force_approve_grounded": True
+    }
+
+@app.post("/api/v1/verifier/config")
+def api_verifier_set_config(payload: VerifierConfigPayload):
+    """设置验证器配置"""
+    try:
+        config_file = Path(__file__).parent.parent.parent / "work" / "verifier_config.json"
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_file, 'w') as f:
+            json.dump(payload.model_dump(), f, indent=2)
+        return {"ok": True, "message": "验证器配置已保存，重启worker后生效"}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "message": f"保存配置失败: {str(e)}"}
+        )
+
+@app.get("/api/v1/verifier/rejected-flags")
+def api_verifier_rejected_flags():
+    """获取被拒绝的flag列表"""
+    try:
+        work_dir = Path(__file__).parent.parent.parent / "work"
+        rejected = []
+        
+        # 扫描所有题目目录
+        for challenge_dir in work_dir.iterdir():
+            if not challenge_dir.is_dir() or challenge_dir.name in ("status", "_events.jsonl"):
+                continue
+            
+            flag_file = challenge_dir / "FLAG"
+            if flag_file.exists():
+                try:
+                    flag_content = flag_file.read_text().strip()
+                    # 读取SOURCE文件查看验证情况
+                    source_file = challenge_dir / "SOURCE"
+                    verified = False
+                    if source_file.exists():
+                        source_content = source_file.read_text()
+                        verified = "flag{" in source_content.lower()
+                    
+                    rejected.append({
+                        "challenge_code": challenge_dir.name,
+                        "flag": flag_content,
+                        "verified_in_source": verified
+                    })
+                except Exception:
+                    continue
+        
+        return {"rejected_flags": rejected}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "message": f"读取失败: {str(e)}"}
+        )
+
+class ForceSubmitPayload(BaseModel):
+    unique_code: str
+    flag: str
+
+@app.post("/api/v1/verifier/force-submit")
+def api_verifier_force_submit(request: Request, payload: ForceSubmitPayload):
+    """强制提交flag（跳过验证）"""
+    try:
+        result = submit_flag(request.state.session, payload.unique_code, payload.flag)
+        return result
+    except APIError as exc:
+        return _error(exc)
+
 
 
 if __name__ == "__main__":

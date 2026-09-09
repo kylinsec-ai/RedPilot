@@ -18,6 +18,25 @@ log = logging.getLogger("adapter.platform")
 
 # ── 统一数据模型 ──────────────────────────────────────────────
 
+
+def _parse_tags(v) -> list:
+    """tags 字段兼容 list 和逗号分隔字符串。"""
+    if isinstance(v, list):
+        return [str(x) for x in v if str(x).strip()]
+    if isinstance(v, str):
+        return [x.strip() for x in v.split(",") if x.strip()]
+    return []
+
+
+def _first_str(d: dict, *keys) -> str:
+    """按序返回第一个非空字段值（兼容各平台字段命名差异）。"""
+    for k in keys:
+        v = d.get(k)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return ""
+
+
 @dataclass
 class Challenge:
     """平台返回的题目信息"""
@@ -31,6 +50,8 @@ class Challenge:
     is_completed: bool = False
     container_status: str = "stopped"      # pending/available/stop_pending/stopped
     container_addr: list[str] = field(default_factory=list)
+    category: str = ""          # 平台显式分类（平台不提供时靠 _infer_category 动态推断）
+    tags: list[str] = field(default_factory=list)   # 平台携带的标签
 
     @classmethod
     def from_dict(cls, d: dict) -> "Challenge":
@@ -45,6 +66,8 @@ class Challenge:
             is_completed=bool(d.get("is_completed", False)),
             container_status=d.get("container_status", "stopped"),
             container_addr=d.get("container_addr") or [],
+            category=_first_str(d, "category", "type", "challenge_type"),
+            tags=_parse_tags(d.get("tags")),
         )
 
     @property

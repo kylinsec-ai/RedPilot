@@ -370,3 +370,108 @@ input:focus, select:focus { outline: none; border-color: var(--accent); backgrou
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }
+/* ── LLM TRANSCRIPTS 实时对话流 ─────────────────── */
+.transcript-wrap {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 0;
+  border-top: 1px solid var(--border-strong);
+}
+@media (max-width: 900px) { .transcript-wrap { grid-template-columns: 1fr; } }
+.tr-sessions {
+  border-right: 1px solid var(--border-strong);
+  background: var(--panel-soft);
+  max-height: 520px;
+  overflow-y: auto;
+}
+.tr-session {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-strong);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.tr-session:hover { background: var(--panel); }
+.tr-session.active {
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
+}
+.tr-sess-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
+}
+.tr-sess-head b { font: 700 13px/1.2 var(--display); color: var(--text); }
+.tr-sess-round { font-size: 11px; color: var(--text-dim); }
+.tr-sess-meta { margin-top: 2px; font-size: 10px; color: var(--text-faint); }
+.tr-sess-time { font-size: 10px; color: var(--text-faint); margin-top: 1px; }
+.tr-main { display: flex; flex-direction: column; min-width: 0; }
+.tr-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 12px; border-bottom: 1px solid var(--border-strong);
+  font-size: 12px; color: var(--text-dim);
+}
+.tr-body { max-height: 480px; overflow-y: auto; }
+.tr-line { padding: 2px 12px; word-break: break-word; border-left: 2px solid transparent; }
+.tr-line pre {
+  margin: 4px 0 4px 0; padding: 6px 8px;
+  background: var(--panel-soft); border: 1px solid var(--border-strong); border-radius: 6px;
+  white-space: pre-wrap; word-break: break-all; font: 11px/1.6 var(--mono);
+}
+.tr-kind {
+  display: inline-block; padding: 1px 5px; margin-right: 6px;
+  border-radius: 4px; font-size: 10px; font-weight: 600; letter-spacing: 0.03em;
+  color: var(--text-dim); background: var(--panel-soft); border: 1px solid var(--border-strong);
+}
+.tr-dim { color: var(--text-dim); }
+.tr-think { color: #9b6dd1; font-style: italic; }
+.tr-think .tr-kind { color: #9b6dd1; border-color: rgba(155,109,209,0.35); background: rgba(155,109,209,0.08); }
+.tr-text { color: var(--text); }
+.tr-tool { border-left-color: #2563eb !important; }
+.tr-tool .tr-kind { color: #2563eb; border-color: rgba(37,99,235,0.35); background: rgba(37,99,235,0.08); }
+.tr-tool b { color: #2563eb; font-weight: 700; }
+.tr-tool-update { color: #b45309; }
+.tr-tool-update .tr-kind { color: #b45309; border-color: rgba(180,83,9,0.35); background: rgba(180,83,9,0.08); }
+.tr-tool-end { color: var(--text-dim); }
+.tr-tool-end .tr-kind { color: var(--accent); border-color: rgba(14,116,107,0.35); background: var(--accent-soft); }
+
+/* ── transcript 补充 ── */
+.tr-input { color: var(--text); border-left-color: var(--accent) !important; }
+.tr-input .tr-kind { color: var(--accent); border-color: rgba(14,116,107,0.35); background: var(--accent-soft); }
+.tr-tool-err { color: #d24a3f; }
+.tr-tool-err .tr-kind { color: #d24a3f; border-color: rgba(208,67,58,0.4); background: rgba(208,67,58,0.08); }
+
+/* ── transcript 时间线补充 ── */
+.tr-session-hdr { padding: 8px 12px; border: 1px solid rgba(14,116,107,0.25); border-radius: 6px; background: rgba(14,116,107,0.06); margin-bottom: 6px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px; }
+.tr-turn { margin-top: 6px; padding: 3px 12px; background: rgba(127,127,127,0.08); font-weight: 600; }
+.tr-turn .tr-kind { color: var(--text-dim); border-color: rgba(127,127,127,0.3); }
+.tr-out-hdr { margin-top: 4px; padding: 3px 12px; background: rgba(14,116,107,0.07); }
+.tr-out-hdr .tr-kind { color: var(--accent); border-color: rgba(14,116,107,0.35); background: var(--accent-soft); }
+
+/* ── transcript 面板独立布局（不再继承 log-panel/log-body）── */
+.tr-panel { min-width: 0; position: static; display: block; }
+.transcript-wrap { min-width: 0; max-width: 100%; }
+.tr-sessions { min-width: 0; max-width: 100%; }
+.tr-main { min-width: 0; max-width: 100%; }
+.tr-body {
+  min-width: 0; max-width: 100%;
+  min-height: 300px;
+  max-height: calc(100vh - 260px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  font-family: var(--mono); font-size: 11px; line-height: 1.7;
+}
+.tr-line { overflow-wrap: anywhere; min-width: 0; max-width: 100%; }
+.tr-line pre { max-width: 100%; }
+
+/* ── LLM Token 用量面板（舰队页）── */
+.usage-strip { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; }
+.usage-card { display: flex; flex-direction: column; gap: 7px; padding: 12px 14px; background: var(--panel-soft); border: 1px solid var(--border); border-radius: 10px; }
+.usage-card strong { font: 500 24px/1 var(--display); letter-spacing: -0.05em; }
+.usage-sub { color: var(--text-dim); font-size: 9px; }
+.usage-table-wrap { overflow-x: auto; margin-top: 12px; }
+.usage-table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+.usage-table th, .usage-table td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+.usage-table th:first-child, .usage-table td:first-child { text-align: left; }
+.usage-table th { color: var(--text-dim); font-weight: 400; font: 9px/1 var(--mono); letter-spacing: 0.08em; }
+.usage-table tr:last-child td { border-bottom: none; }
+.usage-note { margin: 10px 0 0; color: var(--text-dim); font-size: 11px; line-height: 1.6; }
+@media (max-width: 1180px) { .usage-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 720px) { .usage-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

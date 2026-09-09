@@ -10,6 +10,7 @@ import os
 import shutil
 import signal
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -119,7 +120,18 @@ class VPNManager:
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise APIError(500, "vpn_start_failed", f"openvpn 启动失败: {exc}") from exc
-        return self.status()
+        # openvpn --daemon fork 后由子进程异步写 pid / 起 tun；此刻立即 status()
+        # 会读到旧 pid 或空 → 误判未运行。轮询等待真实就绪（最多 ~20s）。
+        for _ in range(40):
+            status = self.status()
+            if status.running and status.tun_up:
+                return status
+            time.sleep(0.5)
+        status = self.status()
+        if status.running:
+            return status  # pid 已在、tun 将就绪，仍视为成功
+        raise APIError(500, "vpn_start_timeout",
+                       "openvpn 已启动但 PID/tun 未就绪，请检查 openvpn 日志")
 
     def stop(self) -> VPNStatus:
         pid = self._read_pid()

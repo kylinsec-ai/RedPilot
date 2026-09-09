@@ -13,8 +13,8 @@ if [ "$1" = "stop" ]; then
 fi
 
 if [ -z "$BENCHMARK_TOKEN" ] && [ -z "$TSECBENCH_TASKS_JSON" ] && [ -z "$TSECBENCH_CONFIG" ]; then
-  export BENCHMARK_TOKEN="demo-token-001"
-  export TSECBENCH_TASKS_JSON='{"token":"demo-token-001","challenges":[{"unique_code":"web_sql_01","description":"SQL注入演示","difficulty":"easy","level":1,"total_score":100,"flags":["flag{inj3ct_me}"],"container_addr":["10.0.1.5:8080"]}]}'
+  echo "[init] 未配置任务：请设置 BENCHMARK_TOKEN + TSECBENCH_CONFIG/tasks.json（或网页设置页配置远端平台）"
+  echo "      不会内置任何赛题信息。"
 fi
 
 (

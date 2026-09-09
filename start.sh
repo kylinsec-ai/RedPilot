@@ -52,7 +52,6 @@ if [ "$BACKEND_UP" = "0" ]; then
     echo "     使用任务配置: $BASE_DIR/tasks.json"
   else
     export BENCHMARK_TOKEN="$DEMO_TOKEN"
-    export TSECBENCH_TASKS_JSON='{"token":"'"$DEMO_TOKEN"'","challenges":[{"unique_code":"web_sql_01","description":"通过SQL注入获取管理员凭证并读取flag","difficulty":"easy","level":1,"total_score":100,"flags":["flag{inj3ct_me}"],"container_addr":["10.0.1.5:8080"]},{"unique_code":"crypto_rsa_02","description":"RSA参数不当导致私钥可恢复","difficulty":"hard","level":3,"total_score":200,"flags":["flag{rsa_br0ken}","flag{rsa_privkey}"],"container_addr":["10.0.1.6:8080"]},{"unique_code":"forensics_pcap_03","description":"分析流量包还原传输的文件","difficulty":"medium","level":2,"total_score":150,"flags":["flag{pcap_f1le}"],"container_addr":["10.0.1.7:8080"]}]}'
     echo "     未找到 tasks.json，使用演示任务（Token: $DEMO_TOKEN）"
   fi
 

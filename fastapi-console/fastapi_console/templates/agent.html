@@ -44,6 +44,33 @@
     </div>
   </section>
 
+  <section class="panel" style="margin-top:16px" id="usage-panel">
+    <div class="log-head">
+      <div><p class="eyebrow mono">TOKEN USAGE</p><h2>LLM Token 用量</h2></div>
+      <span class="section-count mono" id="usage-model">—</span>
+    </div>
+    <div class="usage-strip">
+      <div class="usage-card"><span class="metric-label"><i class="dot-violet" aria-hidden="true"></i>总 Tokens</span><strong id="u-total">—</strong><span class="usage-sub mono" id="u-total-raw">—</span></div>
+      <div class="usage-card"><span class="metric-label"><i aria-hidden="true"></i>输入</span><strong id="u-input">—</strong><span class="usage-sub mono">非缓存命中部分</span></div>
+      <div class="usage-card"><span class="metric-label"><i class="dot-coral" aria-hidden="true"></i>输出</span><strong id="u-output">—</strong><span class="usage-sub mono">含推理 token</span></div>
+      <div class="usage-card"><span class="metric-label"><i class="dot-muted" aria-hidden="true"></i>缓存读</span><strong id="u-cacheread">—</strong><span class="usage-sub mono">命中部分</span></div>
+      <div class="usage-card"><span class="metric-label"><i class="dot-muted" aria-hidden="true"></i>缓存写</span><strong id="u-cachewrite">—</strong><span class="usage-sub mono">—</span></div>
+      <div class="usage-card"><span class="metric-label"><i class="dot-violet" aria-hidden="true"></i>缓存命中</span><strong id="u-hit">—</strong><span class="usage-sub mono">读/(读+输入)</span></div>
+      <div class="usage-card"><span class="metric-label"><i aria-hidden="true"></i>API 调用</span><strong id="u-calls">—</strong><span class="usage-sub mono" id="u-sessions">—</span></div>
+    </div>
+    <div class="usage-table-wrap">
+      <table class="usage-table">
+        <thead><tr>
+          <th>题目</th><th>会话</th><th>调用</th><th>输入</th><th>输出</th><th>缓存读</th><th>缓存写</th><th>命中</th><th>总 Tokens</th>
+        </tr></thead>
+        <tbody id="usage-tbody">
+          <tr><td colspan="9" class="dim" style="padding:12px 10px">加载用量数据...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="usage-note">统计口径：全部题目 pi 会话转录（message_end.usage）逐条累计 —— 输入为非缓存命中部分；推理 token 已计入输出（provider 不单列）；缓存命中 = 缓存读 /（缓存读 + 输入）。每 10s 自动刷新。</p>
+  </section>
+
   <div class="notice" id="agent-notice" style="display:none" role="alert">
     <strong id="agent-notice-text"></strong>
   </div>
@@ -73,6 +100,32 @@
     </div>
     <div class="log-body" id="agent-log-body" aria-live="polite" style="max-height:380px;font-size:11px">选择 worker 查看日志...</div>
   </div>
+
+  <div class="panel tr-panel" style="margin-top:16px">
+    <div class="log-head">
+      <div><p class="eyebrow mono">LLM TRANSCRIPTS</p><h2>实时对话流（Agent 正在调什么 / 怎么执行）</h2></div>
+      <div class="hero-actions" style="gap:6px">
+        <button class="quiet" id="tr-refresh">↻ 刷新列表</button>
+        <label class="quiet" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;padding:6px 10px">
+          <input type="checkbox" id="tr-autoscroll" checked style="accent-color:#0e746b"> 自动滚动
+        </label>
+      </div>
+    </div>
+    <div class="transcript-wrap">
+      <aside class="tr-sessions" id="tr-session-list">
+        <div class="dim" style="padding:10px 12px">加载会话列表...</div>
+      </aside>
+      <div class="tr-main">
+        <div class="tr-head">
+          <span class="mono" id="tr-file-label">未选择会话</span>
+          <span class="section-count mono" id="tr-stat">—</span>
+        </div>
+        <div class="tr-body" id="tr-event-body" aria-live="polite">
+          <div class="dim" style="padding:10px 12px">从左侧选择一个 transcript 查看 Agent 对话事件流。</div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 {% endblock %}
 
@@ -80,6 +133,7 @@
 let LOG_WORKER = 'tsecbench-worker-1';
 let LOG_TIMER = null;
 let FLEET_TIMER = null;
+let USAGE_TIMER = null;
 
 function showNotice(type, text) {
   const el = document.getElementById('agent-notice');
@@ -219,6 +273,283 @@ document.querySelectorAll('#log-tabs .filter-tab').forEach(b => {
 
 refreshFleet();
 refreshLogs();
+refreshUsage();
 FLEET_TIMER = setInterval(refreshFleet, 10000);
 LOG_TIMER = setInterval(refreshLogs, 8000);
+USAGE_TIMER = setInterval(refreshUsage, 10000);
+
+// ── LLM Token 用量面板（/api/v1/agent/usage）──────────
+function fmtTok(n) {
+  if (n == null || isNaN(n)) return '—';
+  if (n >= 1e8) return (n / 1e8).toFixed(2) + ' 亿';
+  if (n >= 1e4) return (n / 1e4).toFixed(1) + ' 万';
+  return String(n);
+}
+
+function renderUsage(data) {
+  const s = data.summary || {};
+  document.getElementById('u-total').textContent = fmtTok(s.totalTokens);
+  document.getElementById('u-total-raw').textContent = (s.totalTokens || 0).toLocaleString() + ' tokens';
+  document.getElementById('u-input').textContent = fmtTok(s.input);
+  document.getElementById('u-output').textContent = fmtTok(s.output);
+  document.getElementById('u-cacheread').textContent = fmtTok(s.cacheRead);
+  document.getElementById('u-cachewrite').textContent = fmtTok(s.cacheWrite);
+  document.getElementById('u-hit').textContent = (s.cacheHit != null ? s.cacheHit : '—') + '%';
+  document.getElementById('u-calls').textContent = (s.calls || 0).toLocaleString();
+  document.getElementById('u-sessions').textContent = (s.sessions || 0) + ' 会话 / ' + (s.challenges || 0) + ' 题';
+  document.getElementById('usage-model').textContent = s.model || '—';
+  const tb = document.getElementById('usage-tbody');
+  const rows = data.challenges || [];
+  if (!rows.length) {
+    tb.innerHTML = '<tr><td colspan="9" class="dim" style="padding:12px 10px">暂无用量数据（Agent 开始解题后出现）。</td></tr>';
+    return;
+  }
+  tb.innerHTML = rows.map(r => '<tr>'
+    + '<td class="mono">' + esc(r.code) + '</td>'
+    + '<td>' + (r.sessions || 0) + '</td>'
+    + '<td>' + (r.calls || 0) + '</td>'
+    + '<td title="' + (r.input || 0) + '">' + fmtTok(r.input) + '</td>'
+    + '<td title="' + (r.output || 0) + '">' + fmtTok(r.output) + '</td>'
+    + '<td title="' + (r.cacheRead || 0) + '">' + fmtTok(r.cacheRead) + '</td>'
+    + '<td title="' + (r.cacheWrite || 0) + '">' + fmtTok(r.cacheWrite) + '</td>'
+    + '<td>' + (r.cacheHit != null ? r.cacheHit : '—') + '%</td>'
+    + '<td title="' + (r.totalTokens || 0) + '">' + fmtTok(r.totalTokens) + '</td>'
+    + '</tr>').join('');
+}
+
+async function refreshUsage() {
+  try {
+    const res = await fetch('/api/v1/agent/usage');
+    const data = await res.json();
+    if (!res.ok) throw new Error('[' + data.code + '] ' + data.message);
+    renderUsage(data);
+  } catch (err) {
+    document.getElementById('usage-model').textContent = '用量读取失败';
+  }
+}
+
+// ── 实时对话流（LLM TRANSCRIPTS）— 会话时间线版 ─────
+// 以 message_end 的权威 content 驱动渲染（thinking/text/toolCall 结构块），
+// 不再从 message_update 增量流重建（避免空 TEXT/卡缓冲）。tokens/模型/stopReason 取自 message 元数据。
+let TR_SESSIONS = [];
+let TR_SELECTED = null;   // {file, name}
+let TR_NEXT_LINE = 0;
+let TR_TOTAL_LINES = 0;
+let TR_EVENTS = [];
+let TR_META = { id: '', start: '', cwd: '', model: '', turns: 0, outMsgs: 0, tokens: 0 };
+let TR_TOOLMAP = {};      // toolCallId -> {name, args}
+
+function trFmt(ts) {
+  if (!ts) return '';
+  try { return new Date(ts).toLocaleTimeString('zh-CN', {hour12:false}); }
+  catch (e) { return ''; }
+}
+function trSize(n) {
+  if (n == null) return '0 B';
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n/1024).toFixed(1) + ' KB';
+  return (n/1048576).toFixed(1) + ' MB';
+}
+function trTok(n) { return n == null ? '' : (n >= 1000 ? (n/1000).toFixed(1) + 'k' : String(n)); }
+function trClip(s, n) { s = s == null ? '' : String(s); return s.length > n ? s.slice(0, n) + ' …' : s; }
+
+function trResultText(res) {
+  if (res == null) return '';
+  if (typeof res === 'string') return res;
+  if (res && Array.isArray(res.content)) {
+    return res.content.map(x => (x && typeof x === 'object' && x.text != null) ? x.text : String(x)).join('\n');
+  }
+  try { return JSON.stringify(res); } catch (e) { return ''; }
+}
+function trArgsText(a) {
+  if (a == null) return '';
+  if (typeof a === 'string') return a;
+  if (a.command != null) return a.command;
+  try { return JSON.stringify(a); } catch (e) { return ''; }
+}
+
+// 会话头（一次性渲染）
+function trSessionHeader(tail) {
+  const tok = TR_META.tokens ? ' · ' + trTok(TR_META.tokens) + ' tokens' : '';
+  return '<div class="tr-session-hdr">'
+    + '<div><span class="tr-kind">SESSION</span> id <b class="mono">' + esc(TR_META.id || '—') + '</b> · 开始 <b class="mono">' + esc(TR_META.start || '—') + '</b> · cwd <b class="mono">' + esc(TR_META.cwd || '—') + '</b></div>'
+    + '<div class="mono dim">' + esc(TR_META.model || '') + tok + (tail ? ' · 尾部视图' : '') + '</div>'
+    + '</div>';
+}
+
+// 单事件 → HTML；副作用更新 TR_META/TR_TOOLMAP。message_end 是权威数据源。
+function trEventHtml(ev) {
+  switch (ev.type) {
+    case 'session':
+      TR_META.id = ev.id || TR_META.id;
+      TR_META.start = trFmt(ev.timestamp) || TR_META.start;
+      TR_META.cwd = ev.cwd || TR_META.cwd;
+      return '';
+    case 'agent_start':
+      return '';
+    case 'turn_start':
+      TR_META.turns += 1;
+      return '<div class="tr-line tr-turn"><span class="tr-kind">TURN</span> 第 ' + TR_META.turns + ' 轮</div>';
+    case 'turn_end':
+      return '';
+    case 'message_start': {
+      const m = ev.message || {};
+      // 只显示 user 的任务输入（提示词）；assistant/toolResult 的 start 是空壳/回显壳
+      if (m.role === 'user') {
+        const txt = Array.isArray(m.content) ? m.content.map(c => (c && c.text != null) ? c.text : '').join(' ') : '';
+        return '<div class="tr-line tr-input"><span class="tr-kind">IN</span> ' + esc(trClip(txt, 900)) + '</div>';
+      }
+      return '';
+    }
+    case 'message_end': {
+      const m = ev.message || {};
+      if (m.role !== 'assistant') return '';   // toolResult 大块回显跳过
+      TR_META.outMsgs += 1;
+      const u = m.usage || {};
+      if (u.totalTokens) TR_META.tokens += u.totalTokens;
+      const tok = u.totalTokens ? ' · ' + trTok(u.totalTokens) + ' tokens' : '';
+      let html = '<div class="tr-line tr-out-hdr"><span class="tr-kind">OUT</span> ' + TR_META.outMsgs
+        + ' · <b class="mono">' + esc(m.model || '') + '</b>' + tok
+        + ' · <span class="mono">' + esc(m.stopReason || '') + '</span></div>';
+      for (const c of (m.content || [])) {
+        if (!c || typeof c !== 'object') continue;
+        if (c.type === 'thinking') {
+          html += '<div class="tr-line tr-think"><span class="tr-kind">THINK</span> ' + esc(trClip(c.thinking || c.text || '', 2000)) + '</div>';
+        } else if (c.type === 'text') {
+          html += '<div class="tr-line tr-text"><span class="tr-kind">TEXT</span> ' + esc(trClip(c.text || '', 2000)) + '</div>';
+        } else if (c.type === 'toolCall') {
+          html += '<div class="tr-line tr-tool"><span class="tr-kind">🔧 TOOL</span> <b>' + esc(c.name || '') + '</b><pre>' + esc(trClip(trArgsText(c.arguments), 3000)) + '</pre></div>';
+        }
+      }
+      return html;
+    }
+    case 'tool_execution_start':
+      // 记录 toolCallId -> name/args，供 end 关联展示
+      if (ev.toolCallId) TR_TOOLMAP[ev.toolCallId] = { name: ev.toolName || '', args: ev.args };
+      return '';
+    case 'tool_execution_update':
+      return '';   // 流式 partial 跳过
+    case 'tool_execution_end': {
+      const info = TR_TOOLMAP[ev.toolCallId] || {};
+      const txt = trResultText(ev.result);
+      const err = ev.isError ? ' tr-tool-err' : '';
+      return '<div class="tr-line tr-tool-end' + err + '"><span class="tr-kind">✓ TOOL</span> <b>' + esc(info.name || ev.toolName || '') + '</b> · <span class="mono">' + trSize(txt.length) + '</span> '
+        + '<span class="dim">' + esc(trClip(txt, 1200)) + '</span></div>';
+    }
+    case 'raw':
+      return '<div class="tr-line tr-dim"><span class="tr-kind">RAW</span> ' + esc(trClip(ev.line || '', 400)) + '</div>';
+    default:
+      return '';
+  }
+}
+
+function trScrollBottom() {
+  const b = document.getElementById('tr-event-body');
+  if (document.getElementById('tr-autoscroll').checked) b.scrollTop = b.scrollHeight;
+}
+function trStat() {
+  const tok = TR_META.tokens ? ' · ' + trTok(TR_META.tokens) + ' tokens' : '';
+  document.getElementById('tr-stat').textContent = TR_EVENTS.length + ' 事件 / ' + TR_TOTAL_LINES + ' 行' + tok;
+}
+
+function trAppendEvents(events) {
+  const tbody = document.getElementById('tr-event-body');
+  let html = '';
+  (events || []).forEach(ev => { html += trEventHtml(ev); });
+  if (html) { tbody.insertAdjacentHTML('beforeend', html); trScrollBottom(); }
+  trStat();
+}
+
+async function trLoadSessions() {
+  try {
+    const res = await fetch('/api/v1/agent/transcripts');
+    const data = await res.json();
+    if (!res.ok) throw new Error('[' + data.code + '] ' + data.message);
+    TR_SESSIONS = data.files || [];
+    const box = document.getElementById('tr-session-list');
+    if (!TR_SESSIONS.length) {
+      box.innerHTML = '<div class="dim" style="padding:10px 12px">暂无 transcript 文件（Agent 开始解题后出现）。</div>';
+      return;
+    }
+    box.innerHTML = TR_SESSIONS.map(f => {
+      const parts = f.name.replace(/^round(\d+)_.*session(\d+)\.jsonl$/i, '$1-$2');
+      const cur = TR_SELECTED && TR_SELECTED.file === f.file;
+      return '<div class="tr-session' + (cur ? ' active' : '') + '" data-file="' + esc(f.file) + '">'
+        + '<div class="tr-sess-head"><b>' + esc(f.code) + '</b><span class="tr-sess-round">r' + parts + '</span></div>'
+        + '<div class="tr-sess-meta mono">' + f.lines + ' 行 · ' + trSize(f.size) + '</div>'
+        + '<div class="tr-sess-time mono">' + (new Date(f.mtime * 1000).toLocaleTimeString('zh-CN', {hour12:false})) + '</div>'
+        + '</div>';
+    }).join('');
+    if (TR_SELECTED && !TR_SESSIONS.some(f => f.file === TR_SELECTED.file)) {
+      TR_SELECTED = null; TR_META = { id: '', start: '', cwd: '', model: '', turns: 0, outMsgs: 0, tokens: 0 }; TR_EVENTS = [];
+      document.getElementById('tr-file-label').textContent = '未选择会话';
+      document.getElementById('tr-stat').textContent = '—';
+      document.getElementById('tr-event-body').innerHTML = '<div class="dim" style="padding:10px 12px">所选 transcript 已不存在。</div>';
+    }
+    box.onclick = ev => {
+      const el = ev.target.closest('.tr-session');
+      if (el) trSelect(el.dataset.file);
+    };
+  } catch (err) {
+    document.getElementById('tr-session-list').innerHTML = '<div class="dim" style="padding:10px 12px">加载失败: ' + esc(err.message) + '</div>';
+  }
+}
+
+// 选择会话：大文件跳尾部看最近活动，小文件从头读
+async function trSelect(file) {
+  TR_SELECTED = { file: file, name: file.split('/').pop() };
+  TR_NEXT_LINE = 0;
+  TR_TOTAL_LINES = 0;
+  TR_EVENTS = [];
+  TR_META = { id: '', start: '', cwd: '', model: '', turns: 0, outMsgs: 0, tokens: 0 };
+  TR_TOOLMAP = {};
+  const meta = TR_SESSIONS.find(f => f.file === file);
+  const startLine = (meta && meta.lines > 500) ? Math.max(0, meta.lines - 500) : 0;
+  const box = document.getElementById('tr-event-body');
+  box.innerHTML = '<div class="dim" style="padding:10px 12px">读取 ' + esc(file) + (startLine ? '（尾部）' : '') + ' ...</div>';
+  try {
+    const res = await fetch('/api/v1/agent/transcript?file=' + encodeURIComponent(file) + '&line=' + (startLine || 0) + '&limit=500');
+    const data = await res.json();
+    if (!res.ok) throw new Error('[' + data.code + '] ' + data.message);
+    TR_NEXT_LINE = data.from_line + (data.events || []).length;
+    TR_TOTAL_LINES = data.total_lines;
+    TR_EVENTS = data.events || [];
+    document.getElementById('tr-file-label').textContent = file.split('/').pop() + (startLine ? '（尾部）' : '');
+    if (TR_EVENTS.length) {
+      const rows = TR_EVENTS.map(trEventHtml).join('');
+      box.innerHTML = trSessionHeader(startLine > 0) + rows;
+    } else {
+      box.innerHTML = '<div class="dim" style="padding:10px 12px">' + esc(file) + ' 暂无事件。</div>';
+    }
+    trStat();
+    trLoadSessions();
+  } catch (err) {
+    box.innerHTML = '<div class="dim" style="padding:10px 12px">读取失败: ' + esc(err.message) + '</div>';
+  }
+}
+
+// 增量轮询：from_line+consumed 前进，追最新
+async function trPoll() {
+  if (!TR_SELECTED) return;
+  try {
+    const res = await fetch('/api/v1/agent/transcript?file=' + encodeURIComponent(TR_SELECTED.file) + '&line=' + TR_NEXT_LINE + '&limit=500');
+    const data = await res.json();
+    if (!res.ok) throw new Error('[' + data.code + '] ' + data.message);
+    if (data.from_line !== TR_NEXT_LINE) return trSelect(TR_SELECTED.file);
+    const newEvents = data.events || [];
+    TR_NEXT_LINE = data.from_line + newEvents.length;
+    TR_TOTAL_LINES = data.total_lines;
+    if (newEvents.length) {
+      TR_EVENTS = TR_EVENTS.concat(newEvents);
+      trAppendEvents(newEvents);
+    }
+  } catch (err) { /* 静默：下一次轮询重试 */ }
+}
+
+document.getElementById('tr-refresh').addEventListener('click', trLoadSessions);
+trLoadSessions();
+setInterval(trPoll, 3000);           // 事件流增量轮询
+setInterval(trLoadSessions, 8000);   // 会话列表刷新
+
+
 {% endblock %}

@@ -101,28 +101,65 @@ def flag_confidence(flag: str, observed_output: str, tool_outputs: list = None) 
         claim.confidence = 0.15
         return claim
 
-    # 3. Grounding: 在真实输出中逐字查找
-    full_output = observed_output or ""
+    # 3. Grounding: 只在真实命令输出（tool_outputs）中逐字查找，且必须区分
+    #   「系统观测」与「agent 自造」。注意：observed_output 含助手文本（思考/推测），
+    #   LLM 幻觉的 flag 会被自己的文本"grounded"化导致误放行 → 排除文本部分。
+    #
+    #   自造判据（框架能力，不改 agent）：若包含该 flag 的命令行里【本身含有】
+    #   这个 flag/body 字符串（echo/printf/heredoc/cat>FLAG/./validator 'flag{...}'），
+    #   说明是 agent 把自己的猜测敲进命令（写了再读、或把猜测塞给本地验证器），
+    #   不是系统产出 —— 不算取证证据。真实观测（f1 socket probe、f2-07 curl /check
+    #   等）命令里没有该 flag，flag 只出现在【输出】里 → 才算 observed grounding。
+    #   另：读 agent 自己写的假设文件（FLAG/SOURCE/MEMORY/黑板/todolist/transcript/
+    #   tried_commands/.pi-home）不算系统观测 —— agent 把"结论"写进这些文件后再 cat，
+    #   与 echo 自造同源，不能当作平台产出的证据。真实 flag 总有独立系统观测作证。
+    #   ★第二轮严格化：evidence 必须【完整 flag{...} 信封】逐字出现在输出里
+    #   （大小写无关）。只出现【裸 body】= agent 从别处抠到裸值自己包了信封（如 f2-05
+    #   从 r2 输出的 movabs rax,0x6d6a031f1105170c 包成 flag{0x6d6a...}），不算取证。
+    tool_text = ""
+    evidence = []          # (cmd, out)：真正系统观测（完整信封）→ 提交证据
+    authored = []          # (cmd, out)：agent 自造 / 读自己写的假设文件 → 非证据
+    _AGENT_FILE_RX = re.compile(r"(?:^|[/\s>])(?:FLAG[\.\w]*|SOURCE|MEMORY\.?md?"
+                                r"|_?blackboard[\w._-]*|todolist[\w._-]*"
+                                r"|tried_commands[\w._-]*|_transcripts|notes[\w._-]*)", re.IGNORECASE)
+    _ENV_RX = re.compile(r"flag{" + re.escape(body) + r"}", re.IGNORECASE)
     if tool_outputs:
         for _tool, _args, out in tool_outputs:
-            full_output += "\n" + str(out or "")
+            text = str(out or "")
+            tool_text += "\n" + text
+            cmd = str(_args.get("command", _args) if isinstance(_args, dict) else _args or _tool).strip()
+            if cmd in ("{}", "[]", "None", "()", ""):
+                cmd = ""
+            if not text:
+                continue
+            if not _ENV_RX.search(text):
+                continue                      # 输出里没有完整 flag{body} 信封 → 非取证
+            if cmd and _ENV_RX.search(cmd):
+                authored.append((cmd, text))      # 命令里含完整信封 → agent 自造
+            elif cmd and _AGENT_FILE_RX.search(cmd):
+                authored.append((cmd, text))      # 读/写 agent 自己的假设文件 → 自造同源
+            else:
+                evidence.append((cmd, text))       # 只出现在输出 → 系统观测
 
-    if flag in full_output:
+    if evidence:
         claim.grounded = True
         claim.confidence = 0.95
-        # 定位来源
-        if tool_outputs:
-            for tool, args, out in tool_outputs:
-                if flag in str(out or ""):
-                    claim.source_cmd = str(args.get("command", args) if isinstance(args, dict) else args)[:200]
-                    claim.source_output = str(out)[:500]
-                    break
-    elif body in full_output:
-        # body 匹配但外壳不完全匹配 (可能大小写问题)
-        claim.grounded = True
-        claim.confidence = 0.75
+        c, o = evidence[0]
+        if c:
+            claim.source_cmd = c[:200]
+            claim.source_output = o[:500]
+        else:
+            # 输出含 flag 但拿不到命令出处 → 无法证明是系统观测，保守降级
+            claim.grounded = False
+            claim.confidence = 0.4
+            claim.reject_reason = "no_source_cmd"
+    elif authored:
+        # flag 只出现在 agent 自己敲的命令（echo/printf/validate自己的猜测）
+        claim.grounded = False
+        claim.confidence = 0.2
+        claim.reject_reason = "agent_authored"
     else:
-        # 未在真实输出中找到 → 可能是幻觉
+        # 未在任何真实命令输出中找到 → 疑似幻觉/猜测
         claim.grounded = False
         claim.confidence = 0.3
         claim.reject_reason = "not_grounded"
@@ -143,75 +180,33 @@ class Verifier:
         self.llm = llm
         self.skeptic_votes = max(1, skeptic_votes)
 
-    def verify(self, claim: Claim, *, force_skeptic: bool = False) -> Claim:
+    def verify(self, claim: Claim) -> Claim:
         """
-        执行验证流程。
+        提交门：只放行【系统观测】grounding 的 flag（fail-closed）。
 
-        高置信 (>= 0.9 且 grounded) → 直接通过 (跳闸直提)
-        中等置信 → 走否定式质疑
-        低置信 → 拒绝
+        真实解全部是 observed-grounded（f1 socket probe、f2-07 curl /check 输出里的
+        UUID）；agent 自造猜测（echo/printf/./validator 自己敲的 flag、未取证幻觉）
+        一律不自动提交 → 消灭平台「答题失败」刷屏。代价最多是少提交一次试探性猜测，
+        不会丢真解（真解都来自观测，下一场仍会重观测到）。
         """
-        # 已被 grounding 拒绝的直接返回
-        if claim.confidence < 0.2:
-            log.info("  verify REJECT (low confidence %.2f): %s — %s",
-                     claim.confidence, claim.flag[:30], claim.reject_reason)
+        # 格式检查
+        if not claim.flag or not claim.flag.startswith("flag{") or not claim.flag.endswith("}"):
+            claim.reject_reason = "invalid_format"
+            log.info("  verify REJECT (invalid format): %s", claim.flag[:30])
             return claim
 
-        # 高置信跳闸直提
-        if claim.confidence >= 0.9 and claim.grounded and not force_skeptic:
+        # 只提交 observed 取证（confidence>=0.9 是观测证据的唯一出口）
+        if claim.grounded and claim.confidence >= 0.9:
             claim.verified = True
-            log.info("  verify PASS (high confidence %.2f, grounded): %s",
+            log.info("  verify PASS (grounded observed, conf=%.2f): %s",
                      claim.confidence, claim.flag[:30])
             return claim
 
-        # 中等置信 → 否定式质疑
-        if self.llm is not None and claim.confidence >= 0.3:
-            skeptic_pass = self._skeptic_check(claim)
-            if skeptic_pass:
-                claim.verified = True
-                log.info("  verify PASS (skeptic approved): %s", claim.flag[:30])
-            else:
-                claim.reject_reason = "skeptic_rejected"
-                claim.confidence *= 0.5
-                log.info("  verify REJECT (skeptic rejected): %s", claim.flag[:30])
-        elif claim.grounded:
-            # 无 LLM 但 grounded → 降级通过
-            claim.verified = True
-            log.info("  verify PASS (grounded, no LLM): %s", claim.flag[:30])
-        else:
-            claim.reject_reason = "unverified_no_llm"
-            log.info("  verify REJECT (not grounded, no LLM): %s", claim.flag[:30])
-
+        # 其余一律拒绝：agent 自造 / 未取证 / 无法定位来源，都不自动提交
+        claim.verified = False
+        if not claim.reject_reason:
+            claim.reject_reason = "not_grounded_or_authored"
+        log.info("  verify REJECT (ungrounded/authored, conf=%.2f, reason=%s): %s",
+                 claim.confidence, claim.reject_reason, claim.flag[:40])
         return claim
 
-    def _skeptic_check(self, claim: Claim) -> bool:
-        """否定式质疑: 让 LLM 尝试反驳候选 flag"""
-        if self.llm is None:
-            return True
-
-        approve_count = 0
-        for _ in range(self.skeptic_votes):
-            try:
-                evidence = claim.source_output[:800] if claim.source_output else "(no direct output evidence)"
-                messages = [{"role": "user", "content": (
-                    "你是一位严格的安全竞赛评审。以下是一个候选 flag 及其产出证据。\n"
-                    "请判断这个 flag 是否真实可信，还是可能是：\n"
-                    "1. 模型幻觉/编造\n"
-                    "2. 示例/占位值\n"
-                    "3. 诱饵/混淆值\n\n"
-                    f"候选 flag: {claim.flag}\n\n"
-                    f"产出该 flag 的命令输出证据:\n{evidence}\n\n"
-                    "如果你认为这是真实 flag，回复 'APPROVE'。\n"
-                    "如果你认为应该拒绝，回复 'REJECT' 并给出理由。"
-                )}]
-
-                resp = self.llm.chat(messages, max_tokens=512, thinking=False)
-                text = (getattr(resp, "text", "") or getattr(resp, "content", "") or "").strip()
-
-                if "APPROVE" in text.upper():
-                    approve_count += 1
-            except Exception as e:
-                log.warning("skeptic check failed: %s", e)
-                approve_count += 1  # LLM 出错时默认通过
-
-        return approve_count > self.skeptic_votes // 2

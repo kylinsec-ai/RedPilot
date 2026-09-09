@@ -120,6 +120,42 @@
       </div>
     </section>
 
+
+    <section class="panel settings-card settings-verifier">
+      <div class="card-heading">
+        <div><p class="eyebrow mono">04 / VERIFIER</p><h2>Flag 验证器</h2></div>
+        <span class="card-state" id="verifier-state-badge">ACTIVE</span>
+      </div>
+      <p class="card-description">控制 flag 验证的严格程度。skeptic 机制使用 LLM 二次验证 flag 真实性，防止幻觉提交。</p>
+      
+      <div class="field">
+        <label>
+          <input type="checkbox" id="skeptic-enabled" checked />
+          启用 Skeptic 验证
+          <span>使用 LLM 验证 flag 真实性（推荐开启）</span>
+        </label>
+      </div>
+      
+      <div class="field">
+        <label for="skeptic-votes">Skeptic 投票数 <span>验证轮数（1-5，默认1）</span></label>
+        <input id="skeptic-votes" type="number" min="1" max="5" value="1" />
+      </div>
+      
+      <div class="field">
+        <label>
+          <input type="checkbox" id="force-approve-grounded" checked />
+          信任 Grounded Flag
+          <span>如果 flag 在真实命令输出中找到，跳过 skeptic 检查</span>
+        </label>
+      </div>
+      
+      <div class="vpn-actions">
+        <button class="primary" id="btn-save-verifier">保存验证器配置</button>
+        <button id="btn-view-rejected">查看被拒绝的 Flag</button>
+      </div>
+    </section>
+
+
     <section class="panel settings-card settings-agent">
       <div class="card-heading">
         <div><p class="eyebrow mono">05 / AGENT FLEET</p><h2>Agent 舰队</h2></div>
@@ -134,9 +170,41 @@
         <label for="agent-token">BENCHMARK_TOKEN <span>跑分任务 Token</span></label>
         <input id="agent-token" type="text" value="{{ agent_env.BENCHMARK_TOKEN }}" placeholder="UUID" autocomplete="off" />
       </div>
+      <p class="card-description sub">模型配置（自定义网关，自动注入 worker 容器）</p>
       <div class="field">
-        <label for="agent-key">SOLVER_API_KEY <span>Agent 模型密钥</span></label>
-        <input id="agent-key" type="password" value="{{ agent_env.SOLVER_API_KEY }}" placeholder="sk-..." autocomplete="off" />
+        <label for="agent-anthropic-base">MODEL BASE URL <span>兼容接口地址（OpenAI / Anthropic）</span></label>
+        <input id="agent-anthropic-base" type="text" value="{{ agent_env.ANTHROPIC_BASE_URL }}" placeholder="https://mcai.mycc.edu.cn/v1" />
+      </div>
+      <div class="field">
+        <label for="agent-anthropic-token">MODEL API KEY <span>网关认证 Token</span></label>
+        <input id="agent-anthropic-token" type="password" value="{{ agent_env.ANTHROPIC_AUTH_TOKEN }}" placeholder="sk-..." autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="agent-anthropic-model">MODEL <span>求解模型</span></label>
+        <input id="agent-anthropic-model" type="text" value="{{ agent_env.ANTHROPIC_MODEL }}" placeholder="deepseek-v4-flash-0731" />
+      </div>
+      <div class="field">
+        <label for="agent-solver-key">SOLVER_API_KEY <span>求解 API Key（未配网关 key 时的兜底）</span></label>
+        <input id="agent-solver-key" type="password" value="{{ agent_env.SOLVER_API_KEY }}" placeholder="sk-..." autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="agent-session-seconds">SOLVER_SESSION_SECONDS <span>单会话时长（秒，深题建议 2400+）</span></label>
+        <input id="agent-session-seconds" type="text" value="{{ agent_env.SOLVER_SESSION_SECONDS }}" placeholder="2400" />
+      </div>
+      <p class="card-description sub">思考模式（注入 worker 的 pi --thinking，深度 RE 题建议 medium/high）</p>
+      <label class="toggle-row">
+        <span><strong>思考模式（Thinking）</strong><small>DeepSeek 思考模式，适合复杂推理题，响应较慢。</small></span>
+        <input id="agent-thinking" type="checkbox" {% if agent_env.ADAPTER_PI_THINKING and agent_env.ADAPTER_PI_THINKING not in ('off', '') %}checked{% endif %} />
+        <i aria-hidden="true"></i>
+      </label>
+      <div class="field" id="agent-reasoning-field" {% if not agent_env.ADAPTER_PI_THINKING or agent_env.ADAPTER_PI_THINKING in ('off', '') %}style="display:none"{% endif %}>
+        <label for="agent-reasoning">REASONING EFFORT <span>推理强度（off/low/medium/high）</span></label>
+        <select id="agent-reasoning">
+          {% set at = agent_env.ADAPTER_PI_THINKING or 'low' %}
+          <option value="low" {% if at == 'low' %}selected{% endif %}>low</option>
+          <option value="medium" {% if at == 'medium' %}selected{% endif %}>medium</option>
+          <option value="high" {% if at == 'high' %}selected{% endif %}>high</option>
+        </select>
       </div>
       <div class="vpn-actions">
         <button class="primary" id="btn-save-agent">保存舰队配置</button>
@@ -281,7 +349,73 @@ document.getElementById('btn-vpn-upload').addEventListener('click', async () => 
   const data = await res.json();
   if (!res.ok) { showResult('error', '上传失败 [' + data.code + ']: ' + data.message); return; }
   showResult('success', 'VPN 配置已上传' + (data.running ? '，已自动重连' : ''));
-  await refreshVpn();
+  await 
+// ── Verifier 控制 ──────────────────────────────────────────
+async function loadVerifierConfig() {
+  try {
+    const resp = await fetch('/api/v1/verifier/config');
+    const data = await resp.json();
+    document.getElementById('skeptic-enabled').checked = data.skeptic_enabled ?? true;
+    document.getElementById('skeptic-votes').value = data.skeptic_votes ?? 1;
+    document.getElementById('force-approve-grounded').checked = data.force_approve_grounded ?? true;
+  } catch (e) {
+    console.error('加载验证器配置失败:', e);
+  }
+}
+
+document.getElementById('btn-save-verifier')?.addEventListener('click', async () => {
+  const btn = document.getElementById('btn-save-verifier');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = '保存中…';
+  
+  try {
+    const resp = await fetch('/api/v1/verifier/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        skeptic_enabled: document.getElementById('skeptic-enabled').checked,
+        skeptic_votes: parseInt(document.getElementById('skeptic-votes').value),
+        force_approve_grounded: document.getElementById('force-approve-grounded').checked
+      })
+    });
+    const data = await resp.json();
+    
+    if (data.ok) {
+      showResult('success', '验证器配置已保存，重启worker后生效');
+    } else {
+      showResult('error', data.message || '保存失败');
+    }
+  } catch (e) {
+    showResult('error', '保存失败: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '保存验证器配置';
+  }
+});
+
+document.getElementById('btn-view-rejected')?.addEventListener('click', async () => {
+  try {
+    const resp = await fetch('/api/v1/verifier/rejected-flags');
+    const data = await resp.json();
+    
+    if (data.rejected_flags && data.rejected_flags.length > 0) {
+      let message = `找到 ${data.rejected_flags.length} 个被拒绝的 flag:\n\n`;
+      data.rejected_flags.forEach(item => {
+        message += `题目: ${item.challenge_code}\nFlag: ${item.flag}\n已验证: ${item.verified_in_source ? '是' : '否'}\n\n`;
+      });
+      alert(message);
+    } else {
+      showResult('info', '没有被拒绝的 flag');
+    }
+  } catch (e) {
+    showResult('error', '查询失败: ' + e.message);
+  }
+});
+
+loadVerifierConfig();
+
+refreshVpn();
 });
 
 document.getElementById('btn-vpn-start').addEventListener('click', async () => {
@@ -304,12 +438,23 @@ document.getElementById('btn-vpn-stop').addEventListener('click', async () => {
   await refreshVpn();
 });
 
+// Agent 舰队：思考模式开关联动（显示/隐藏 REASONING EFFORT 下拉）
+document.getElementById('agent-thinking').addEventListener('change', e => {
+  document.getElementById('agent-reasoning-field').style.display = e.target.checked ? 'grid' : 'none';
+});
+
 // Agent 舰队配置
 document.getElementById('btn-save-agent').addEventListener('click', async () => {
   const payload = {
     BENCHMARK_BASE_URL: document.getElementById('agent-base-url').value.trim(),
     BENCHMARK_TOKEN: document.getElementById('agent-token').value.trim(),
-    SOLVER_API_KEY: document.getElementById('agent-key').value.trim(),
+    ANTHROPIC_BASE_URL: document.getElementById('agent-anthropic-base').value.trim(),
+    ANTHROPIC_AUTH_TOKEN: document.getElementById('agent-anthropic-token').value.trim(),
+    ANTHROPIC_MODEL: document.getElementById('agent-anthropic-model').value.trim(),
+    SOLVER_API_KEY: document.getElementById('agent-solver-key').value.trim(),
+    SOLVER_SESSION_SECONDS: document.getElementById('agent-session-seconds').value.trim(),
+    llmThinking: document.getElementById('agent-thinking').checked,
+    llmReasoningEffort: document.getElementById('agent-reasoning').value,
   };
   const res = await fetch('/settings/save-agent', {
     method: 'POST',

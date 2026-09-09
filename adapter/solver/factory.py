@@ -18,8 +18,9 @@ log = logging.getLogger("adapter.solver.factory")
 
 
 def create_solver(model: str = "", skills_dir: str = "",
-                  max_turns: int = 60) -> SolverBackend:
+                  max_turns: int = 60, thinking: str = "") -> SolverBackend:
     """创建 Pi Agent 求解器后端"""
-    log.info("solver backend: pi-agent (model=%s skills=%s)",
-             model or "default", skills_dir or "none")
-    return PiAgentBackend(model=model, skills_dir=skills_dir, max_turns=max_turns)
+    log.info("solver backend: pi-agent (model=%s skills=%s thinking=%s)",
+             model or "default", skills_dir or "none", thinking or "-")
+    return PiAgentBackend(model=model, skills_dir=skills_dir,
+                          max_turns=max_turns, thinking=thinking)

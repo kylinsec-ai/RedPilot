@@ -27,7 +27,7 @@ $(printf '\x63\x61\x74') /etc/passwd
 ## AV 免杀
 - 分段加载 shellcode
 - 加密 payload + 运行时解密
-- 使用合法工具（certutil/bitsadmin）下载
+- 注意：本靶场为隔离内网，**禁止从互联网下载**（certutil/bitsadmin 等下载行为一律不用）——只用本机已装工具本地生成/拼接 payload
 
 ## 流量混淆
 - DNS 隧道

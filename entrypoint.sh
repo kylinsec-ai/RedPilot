@@ -8,12 +8,15 @@ echo "[adapter] BENCHMARK_BASE_URL=${BENCHMARK_BASE_URL:-<unset>}"
 : "${BENCHMARK_TOKEN:?BENCHMARK_TOKEN must be provided}"
 : "${BENCHMARK_BASE_URL:?BENCHMARK_BASE_URL must be provided}"
 
-if [[ -z "${SOLVER_API_KEY:-}" ]]; then
-  echo "[adapter] WARNING: no SOLVER_API_KEY set — Pi Agent cannot authenticate." >&2
+# 模型密钥：网关 key（ANTHROPIC_AUTH_TOKEN）优先，SOLVER_API_KEY 兜底
+if [[ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
+  export DEEPSEEK_API_KEY="${ANTHROPIC_AUTH_TOKEN}"
+elif [[ -n "${SOLVER_API_KEY:-}" ]]; then
+  export DEEPSEEK_API_KEY="${SOLVER_API_KEY}"
+else
+  echo "[adapter] WARNING: no model API key set (ANTHROPIC_AUTH_TOKEN / SOLVER_API_KEY) — Pi Agent cannot authenticate." >&2
+  export DEEPSEEK_API_KEY=""
 fi
-
-# Pi Agent (models.json) 通过 DEEPSEEK_API_KEY 读取密钥
-export DEEPSEEK_API_KEY="${SOLVER_API_KEY:-}"
 
 cd /app 2>/dev/null || true
 

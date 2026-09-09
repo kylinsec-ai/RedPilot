@@ -1,0 +1,44 @@
+╔══════════════════════════════════════════════════════════════╗
+║              TsecBench 快速参考卡片                          ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  🌐 Web界面                                                  ║
+║     http://192.168.31.143:8003/                             ║
+║                                                              ║
+║  📊 常用命令                                                 ║
+║     启动: docker-compose up -d                              ║
+║     停止: docker-compose down                               ║
+║     重启: docker restart tsecbench-worker-1                 ║
+║     日志: docker logs -f tsecbench-worker-1                 ║
+║                                                              ║
+║  📈 监控命令                                                 ║
+║     实时: bash monitor_realtime.sh                          ║
+║     总结: bash summary_monitor.sh                           ║
+║     检查: bash check_all_code.sh                            ║
+║                                                              ║
+║  🔧 配置位置                                                 ║
+║     时间: adapter/config.py (timebox_*)                     ║
+║     验证: adapter/verify.py (verify方法)                    ║
+║     Stop-loss: adapter/stoploss.py (dry_cutoff)             ║
+║                                                              ║
+║  📁 重要文件                                                 ║
+║     完整指南: SYSTEM_USER_GUIDE.md                          ║
+║     总结: ALL_DONE.txt                                       ║
+║     Worker配置: FINAL_WORKER_CONFIG.md                      ║
+║                                                              ║
+║  ⚙️  当前配置                                                ║
+║     Worker数量: 3个                                          ║
+║     解题时间: 3600秒（1小时）                               ║
+║     验证阈值: 0.3（宽松）                                   ║
+║     Stop-loss: 3次干Session                                 ║
+║                                                              ║
+║  🆘 故障排查                                                 ║
+║     Worker不工作: 检查VPN和API Key                          ║
+║     找到flag不提交: 检查验证器配置                         ║
+║     频繁切换: 检查Stop-loss和日志                          ║
+║     Web打不开: 检查fastapi进程                             ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+                    按需查阅 SYSTEM_USER_GUIDE.md 
+                        获取详细说明

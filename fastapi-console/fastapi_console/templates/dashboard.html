@@ -112,6 +112,7 @@ let CHALLENGES = [];
 let FILTER = 'all';
 let AUTO_RUNNING = false;
 let LLM_OK = {{ 'true' if llm.llmApiKey else 'false' }};
+let PRIORITY = {};  // 派单队列 {code: workerId}，用于卡片标识
 
 const grid = document.getElementById('challenge-grid');
 const autoLogBox = document.getElementById('auto-log-body');
@@ -180,13 +181,15 @@ function renderGrid() {
       : (c.container_status === 'available'
           ? '<button type="button" class="solve-one" data-close="' + esc(c.unique_code) + '">× 关闭容器</button>'
           : '<button type="button" class="solve-one" data-code="' + esc(c.unique_code) + '">✦ Agent 解此题</button>');
+    const queuedMark = PRIORITY[c.unique_code] !== undefined
+      ? ' <span class="badge ai" style="font-size:9px">派单中</span>' : '';
     return '<div role="button" tabindex="0" class="challenge-card ' + (c.is_completed ? 'is-done' : '') + '" data-open="' + encodeURIComponent(c.unique_code) + '" aria-label="打开题目 ' + esc(c.unique_code) + '">'
       + '<span class="challenge-card-top"><span class="challenge-code mono">' + esc(c.unique_code) + '</span>'
       + '<span class="challenge-status ' + statusTone(c.container_status) + '"><i aria-hidden="true"></i>' + statusLabel(c.container_status) + '</span></span>'
       + '<span class="challenge-description">' + esc(c.description || '暂无描述，进入题目查看可用上下文。') + '</span>'
       + '<span class="challenge-meta mono"><span class="badge ' + String(c.difficulty || '').toLowerCase() + '">' + difficultyLabel(c.difficulty) + '</span><span>LV.' + (c.level ?? 0) + '</span><span>' + c.total_score + ' PTS</span></span>'
       + '<span class="flag-track" aria-label="' + c.correct_flag_count + '/' + c.flag_count + ' flags">' + flags + '</span>'
-      + '<span class="challenge-card-bottom mono"><span>' + c.correct_flag_count + '/' + c.flag_count + ' FLAGS</span>'
+      + '<span class="challenge-card-bottom mono"><span>' + c.correct_flag_count + '/' + c.flag_count + ' FLAGS' + queuedMark + '</span>'
       + '<span class="card-actions">' + solveBtn + bottom + '</span></span>'
       + '</div>';
   }).join('');
@@ -201,6 +204,12 @@ async function load() {
     const data = await res.json();
     if (!res.ok) throw new Error('[' + data.code + '] ' + data.message);
     CHALLENGES = data;
+    // 派单队列（卡片"派单中"标识）
+    try {
+      const fleet = await fetch('/api/v1/agent/status').then(r => r.json());
+      PRIORITY = (fleet.summary && fleet.summary.priority) || {};
+      renderFleetStatus(fleet);
+    } catch (e) { /* 舰队API不可达则忽略 */ }
     renderMetrics();
     renderGrid();
   } catch (err) {
@@ -210,6 +219,23 @@ async function load() {
     btn.disabled = false;
     btn.textContent = '↻ 刷新任务';
   }
+}
+
+// 舰队实时状态：3 worker 各在解什么（自动/派单）
+function renderFleetStatus(fleet) {
+  const box = document.getElementById('fleet-status');
+  if (!box) return;
+  const workers = fleet.workers || [];
+  box.innerHTML = workers.map(w => {
+    const s = w.state || {};
+    const code = s.current_code || '—';
+    const isPrio = PRIORITY[code] !== undefined;
+    const statusTxt = w.running ? (w.health === 'healthy' ? '运行中' : '启动中') : '已停止';
+    const mark = isPrio ? '<span class="badge ai" style="font-size:9px">派单</span>' : '<span class="badge quiet" style="font-size:9px">自动</span>';
+    return '<div class="queue-row"><span class="queue-label mono">' + w.name.replace('tsecbench-', '') + ' (' + statusTxt + ')</span>'
+      + '<span class="mono">' + esc(code) + ' ' + mark + '</span></div>';
+  }).join('');
+  if (!workers.length) box.innerHTML = '<div class="dim">舰队未启动</div>';
 }
 
 function appendLog(log) {
@@ -223,18 +249,20 @@ async function autoRunAll() {
   AUTO_RUNNING = true;
   const btn = document.getElementById('auto-all-btn');
   btn.disabled = true;
+  btn.textContent = '✦ 启动舰队中...';
   autoLogSection.style.display = 'block';
   try {
-    // 舰队模式：先查常驻舰队是否在自动解题
-    const fleet = await fetch('/api/v1/agent/status').then(r => r.json());
-    if (fleet.summary && fleet.summary.running > 0) {
-      appendLog({ time: now(), type: 'warn', text: '常驻舰队 ' + fleet.summary.running + '/' + fleet.summary.total + ' 个 worker 正在全量自动解题，无需重复触发' });
-      appendLog({ time: now(), type: 'info', text: '如要单独派单某道题，点击该题卡片的「✦ Agent 解此题」' });
-      return;
+    // 「全部自动解」= 启动舰队全量自动解题
+    const res = await postJSON('/api/v1/agent/start');
+    if (res.summary) {
+      appendLog({ time: now(), type: 'success', text: '舰队已启动：' + res.summary.running + '/' + res.summary.total + ' 个 worker 全量自动解题中' });
+      appendLog({ time: now(), type: 'info', text: '每个 worker 自动解自己分片的题目；如需指定某题优先，点该题卡片的「✦ Agent 解此题」' });
+      await load();
+    } else if (res.code) {
+      appendLog({ time: now(), type: 'error', text: '启动失败 [' + res.code + ']: ' + res.message });
     }
-    appendLog({ time: now(), type: 'warn', text: '舰队未在运行。请到「Agent 舰队」页点击「▶ 启动舰队」全量自动解题，或点单题卡片派单' });
   } catch (err) {
-    appendLog({ time: now(), type: 'error', text: '检查舰队状态失败: ' + err.message });
+    appendLog({ time: now(), type: 'error', text: '启动舰队失败: ' + err.message });
   } finally {
     AUTO_RUNNING = false;
     btn.disabled = false;
