@@ -469,10 +469,10 @@ grep "def verify" adapter/verify.py -A 20
 ```
 
 ### 查看文档
-- 主文档: ALL_DONE.txt
-- 配置文档: TIME_CONFIG_FINAL.md
-- Worker配置: FINAL_WORKER_CONFIG.md
-- 问题诊断: FINAL_DIAGNOSIS.md
+- 项目说明: README.md
+- 架构与协作约定: AGENTS.md
+- 平台接口: CHALLENGES_API.md
+- 快速参考: QUICK_REFERENCE.txt
 
 ---
 
