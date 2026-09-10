@@ -861,11 +861,19 @@ class Store:
                 ) VALUES (?, ?, 'idle', ?, ?, ?)
                 ON CONFLICT(worker_id) DO UPDATE SET
                     capabilities_json = excluded.capabilities_json,
-                    status = CASE WHEN workers.status = 'draining' THEN 'draining' ELSE 'idle' END,
+                    -- 重复注册不得降级在飞状态:
+                    --   draining —— 排空意图不能被一次重注册取消;
+                    --   busy     —— 仍持有 running job 的 worker 显示为空闲会误导调度与运维
+                    --              (driver 在 worker_not_registered 后会重注册,这条路径真实存在)。
+                    status = CASE
+                        WHEN workers.status = 'draining' THEN 'draining'
+                        WHEN EXISTS(SELECT 1 FROM jobs
+                                     WHERE worker_id = ? AND status = 'running') THEN 'busy'
+                        ELSE 'idle' END,
                     last_seen_at = excluded.last_seen_at,
                     updated_at = excluded.updated_at
                 """,
-                (worker_id, encoded, now, now, now),
+                (worker_id, encoded, now, now, now, worker_id),
             )
             row = connection.execute(
                 "SELECT * FROM workers WHERE worker_id = ?", (worker_id,)

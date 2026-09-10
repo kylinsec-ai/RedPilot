@@ -173,3 +173,29 @@ def test_seed_of_unchanged_config_reports_no_drift(tmp_path):
          "container_addr": ["10.0.0.1:80"]},
     ]})
     assert store.task_config_drift(same[0]) == []
+
+
+def test_reregister_does_not_downgrade_busy_or_draining(tmp_path):
+    """重复注册不得把在飞 worker 降级为 idle。
+
+    driver 在收到 worker_not_registered 后会重新注册;若无条件写 idle,
+    正在解题的 worker 在控制面上就显示为空闲,误导调度与运维判断。
+    """
+    store = _store(tmp_path)
+    assignment = _claimed(store)
+    assert store.list_workers()[0]["status"] == "busy"
+
+    store.register_worker("worker-1")
+    assert store.list_workers()[0]["status"] == "busy", "在飞 worker 被降级为 idle"
+
+    # 排空意图同样不能被重注册取消
+    store.worker_heartbeat("worker-1", "draining")
+    assert store.list_workers()[0]["status"] == "draining"
+    store.register_worker("worker-1")
+    assert store.list_workers()[0]["status"] == "draining"
+
+    # 租约结束后重注册 → 正常回到 idle
+    store.complete_attempt(assignment.attempt_id, "worker-1", assignment.lease_id,
+                           status="done")
+    store.register_worker("worker-1")
+    assert store.list_workers()[0]["status"] == "idle"
