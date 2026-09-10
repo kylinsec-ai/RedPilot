@@ -18,12 +18,14 @@ def test_token_unconfigured_loud(client_no_token, headers):
     assert r.status_code == 503
 
 
-def test_token_auth(client, headers):
+def test_token_auth(anon_client, headers):
+    """写端凭据语义。用无默认 header 的 anon_client —— 否则"无头"用例会带上 token。"""
     body = {"worker_id": "worker-1"}
-    assert client.post("/api/internal/ping", json=body).status_code == 401          # 无头
-    assert client.post("/api/internal/ping", json=body,
-                       headers={"X-Observability-Token": "wrong"}).status_code == 401
-    assert client.post("/api/internal/ping", json=body, headers=headers).status_code == 200
+    assert anon_client.post("/api/internal/ping", json=body).status_code == 401     # 无头
+    assert anon_client.post("/api/internal/ping", json=body,
+                            headers={"X-Observability-Token": "wrong"}).status_code == 401
+    assert anon_client.post("/api/internal/ping", json=body,
+                            headers=headers).status_code == 200
 
 
 def test_ingest_roundtrip(client, headers):

@@ -75,6 +75,7 @@ def create_app(db_path: str | None = None, web_dir: str | None = None,
         store = ObsStore(settings.db_path, stale_after=settings.stale_after)
         app.state.store = store
         app.state.obs_token = settings.obs_token
+        app.state.read_token = settings.effective_read_token()
         app.state.web_dir = settings.web_dir
         app.state.control_url = settings.control_url
         app.state.bus = LiveBus()

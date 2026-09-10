@@ -27,6 +27,9 @@ ADMIN_TOKEN = "admin-unified"
 WORKER_TOKEN = "worker-unified"
 OBS_TOKEN = "obs-unified"
 
+# 观测读端凭据(未单独配置 OBSERVABILITY_READ_TOKEN 时回落 ingest token)
+READ = {"X-Observability-Token": OBS_TOKEN}
+
 TASKS = {
     "token": TASK_TOKEN,
     "challenges": [
@@ -120,10 +123,26 @@ def test_state_names_do_not_collide(tmp_path, web_dir):
 
 def test_obs_read_endpoints_serve(tmp_path, web_dir):
     """曾经全部 500('Store' object has no attribute ...)的读端。"""
-    with TestClient(_app(tmp_path, web_dir)) as client:
+    with TestClient(_app(tmp_path, web_dir), headers=READ) as client:
         for path in ("/api/health", "/api/status", "/api/roster", "/api/runs"):
             resp = client.get(path)
             assert resp.status_code == 200, f"{path} -> {resp.status_code}"
+
+
+def test_read_requires_credentials(tmp_path, web_dir):
+    """观测读端返回明文 flag 与完整实录,必须凭据(worker 持 ingest token 且同网)。"""
+    with TestClient(_app(tmp_path, web_dir)) as anon:  # 无默认 header
+        for path in ("/api/status", "/api/roster", "/api/runs", "/api/challenge?code=web-01"):
+            assert anon.get(path).status_code == 401, path
+        assert anon.get("/api/events").status_code == 401
+        assert anon.get("/api/runs", headers={"X-Observability-Token": "wrong"}).status_code == 401
+    # 公开面:SPA 外壳与存活探测(不含数据,否则登录界面本身无法渲染)
+    with TestClient(_app(tmp_path, web_dir)) as anon:
+        assert anon.get("/").status_code == 200
+        assert anon.get("/api/health").status_code == 200
+    # 带凭据 → 放行
+    with TestClient(_app(tmp_path, web_dir), headers=READ) as ok:
+        assert ok.get("/api/runs").status_code == 200
 
 
 def test_spa_index_served(tmp_path, web_dir):

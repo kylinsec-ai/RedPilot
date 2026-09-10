@@ -111,8 +111,12 @@ def web_dir(tmp_path) -> str:
 
 @pytest.fixture
 def client(tmp_path, web_dir):
+    # 读端与写端同一头名同一取值(未单独配置 OBSERVABILITY_READ_TOKEN 时回落 ingest
+    # token)。设为 client 默认 header,使既有读断言聚焦业务语义;"无凭据必须被拒"
+    # 由 test_read_auth.py 显式覆盖。
     with TestClient(create_app(db_path=str(tmp_path / "obs.sqlite3"),
-                               web_dir=web_dir, obs_token=TOKEN)) as c:
+                               web_dir=web_dir, obs_token=TOKEN),
+                    headers={"X-Observability-Token": TOKEN}) as c:
         yield c
 
 
@@ -121,8 +125,17 @@ def client_no_token(tmp_path, web_dir, monkeypatch):
     # obs.config import 时 load_dotenv() 会把 .env 的 OBSERVABILITY_TOKEN 带进进程;
     # "无 token 应用" 语义要求真无 token → 显式摘掉 env(否则 401 顶替 503,测试失真)
     monkeypatch.delenv("OBSERVABILITY_TOKEN", raising=False)
+    monkeypatch.delenv("OBSERVABILITY_READ_TOKEN", raising=False)
     with TestClient(create_app(db_path=str(tmp_path / "obs.sqlite3"),
                                web_dir=web_dir, obs_token=None)) as c:
+        yield c
+
+
+@pytest.fixture
+def anon_client(tmp_path, web_dir):
+    """不带任何凭据的客户端:用于验证读端确实拒绝匿名访问。"""
+    with TestClient(create_app(db_path=str(tmp_path / "obs.sqlite3"),
+                               web_dir=web_dir, obs_token=TOKEN)) as c:
         yield c
 
 

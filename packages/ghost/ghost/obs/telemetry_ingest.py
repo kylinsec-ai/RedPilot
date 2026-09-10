@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Request
 from starlette.concurrency import run_in_threadpool
 
 from ghost.obs.ingest_common import check_token, require_store
+from ghost_contracts.vocabulary import strip_for_snapshot
 from ghost.obs.schema import (ACTIVE_PHASES, EventsIn, LiveIn, PingIn, RosterIn,
                      RunCloseIn, require_run_id)
 
@@ -38,7 +39,10 @@ async def post_live(body: LiveIn, request: Request,
                     _auth=Depends(_check_token)) -> dict:
     """worker 每 ~1s 一份快照;返回前份快照做崩溃守卫:换题未关旧 run / 重启残留 → interrupted。"""
     store = _require_store(request)
-    snap = body.snapshot
+    # 落库前剥掉 `_` 前缀带外键:ghost_contracts.vocabulary 规定这些键(如
+    # `_accepted_flags` 明文 flag)只在中继→平台链路内部流转,不得进快照/仪表板。
+    # 此前未剥,导致明文 flag 可经 /api/status 与 SSE 播给任何读端。
+    snap = strip_for_snapshot(body.snapshot)
     phase = snap.get("phase") or ""
     prev = await run_in_threadpool(store.put_live, body.worker_id, snap)
     if prev:

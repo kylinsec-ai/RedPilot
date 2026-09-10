@@ -214,7 +214,7 @@ def _sse_frames(base: str, headers: dict, live_body: dict | None):
     import httpx
 
     with httpx.Client(base_url=base, timeout=10) as c:
-        with c.stream("GET", "/api/events") as r:
+        with c.stream("GET", "/api/events", headers=headers) as r:
             assert r.status_code == 200
             assert r.headers["content-type"].startswith("text/event-stream")
             it = r.iter_lines()
@@ -226,7 +226,7 @@ def _sse_frames(base: str, headers: dict, live_body: dict | None):
         assert first is not None and first["kind"] == "snapshot"
         if live_body is None:
             return first, None
-        with c.stream("GET", "/api/events") as r:
+        with c.stream("GET", "/api/events", headers=headers) as r:
             it = r.iter_lines()
             for raw in it:  # 消费首帧(订阅已建立)
                 if raw.startswith("data: "):

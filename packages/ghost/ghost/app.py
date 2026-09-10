@@ -131,6 +131,7 @@ def create_app(
         app.state.store = store
         app.state.obs_store = store  # 别名:语义更明确,供新代码使用
         app.state.obs_token = obs_settings.obs_token
+        app.state.read_token = obs_settings.effective_read_token()
         app.state.web_dir = obs_settings.web_dir
         app.state.control_url = obs_settings.control_url
         app.state.bus = LiveBus()

@@ -26,6 +26,10 @@ services:
       GHOST_DB_PATH: /app/data/ghost.sqlite3
       # Observability settings
       OBSERVABILITY_TOKEN: ${OBSERVABILITY_TOKEN:-}
+      # 读端凭据(态势台/runs/transcript)。读端返回明文 flag 与完整实录,不再匿名开放;
+      # 未设置则回落 OBSERVABILITY_TOKEN。注意本项**不转发给 worker** —— 让"能写遥测"
+      # 不等于"能读答案"。
+      OBSERVABILITY_READ_TOKEN: ${OBSERVABILITY_READ_TOKEN:-}
       OBSERVABILITY_DB: /app/data/obs.sqlite3
       OBSERVABILITY_WEB: /app/web
       # Self-reference for canonical event outbox

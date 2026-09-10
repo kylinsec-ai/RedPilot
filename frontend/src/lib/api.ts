@@ -12,7 +12,10 @@ import type {
   TimelineResp,
   WorkersResp,
 } from "./types";
-import { adminAuth } from "./auth.svelte";
+import { adminAuth, readAuth } from "./auth.svelte";
+
+/** 观测读端 / 写端共用的头名(取值不同:读端 read_token,写端 ingest token)。 */
+export const OBS_READ_HEADER = "X-Observability-Token";
 
 export class ApiError extends Error {
   status: number;
@@ -26,9 +29,13 @@ export class ApiError extends Error {
 
 async function j<T>(url: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  // 管理 token 只发控制面:公开读端不带(少一次泄露面)。
-  if (url.startsWith("/api/v1/") && adminAuth.token)
-    headers.set("X-Platform-Admin-Token", adminAuth.token);
+  // 凭据分流:控制面用管理 token;观测读端用读 token(后端读端返回明文 flag 与
+  // 完整 agent 实录,故不再匿名开放)。两者互不代替,各自只发往自己的路由前缀。
+  if (url.startsWith("/api/v1/")) {
+    if (adminAuth.token) headers.set("X-Platform-Admin-Token", adminAuth.token);
+  } else if (url.startsWith("/api/")) {
+    if (readAuth.token) headers.set(OBS_READ_HEADER, readAuth.token);
+  }
   const r = await fetch(url, { ...init, headers });
   if (!r.ok) {
     let code = "http_error";

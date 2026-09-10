@@ -26,6 +26,9 @@ ADMIN_TOKEN = "admin-canonical"
 WORKER_TOKEN = "worker-canonical"
 OBS_TOKEN = "obs-canonical"
 
+# 观测读端凭据(回落 ingest token)
+READ = {"X-Observability-Token": OBS_TOKEN}
+
 
 def _app(tmp_path, web_dir):
     return create_app(
@@ -77,7 +80,7 @@ async def _drain_outbox(app) -> None:
 def test_canonical_completed_reaches_obs(tmp_path, web_dir):
     """attempt.completed 必须经 outbox 抵达 obs,并把 run 关成 canonical 终态。"""
     app = _app(tmp_path, web_dir)
-    with TestClient(app) as client:
+    with TestClient(app, headers=READ) as client:
         admin = {"GHOST_ADMIN_TOKEN": ADMIN_TOKEN}
         worker = {"X-Worker-Token": WORKER_TOKEN}
 
@@ -125,7 +128,7 @@ def test_canonical_completed_reaches_obs(tmp_path, web_dir):
 def test_canonical_started_creates_running_run(tmp_path, web_dir):
     """attempt.started 单独投递时先建 running 行(乱序/中途态场景)。"""
     app = _app(tmp_path, web_dir)
-    with TestClient(app) as client:
+    with TestClient(app, headers=READ) as client:
         admin = {"GHOST_ADMIN_TOKEN": ADMIN_TOKEN}
         worker = {"X-Worker-Token": WORKER_TOKEN}
         client.post("/api/v1/evaluations", headers=admin,

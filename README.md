@@ -182,11 +182,24 @@ OBSERVABILITY_DB=$PWD/data/obs.sqlite3 \
 | `OBSERVABILITY_URL` | `http://server:8000`(compose) | canonical 事件 outbox 的投递地址 |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | uvicorn 监听(服务端与观测同一端口) |
 
-摄取端点(`/api/internal/*`)仅接受带 token 的 POST;读端(`/api/status|roster|challenge|
-timeline|transcript|runs...`、SSE `/api/events`、静态)只读开放 —— 刻意无鉴权,但读端
-返回**已接受 flag 明文与完整 agent 实录**(评测答案材料):compose 默认只把 8000 发布到
-**宿主回环**(`host_ip: 127.0.0.1`;浏览器 `http://localhost:8000` 即可,远程查看请走
-SSH 隧道;确需局域网放行时显式设 `SERVER_HOST_IP=0.0.0.0`,答案泄露风险自担)。语义注:
+**鉴权分层**:
+
+| 面 | 端点 | 凭据 |
+|---|---|---|
+| 公开 | `/`、`/assets/*`(SPA 外壳)、`/api/health` | 无(不含数据;否则登录界面本身无法渲染) |
+| 观测读端 | `/api/status|roster|challenge|timeline|transcript|runs*`、SSE `/api/events` | `X-Observability-Token: <read token>` |
+| 观测写端 | `/api/internal/*` | `X-Observability-Token: <ingest token>` |
+| 控制面 | `/api/v1/*`、`/openapi/v1/*` | 见各端点(admin / worker / benchmark token) |
+
+读端凭据取 `OBSERVABILITY_READ_TOKEN`,未设置则回落 `OBSERVABILITY_TOKEN`;两者皆无
+则读端 503(fail-closed)。**为何读端也要凭据**:读端返回已接受 flag 明文与完整 agent
+实录(评测答案材料),而 worker 容器持 ingest token 且与平台同网 —— 靠网络位置兜底不够。
+用独立读凭据可让"能写遥测"与"能读答案"解耦(compose 不把 `OBSERVABILITY_READ_TOKEN`
+转发给 worker)。前端在未持凭据时会显示凭据输入面板(仅存 sessionStorage)。
+
+即便有了读端鉴权,compose 仍默认只把 8000 发布到 **宿主回环**(`host_ip: 127.0.0.1`;
+浏览器 `http://localhost:8000` 即可,远程查看请走 SSH 隧道;确需局域网放行时显式设
+`SERVER_HOST_IP=0.0.0.0`,风险自担)——纵深防御,不是二选一。语义注:
 
 - 事件行为原文 JSONL(与 transcript 同信任域);`message_update` 流式增量在 worker 侧
   丢弃,故 raw 面板/事件页不含增量(实时感由 SSE 快照 + 时间线轮询维持)。

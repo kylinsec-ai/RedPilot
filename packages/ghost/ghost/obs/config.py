@@ -38,6 +38,11 @@ DEFAULT_HOUSE_INTERVAL = 30.0
 class Settings:
     # ingest 鉴权 token;None=未配置 → 摄取端点响亮 503(防静默空转)
     obs_token: str | None = None
+    # 读端鉴权 token;None → 回落到 obs_token(compose 已必配,故默认部署即有凭据),
+    # 两者皆无 → 读端 503 fail-closed。
+    # 为何单独一个:ingest token 分发在每个 worker 容器里,而读端返回**明文 flag 与
+    # 完整 agent 实录**;用独立凭据可让"能写遥测"不等于"能读答案"。
+    read_token: str | None = None
     # SQLite 文件路径(父目录自动建)
     db_path: str = "./data/obs.sqlite3"
     # SPA 产物目录;None=未配置 → / 返回 404 说明(镜像内由 OBSERVABILITY_WEB=/app/web 提供)
@@ -52,11 +57,21 @@ class Settings:
     stale_after: float = DEFAULT_STALE_AFTER
     house_interval: float = DEFAULT_HOUSE_INTERVAL
 
+    def effective_read_token(self) -> str | None:
+        """读端凭据:显式配置优先,否则回落 ingest token。
+
+        刻意用惰性方法而非 __post_init__:app 工厂普遍在构造 Settings 之后
+        直接改属性(`settings.obs_token = obs_token`),__post_init__ 早已跑完,
+        回落会静默失效 → 读端 503。在 lifespan 装配那一刻求值才不会踩时序。
+        """
+        return self.read_token or self.obs_token
+
     @classmethod
     def from_env(cls) -> "Settings":
         control_url = (_env_str("OBS_CONTROL_URL") or "").rstrip("/") or None
         return cls(
             obs_token=_env_str("OBSERVABILITY_TOKEN"),
+            read_token=_env_str("OBSERVABILITY_READ_TOKEN"),
             db_path=_env_str("OBSERVABILITY_DB") or cls.db_path,
             web_dir=_env_str("OBSERVABILITY_WEB"),
             control_url=control_url,
