@@ -352,3 +352,61 @@ def test_unregister_only_removes_own_entry(tmp_path):
         assert workdir not in _LIVE_SOLVERS
     finally:
         _LIVE_SOLVERS.pop(workdir, None)
+
+
+# ── assignment 模式的 provider 熔断 ──
+
+class _RecordingAssignmentClient:
+    """记录 complete 载荷的最小控制面 client。"""
+
+    def __init__(self):
+        self.completes: list[dict] = []
+        self.heartbeats = 0
+
+    async def complete(self, attempt_id, lease_id, **kwargs):
+        self.completes.append({"attempt_id": attempt_id, **kwargs})
+        return {"ok": True}
+
+    async def attempt_heartbeat(self, attempt_id, lease_id, seconds):
+        self.heartbeats += 1
+        return {"ok": True}
+
+
+def test_assignment_provider_failure_reports_interrupted(monkeypatch):
+    """provider 失败必须上报 interrupted 而非 failed。
+
+    failed 会让 core 把 job 置终态且**不可再 claim**(store.py 的 job 状态机)——
+    LLM 上游一挂就逐题烧穿整个队列。interrupted 则让 job 回 pending 待重做,
+    配合 driver 的进程内冷却,上游恢复后可继续。
+    """
+    import asyncio
+    import ghost_worker.driver as driver
+
+    async def failing_solve(*args, **kwargs):
+        raise driver.ProviderFailure("provider 500")
+
+    monkeypatch.setattr(driver, "solve_one", failing_solve)
+
+    class _Bench:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def list_challenges(self): return [_Ch()]
+
+    monkeypatch.setattr(driver, "GhostmarkAsync", lambda **kw: _Bench())
+
+    client = _RecordingAssignmentClient()
+    settings = type("S", (), {"workdir": "/tmp/wd", "flag_format": "flag{...}",
+                             "assignment_lease_seconds": 300,
+                             "benchmark_base_url": None, "platform_url": "http://p"})()
+    cfg = type("C", (), {"model": "m", "session_seconds": 60})()
+    assignment = {"attempt_id": "a1", "lease_id": "l1", "unique_code": "x-01",
+                  "benchmark_base_url": "http://b", "benchmark_token": "t"}
+
+    outcome = asyncio.run(driver._solve_assignment(
+        settings, cfg, None, client, assignment,
+        reporter=type("R", (), {"set": lambda *a, **k: None})(), relay=None))
+
+    assert outcome == "provider_failure", "熔断信号未回传"
+    assert client.completes, "未上报终态"
+    assert client.completes[-1]["status"] == "interrupted", \
+        f"provider 失败应报 interrupted(job 回 pending),实报 {client.completes[-1]['status']}"

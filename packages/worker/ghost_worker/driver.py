@@ -50,7 +50,10 @@ log = logging.getLogger("ghost_worker.driver")
 
 CYCLE_SLEEP = 30          # 一轮刷完后的等待(秒)
 IDLE_SLEEP = 60           # 无待解题时的轮询间隔(秒)
-PROVIDER_FAILURE_EXIT_STREAK = 3  # 连续 N 题 provider 失败 → exit 3 熔断
+PROVIDER_FAILURE_EXIT_STREAK = 3  # 连续 N 题 provider 失败 → 熔断(legacy=exit 3;assignment=进程内冷却)
+# assignment 模式的冷却时长(秒)。刻意不 exit:restart:on-failure 会拉起容器并清零
+# 进程内计数 → 每轮重启再烧 3 题,无限循环。进程内冷却自愈且不触碰退出码契约。
+PROVIDER_COOLDOWN_SECONDS = int(os.getenv("PROVIDER_COOLDOWN_SECONDS", "900"))
 
 
 # amain() 进入时填充:心跳线程据此探测事件循环活性(卡死 → os._exit(4))
@@ -88,6 +91,7 @@ async def _solve_assignment(
     code = assignment["unique_code"]
     status = "failed"
     solved = False
+    provider_failed = False
     accepted: list[str] = []
     error = None
     if relay is not None:
@@ -160,6 +164,11 @@ async def _solve_assignment(
                 status = "solved" if solved else "done"
     except ProviderFailure as exc:
         error = str(exc)
+        provider_failed = True
+        # 上报 interrupted 而非 failed:interpreted as "job 回 pending 待重做"。
+        # failed 会让 job 变成终态且不可再 claim —— LLM 上游一挂就逐题烧穿整个队列
+        # (legacy 模式有 exit-3 熔断兜底,assignment 模式此前没有)。
+        status = "interrupted"
         log.error("assignment provider failure on %s: %s", code, exc)
     except VpnCheckError as exc:
         # 运行中 VPN 掉线与入口预检同语义:上报 interrupted 后走 exit 4 重启通道。
@@ -198,6 +207,7 @@ async def _solve_assignment(
                 log.exception("failed to clear obs assignment context %s", attempt_id)
     if vpn_failed:
         sys.exit(4)
+    return "provider_failure" if provider_failed else "ok"
 
 
 async def _assignment_main(
@@ -227,6 +237,7 @@ async def _assignment_main(
             }
             sys.exit(0 if config_error else 3)
 
+        provider_fail_streak = 0
         while True:
             try:
                 assignment = await assignment_client.claim(settings.assignment_lease_seconds)
@@ -258,7 +269,7 @@ async def _assignment_main(
                 await asyncio.sleep(IDLE_SLEEP)
                 continue
 
-            await _solve_assignment(
+            outcome = await _solve_assignment(
                 settings,
                 cfg,
                 solver_backend,
@@ -268,6 +279,27 @@ async def _assignment_main(
                 relay=relay,
             )
             reporter.set(phase="idle", challenge_code="", error="")
+
+            # provider 熔断:连续 N 题因 LLM 上游故障失败时冷却,而不是继续领下一题。
+            #
+            # 为什么不能沿用 legacy 的 exit 3:compose 的 restart:on-failure 会把容器
+            # 拉起来,进程内计数随之清零 → 每轮重启再烧 3 题,无限循环(退出码契约的
+            # 注释里记着"25h 内 677 次重启循环"那次事故)。
+            # 进程内冷却不触碰退出码契约:容器不重启、本地态势台保持在线,上游恢复后
+            # 自愈;期间不领新 job(队列上的题留给上游恢复后处理,而不是被逐个烧掉)。
+            if outcome == "provider_failure":
+                provider_fail_streak += 1
+                if provider_fail_streak >= PROVIDER_FAILURE_EXIT_STREAK:
+                    log.critical(
+                        "provider failed on %d consecutive job(s); cooling down %.0fs "
+                        "before claiming more (set PROVIDER_COOLDOWN_SECONDS to tune)",
+                        provider_fail_streak, PROVIDER_COOLDOWN_SECONDS)
+                    reporter.set(phase="idle", challenge_code="",
+                                 error="provider cooldown")
+                    await asyncio.sleep(PROVIDER_COOLDOWN_SECONDS)
+                    provider_fail_streak = 0
+            else:
+                provider_fail_streak = 0
 
 async def amain(settings: WorkerSettings, cfg: SolverConfig, solver_backend, *,
                 reporter=None, relay=None) -> None:
