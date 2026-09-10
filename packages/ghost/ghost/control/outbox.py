@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 import logging
 
 import httpx
@@ -71,3 +71,30 @@ async def stop_dispatch_task(task) -> None:
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+
+
+@asynccontextmanager
+async def outbox_lifespan(store, url: str | None, token: str | None):
+    """canonical outbox 的 lifespan 片段 —— **所有** app 工厂的唯一启停实现。
+
+    半配置(url/token 只配其一)时响亮告警而非静默堆积(见模块 docstring 末句)。
+
+    历史:这段逻辑原先内嵌在 control/api.py 的 lifespan 里。合并出统一 app 时,
+    app.py 用 `app.routes.append()` 复制控制面路由而未 mount 子应用,Starlette
+    不会对未挂载的子应用执行 lifespan —— 于是投递任务从未启动,canonical 事件
+    全部滞留 outbox,obs 侧的权威终态永久缺失。抽到这里后,统一 app 与独立控制面
+    共用同一实现,不会再出现"某条装配路径漏了这一步"。
+    """
+
+    task = None
+    if url and token:
+        task = start_dispatch_task(store, url, token)
+        log.info("canonical outbox dispatch started (url=%s)", url)
+    elif url or token:
+        log.error("observability half-configured (url=%s token=%s): outbox will pile up, "
+                  "set both OBSERVABILITY_URL and OBSERVABILITY_TOKEN",
+                  bool(url), bool(token))
+    try:
+        yield
+    finally:
+        await stop_dispatch_task(task)

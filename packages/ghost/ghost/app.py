@@ -20,10 +20,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
 
 from .control.api import create_app as create_control_app
 from .control.config import Settings as ControlSettings
+from .control.outbox import outbox_lifespan
 from .obs.bus import LiveBus
 from .obs.config import Settings as ObsSettings
 from .obs.control_proxy import router as control_proxy_router
@@ -104,22 +106,47 @@ def create_app(
     if control_url is not None and enable_control_proxy is None:
         obs_settings.control_proxy_enabled = bool(obs_settings.control_url)
 
+    # 控制面先于 lifespan 构造:其 store 要被 lifespan 内的 outbox 使用,
+    # 先绑定可避免闭包引用后置变量。
+    control_app = create_control_app(
+        control_settings,
+        database_path=database_path,
+        tasks=tasks,
+        provisioner=provisioner,
+        max_active_challenges=max_active_challenges,
+    )
+    # control_app 自身永不启动(只取其路由),故其 lifespan 不会执行 ——
+    # canonical outbox 的启停由下面的统一 lifespan 显式承担。
+    control_store = control_app.state.store
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        """Unified lifespan: control outbox + obs store + housekeeper."""
+        """Unified lifespan: obs store + housekeeper + control outbox.
+
+        `app.state.store` 恒为 obs store(观测读端 `read.py` / `ingest_common.py` 的契约);
+        控制面 store 挂在 `app.state.control_store`,两者不可混用 —— 见下方 state 命名注释。
+        """
         # Initialize obs store and state
         store = ObsStore(obs_settings.db_path, stale_after=obs_settings.stale_after)
-        app.state.obs_store = store
+        app.state.store = store
+        app.state.obs_store = store  # 别名:语义更明确,供新代码使用
         app.state.obs_token = obs_settings.obs_token
-        app.state.obs_web_dir = obs_settings.web_dir
-        app.state.obs_control_url = obs_settings.control_url
+        app.state.web_dir = obs_settings.web_dir
+        app.state.control_url = obs_settings.control_url
         app.state.bus = LiveBus()
 
         # Start obs housekeeper
         house = asyncio.create_task(_housekeep(store, obs_settings))
 
         try:
-            yield
+            # canonical 事件投递:与独立控制面共用 outbox_lifespan 单一实现。
+            # 合并初期此处遗漏,导致权威事件通道完全断开(见 outbox_lifespan docstring)。
+            async with outbox_lifespan(
+                control_store,
+                control_settings.observability_url,
+                control_settings.observability_token,
+            ):
+                yield
         finally:
             # Shutdown obs
             house.cancel()
@@ -135,27 +162,18 @@ def create_app(
         lifespan=lifespan,
     )
 
-    # Mount control routes (creates control app internally with its own lifespan)
-    # Control app has its own outbox dispatch task in its lifespan
-    control_app = create_control_app(
-        control_settings,
-        database_path=database_path,
-        tasks=tasks,
-        provisioner=provisioner,
-        max_active_challenges=max_active_challenges,
+    # 控制面路由直接并入主 app(而非 mount 子应用:mount 会与观测的 /api/* 及
+    # 根路径 SPA 抢前缀)。只取 APIRoute,跳过 FastAPI 自带的 openapi/docs/redoc
+    # 等默认路由,避免与主 app 的同名路由重复。
+    app.router.routes.extend(
+        route for route in control_app.router.routes if isinstance(route, APIRoute)
     )
 
-    # Include all control routes directly (flatten into main app)
-    for route in control_app.routes:
-        app.routes.append(route)
-
-    # Copy control app state to unified app
-    app.state.store = control_app.state.store
-    app.state.service = control_app.state.service
-    app.state.control = control_app.state.control
-    app.state.challenges = control_app.state.challenges
-    app.state.scheduling = control_app.state.scheduling
-    app.state.settings = control_app.state.settings
+    # state 命名契约:
+    #   app.state.store         = obs store(观测读端既有契约,勿改)
+    #   app.state.control_store = 控制面 store(避开同名冲突)
+    # 控制面的 service/facades 已由各自路由闭包持有,全仓无 app.state 读者,故不再复制。
+    app.state.control_store = control_store
     app.state.vpn = control_app.state.vpn
 
     # Copy exception handlers

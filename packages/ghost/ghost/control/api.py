@@ -21,7 +21,7 @@ from ghost.control.errors import (APIError, admin_not_configured, admin_required
                      lease_conflict, worker_required,
                      worker_token_not_configured)
 from ghost.control.models import parse_task_config
-from ghost.control.outbox import start_dispatch_task, stop_dispatch_task
+from ghost.control.outbox import outbox_lifespan
 from ghost.control.provisioner import ContainerProvisioner, provisioner_for
 from ghost.control.scheduling import SchedulingFacade
 from ghost.control.service import ChallengeService
@@ -157,20 +157,11 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        outbox_task = None
-        if settings.observability_url and settings.observability_token:
-            outbox_task = start_dispatch_task(
-                store, settings.observability_url, settings.observability_token
-            )
-        elif settings.observability_url or settings.observability_token:
-            # 半配置:outbox 行只增不投递,obs 侧全灰 —— 响亮告警,不静默堆积。
-            log.error("observability half-configured (url=%s token=%s): outbox will pile up, "
-                      "set both OBSERVABILITY_URL and OBSERVABILITY_TOKEN",
-                      bool(settings.observability_url), bool(settings.observability_token))
-        try:
+        # 启停语义单源在 outbox_lifespan(统一 app 与本工厂共用,防装配路径漂移)。
+        async with outbox_lifespan(
+            store, settings.observability_url, settings.observability_token
+        ):
             yield
-        finally:
-            await stop_dispatch_task(outbox_task)
     app = FastAPI(title="Ghost Platform", version="1.0.0", lifespan=lifespan)
     app.state.store = store
     app.state.service = service
