@@ -28,8 +28,22 @@ class ChallengeService:
         self._lock = RLock()
 
     def seed(self, tasks: Iterable[TaskDefinition], *, ignore_existing: bool = True) -> None:
+        """启动期种子:已存在的任务**不重建**(保护容器状态与已看提示)。
+
+        代价是任务配置的变更不会自动生效 —— 尤其 flag:库里存的是 SHA-256,改 JSON 里的
+        明文后重启会静默沿用旧哈希,而 flag 正是评分密钥。这里主动比对并存差异响亮
+        告警,把静默的正确性隐患变成看得见的事件(是否推进由运维决定:改 token 或清库)。
+        """
         for task in tasks:
-            self.store.insert_task(task, ignore_existing=ignore_existing)
+            created = self.store.insert_task(task, ignore_existing=ignore_existing)
+            if not created:
+                drift = self.store.task_config_drift(task)
+                if drift:
+                    logger.error(
+                        "task %s already exists but its configuration differs (%s): "
+                        "seed does NOT apply changes — flags/scores in the DB keep their "
+                        "original values. Use a new task token or re-seed the DB.",
+                        task.token, "; ".join(drift))
 
     def create_task(self, task: TaskDefinition) -> None:
         self.store.insert_task(task)

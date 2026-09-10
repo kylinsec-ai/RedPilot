@@ -18,6 +18,28 @@ import httpx
 
 log = logging.getLogger("ghost.outbox")
 
+# 空转节拍与退避参数。此前固定 1s 无退避:obs 宕机时既每秒重试一次(无效压力),
+# 又每秒刷一条 exc_info(噪声淹没真实故障)。
+_IDLE_INTERVAL = 1.0
+_BACKOFF_BASE = 1.0
+_BACKOFF_MAX = 60.0
+
+
+def _backoff(failures: int) -> float:
+    """指数退避 + 抖动:上限 60s,抖动避免多实例同步重试(thundering herd)。"""
+    import random
+
+    raw = min(_BACKOFF_BASE * (2 ** max(0, failures - 1)), _BACKOFF_MAX)
+    return raw * (0.5 + random.random() * 0.5)
+
+
+def _retry_after(response, failures: int) -> float:
+    """429 优先采纳服务端 Retry-After(仍受上限约束),缺省走退避。"""
+    raw = response.headers.get("Retry-After", "")
+    if raw.strip().isdigit():
+        return min(float(raw.strip()), _BACKOFF_MAX)
+    return _backoff(failures)
+
 
 async def dispatch_outbox_loop(store, url: str, token: str, *, client_factory=None,
                                max_rounds: int | None = None) -> None:
@@ -31,8 +53,11 @@ async def dispatch_outbox_loop(store, url: str, token: str, *, client_factory=No
     endpoint = url.rstrip("/") + "/api/internal/canonical-events"
     make_client = client_factory or (lambda: httpx.AsyncClient(timeout=5.0))
     rounds = 0
+    failures = 0          # 连续失败次数 → 退避与日志降噪共用
+    complained = False    # 本轮故障是否已响亮报过(避免每秒一条 exc_info)
     async with make_client() as client:
         while True:
+            delay = _IDLE_INTERVAL
             try:
                 events = await asyncio.to_thread(store.pending_outbox, 100)
                 if events:
@@ -46,26 +71,50 @@ async def dispatch_outbox_loop(store, url: str, token: str, *, client_factory=No
                             store.mark_outbox_delivered,
                             [str(event["event_id"]) for event in events if event.get("event_id")],
                         )
+                        if failures:
+                            log.info("canonical event delivery recovered after %d failure(s)",
+                                     failures)
+                        failures = 0
+                        complained = False
                     elif response.status_code == 429:
-                        log.debug("canonical event delivery throttled (429), retrying")
+                        delay = _retry_after(response, failures)
+                        log.debug("canonical event delivery throttled (429), retry in %.1fs", delay)
+                        failures += 1
                     elif response.status_code >= 500:
-                        log.warning("canonical event delivery returned HTTP %s, retrying",
-                                    response.status_code)
+                        failures += 1
+                        delay = _backoff(failures)
+                        if not complained:
+                            log.warning("canonical event delivery returned HTTP %s; "
+                                        "backing off (obs down?)", response.status_code)
+                            complained = True
+                        else:
+                            log.debug("canonical event delivery still HTTP %s",
+                                      response.status_code)
                     else:
                         # 4xx = obs 侧永久拒绝(鉴权/载荷):重试永不成功,直接死信
                         # 删行避免无界堆积,行数告警保留现场。
                         ids = [str(event["event_id"]) for event in events if event.get("event_id")]
                         await asyncio.to_thread(store.mark_outbox_delivered, ids)
-                        log.error("canonical event delivery returned HTTP %s, %d event(s) dead-lettered",
-                                  response.status_code, len(ids))
+                        log.error("canonical event delivery returned HTTP %s, "
+                                  "%d event(s) dead-lettered", response.status_code, len(ids))
+                        failures = 0
+                        complained = False
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.warning("canonical event delivery failed", exc_info=True)
+                failures += 1
+                delay = _backoff(failures)
+                # 首次响亮带栈(定位用),其后降为 debug —— 此前每秒一条 exc_info,
+                # obs 宕机一天能刷出 ~86k 条 traceback。
+                if not complained:
+                    log.warning("canonical event delivery failed; backing off", exc_info=True)
+                    complained = True
+                else:
+                    log.debug("canonical event delivery still failing", exc_info=True)
             rounds += 1
             if max_rounds is not None and rounds >= max_rounds:
                 return
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(delay)
 
 
 def start_dispatch_task(store, url: str, token: str, *, client_factory=None):

@@ -131,3 +131,45 @@ def test_expired_lease_heartbeat_rejected(tmp_path):
         "UPDATE jobs SET lease_expires_at = ?", (time.time() + 300.0,))
     assert store.heartbeat_assignment(
         assignment.attempt_id, "worker-1", assignment.lease_id, 300) is True
+
+
+# ── seed 幂等与配置漂移告警 ──
+
+def test_seed_does_not_apply_flag_changes_but_reports_drift(tmp_path, caplog):
+    """已存在任务的 flag 变更不会生效,但必须**响亮告警**而非静默沿用旧哈希。
+
+    flag 是评分密钥:改 JSON 明文后重启若静默沿用旧 SHA-256,平台会拒绝正确答案,
+    而运维看不到任何信号 —— 这是本项要消除的隐患。
+    """
+    import logging
+
+    store = _store(tmp_path)
+    service = ChallengeService(store, StubProvisioner(), max_active_challenges=3)
+    assert service.store.task_config_drift(
+        parse_task_config({"token": TASK_TOKEN, "challenges": []})[0]) != []
+
+    changed = parse_task_config({"token": TASK_TOKEN, "challenges": [
+        {"unique_code": "web-01", "description": "t", "flags": ["flag{CHANGED}"],
+         "container_addr": ["10.0.0.1:80"]},
+    ]})
+    with caplog.at_level(logging.ERROR, logger="ghost.control.service"):
+        service.seed(changed)
+    assert "flags changed" in caplog.text, "flag 变更未告警"
+
+    # 旧哈希仍在(刻意不自动改):原 flag 仍可提交成功
+    assert store.get_challenge(TASK_TOKEN, "web-01") is not None
+    result = service.submit(TASK_TOKEN, "web-01", "flag{t}")
+    assert result["correct"] is True
+    # 新 flag 不生效
+    assert service.submit(TASK_TOKEN, "web-01", "flag{CHANGED}")["correct"] is False
+
+
+def test_seed_of_unchanged_config_reports_no_drift(tmp_path):
+    """配置未变时不得刷告警。"""
+    store = _store(tmp_path)
+    service = ChallengeService(store, StubProvisioner(), max_active_challenges=3)
+    same = parse_task_config({"token": TASK_TOKEN, "challenges": [
+        {"unique_code": "web-01", "description": "t", "flags": ["flag{t}"],
+         "container_addr": ["10.0.0.1:80"]},
+    ]})
+    assert store.task_config_drift(same[0]) == []

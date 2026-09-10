@@ -277,3 +277,29 @@ def test_driver_streak_resets_on_success(monkeypatch):
     code = asyncio.run(runner())
     assert code == 0  # 任务结束正常退出,不是熔断的 3
     assert idx["n"] == 10  # 10 题全处理,没有中途熔断
+
+
+def test_nonzero_exit_with_only_stderr_is_provider_failure(tmp_path, monkeypatch):
+    """非零退出且只往 stderr 输出:必须留下 error,否则 0-turn 护栏失效。
+
+    这是 2026-09-08 那类静默烧题的另一种形态:pi 因坏模型名/缺凭据/参数错误
+    立刻非零退出,stdout 没有任何 JSON 事件 → turns==0 且 error=="" →
+    provider_failure 判否 → 该题被当成"正常未解"记入结果。
+    """
+    fake = tmp_path / "fakepi.sh"
+    # 只往 stderr 写,stdout 空,退出码 2
+    fake.write_text('#!/bin/sh\necho "model not found: prov/nope" >&2\nexit 2\n')
+    fake.chmod(0o755)
+    from ghost_worker.solver.pi_agent import PiAgentBackend
+    from ghost_worker.config import SolverConfig
+
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+    monkeypatch.setattr("shutil.which", lambda cmd: str(fake))
+    backend = PiAgentBackend(cmd=str(fake), model="prov/nope")
+    result = backend.solve("p", str(workdir), SolverConfig(model="prov/nope", session_seconds=30))
+
+    assert result.turns == 0
+    assert result.error, "非零退出未留下 error —— 0-turn 护栏失效"
+    assert "model not found" in result.error
+    assert result.provider_failure

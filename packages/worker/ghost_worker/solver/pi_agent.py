@@ -174,9 +174,10 @@ class PiAgentBackend(SolverBackend):
                 # (deque 经锁共享,join 侧不再裸迭代)
                 stderr_tail: deque[str] = deque(maxlen=20)
                 stderr_lock = threading.Lock()
-                threading.Thread(target=_drain_stderr_to,
-                                 args=(proc.stderr, stderr_tail, stderr_lock),
-                                 daemon=True, name="pi-stderr").start()
+                stderr_thread = threading.Thread(target=_drain_stderr_to,
+                                                 args=(proc.stderr, stderr_tail, stderr_lock),
+                                                 daemon=True, name="pi-stderr")
+                stderr_thread.start()
 
                 transcript_f = None
                 if transcript_path:
@@ -408,6 +409,9 @@ class PiAgentBackend(SolverBackend):
                         all_output_parts.append(text_buf)
 
                     proc.wait(timeout=30)
+                    # 排空线程是 daemon:进程退出 ≠ 缓冲已读完。稍等一下,否则
+                    # "非零退出"的诊断信息会退化成光秃秃的退出码(实测过)。
+                    stderr_thread.join(timeout=1.0)
                     with stderr_lock:
                         stderr_preview = list(stderr_tail)
                     # 我们自己发的 SIGTERM(-15)/SIGKILL(-9)(deadline/stall)不算异常退出:
@@ -415,9 +419,19 @@ class PiAgentBackend(SolverBackend):
                     # 误标成 error(rc=-15 且 pi 曾有常规 stderr 输出时必触发)。
                     # 外部击毙(OOM 等,非我们发的)不在此列:照常发 stderr 保留 crash 线索。
                     if proc.returncode and (proc.returncode not in (-9, -15)
-                                            or not stopped_by_us) and stderr_preview:
-                        _emit("system", {"phase": "stderr",
-                                         "detail": tail_text("\n".join(stderr_preview), 500)})
+                                            or not stopped_by_us):
+                        if stderr_preview:
+                            _emit("system", {"phase": "stderr",
+                                             "detail": tail_text("\n".join(stderr_preview), 500)})
+                        # 非零退出必须留下 error,否则 0-turn 护栏失效:
+                        # SolveResult.provider_failure = (turns==0 and error!=""),
+                        # 而 pi 因坏模型名/缺凭据/参数错误而"只往 stderr 输出后非零退出"
+                        # 时,error 仍为空 → 该题被静默记成普通未解,provider 故障被吞。
+                        # 这与 2026-09-08 那次 0-turn 静默烧题属同一类。
+                        if not result.error:
+                            detail = tail_text("\n".join(stderr_preview), 500) if stderr_preview \
+                                else f"pi exited with code {proc.returncode}"
+                            result.error = detail or f"pi exited with code {proc.returncode}"
 
                 finally:
                     if transcript_f:

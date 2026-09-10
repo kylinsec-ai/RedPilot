@@ -284,6 +284,45 @@ class Store:
                 )
         return cursor.rowcount == 1
 
+    def task_config_drift(self, task: TaskDefinition) -> list[str]:
+        """比对**已存在**任务的配置与传入定义,返回差异描述(供 seed 告警)。
+
+        只比"会影响判分或供给"的列:flags(评分密钥,哈希)、分值、hint、题目集合、
+        容器配置。**刻意不比** container_status/container_addr/container_id/hint_viewed
+        —— 那些是运行时状态,本来就不该由配置覆盖。
+        """
+        drift: list[str] = []
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT unique_code, total_score, flags_json, hint, hint_cost_radio,"
+                " image, container_port, docker_network"
+                " FROM challenges WHERE task_token = ?",
+                (task.token,),
+            ).fetchall()
+        stored = {row["unique_code"]: row for row in rows}
+        incoming = {c.unique_code: c for c in task.challenges}
+
+        for code in sorted(set(stored) - set(incoming)):
+            drift.append(f"challenge {code} removed from config")
+        for code in sorted(set(incoming) - set(stored)):
+            drift.append(f"challenge {code} added in config (not materialized)")
+        for code in sorted(set(stored) & set(incoming)):
+            row, definition = stored[code], incoming[code]
+            if row["flags_json"] != flags_json(definition.flags):
+                drift.append(f"challenge {code} flags changed")
+            if row["total_score"] != definition.total_score:
+                drift.append(f"challenge {code} total_score changed")
+            if (row["hint"] or "") != (definition.hint or ""):
+                drift.append(f"challenge {code} hint changed")
+            if row["hint_cost_radio"] != definition.hint_cost_radio:
+                drift.append(f"challenge {code} hint_cost_radio changed")
+            for column, value in (("image", definition.image),
+                                  ("container_port", definition.container_port),
+                                  ("docker_network", definition.docker_network)):
+                if (row[column] or "") != (value or ""):
+                    drift.append(f"challenge {code} {column} changed")
+        return drift
+
     def has_task(self, token: str) -> bool:
         with self._lock:
             row = self._connection.execute("SELECT 1 FROM tasks WHERE token = ?", (token,)).fetchone()
