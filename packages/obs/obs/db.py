@@ -100,7 +100,22 @@ _MIGRATION_2 = [
     # 无需再建 idx_events_run:UNIQUE(run_id, seq) 约束自带同键 autoindex(见 v1 注释)
 ]
 
-MIGRATIONS: list[list[str]] = [_MIGRATION_1, _MIGRATION_2]
+# ── v3: 将观测 run 与控制面 evaluation/job/attempt 关联 ──
+_MIGRATION_3 = [
+    "ALTER TABLE runs ADD COLUMN evaluation_id TEXT",
+    "ALTER TABLE runs ADD COLUMN job_id TEXT",
+    "ALTER TABLE runs ADD COLUMN attempt_id TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_runs_attempt ON runs(attempt_id)",
+    "CREATE INDEX IF NOT EXISTS idx_runs_evaluation ON runs(evaluation_id, started_at DESC)",
+]
+
+# ── v4: canonical 终态标记 ──
+# 权威事件(attempt.completed)写入时置 1;relay run_close 不能覆盖已存在的 canonical 终态。
+_MIGRATION_4 = [
+    "ALTER TABLE runs ADD COLUMN canonical INTEGER NOT NULL DEFAULT 0",
+]
+
+MIGRATIONS: list[list[str]] = [_MIGRATION_1, _MIGRATION_2, _MIGRATION_3, _MIGRATION_4]
 
 
 def connect(db_path: str | os.PathLike) -> sqlite3.Connection:

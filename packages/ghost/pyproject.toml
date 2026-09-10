@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghost"
+version = "0.1.0"
+description = "Ghost security benchmark platform: control plane + observability"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "python-dotenv",
+    "httpx",
+    "ghost-contracts"
+]
+
+[tool.setuptools.packages.find]
+include = ["ghost*"]

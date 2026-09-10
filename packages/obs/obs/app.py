@@ -18,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from . import __version__
 from .bus import LiveBus
 from .config import Settings
+from .control_proxy import router as control_proxy_router
 from .ingest import router as ingest_router
 from .read import router as read_router
 from .store import ObsStore
@@ -46,8 +47,14 @@ async def _housekeep(store: ObsStore, settings: Settings) -> None:
 
 
 def create_app(db_path: str | None = None, web_dir: str | None = None,
-               obs_token: str | None = None) -> FastAPI:
-    """装配 App;三个参数仅为测试/宿主直跑注入,生产全走 Settings.from_env()。"""
+               obs_token: str | None = None,
+               control_url: str | None = None,
+               enable_control_proxy: bool | None = None) -> FastAPI:
+    """装配 App;参数仅为测试/宿主直跑注入,生产全走 Settings.from_env()。
+
+    control proxy 默认不挂载:只有 control_url 非空且 enable_control_proxy
+    未显式关闭时才挂载(读端观测 API 不受开关影响)。
+    """
     settings = Settings.from_env()
     if db_path is not None:
         settings.db_path = db_path
@@ -55,6 +62,13 @@ def create_app(db_path: str | None = None, web_dir: str | None = None,
         settings.web_dir = web_dir
     if obs_token is not None:
         settings.obs_token = obs_token
+    if control_url is not None:
+        settings.control_url = control_url
+    if enable_control_proxy is not None:
+        settings.control_proxy_enabled = bool(enable_control_proxy)
+    # 显式 URL 注入(测试)且未显式指定开关时,跟随生产规则:有 URL 即开。
+    if control_url is not None and enable_control_proxy is None:
+        settings.control_proxy_enabled = bool(settings.control_url)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -62,6 +76,7 @@ def create_app(db_path: str | None = None, web_dir: str | None = None,
         app.state.store = store
         app.state.obs_token = settings.obs_token
         app.state.web_dir = settings.web_dir
+        app.state.control_url = settings.control_url
         app.state.bus = LiveBus()
         house = asyncio.create_task(_housekeep(store, settings))
         try:
@@ -72,9 +87,14 @@ def create_app(db_path: str | None = None, web_dir: str | None = None,
                 await house
             store.close()
 
-    app = FastAPI(title="TSecBench 观测平台", version=__version__, lifespan=lifespan)
+    app = FastAPI(title="Ghost 观测平台", version=__version__, lifespan=lifespan)
     app.include_router(ingest_router)
     app.include_router(read_router)
+    if settings.control_proxy_enabled and settings.control_url:
+        app.include_router(control_proxy_router)
+    else:
+        log.info("control proxy disabled (control_url=%s enabled=%s)",
+                 bool(settings.control_url), settings.control_proxy_enabled)
     return app
 
 

@@ -1,6 +1,6 @@
-"""ASGI entry point for the TSecBench platform."""
+"""ASGI entry point for the Ghost platform."""
 
-from tsecbench.api import create_app
+from ghost.app import create_app
 
 app = create_app()
 
@@ -8,7 +8,7 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    from tsecbench.config import Settings
+    from ghost.control.config import Settings
 
     settings = Settings.from_env()
     uvicorn.run(app, host=settings.host, port=settings.port)

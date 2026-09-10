@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 
-from tsecbench_contracts import digest as D
+from ghost_contracts import digest as D
 
 # ── 合成 pi 事件构造器(语义与 obs/tests/conftest 一致) ──
 
@@ -209,3 +209,11 @@ def test_foldstate_incremental_parity():
     assert st.next_seq == full["next_seq"]
     assert st.sessions == full["meta"]["sessions"]
     assert st.agent_ends == full["meta"]["agent_ends"]
+
+
+def test_iso_to_ms_handles_z_and_garbage():
+    """Z/z 后缀与垃圾输入的边界:大小写均解析,非法回 None(不抛)。"""
+    assert D.iso_to_ms("2026-09-04T11:52:03.942Z") == D.iso_to_ms("2026-09-04T11:52:03.942+00:00")
+    assert D.iso_to_ms("2026-09-04T11:52:03.942z") == D.iso_to_ms("2026-09-04T11:52:03.942+00:00")
+    assert D.iso_to_ms("not-a-timestamp") is None
+    assert D.iso_to_ms("") is None

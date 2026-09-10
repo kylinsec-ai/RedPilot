@@ -1,5 +1,5 @@
 # ══════════════════════════════════════════════════════════════
-# TSecBench 本地观测平台 Dockerfile — python slim 最小面
+# Ghost 本地观测平台 Dockerfile — python slim 最小面
 # 零渗透工具/VPN/Node/SDK/key/work 挂载,只持 OBSERVABILITY_TOKEN
 # ══════════════════════════════════════════════════════════════
 

@@ -8,11 +8,11 @@ import re
 import sys
 from pathlib import Path
 
-from tsecbench_contracts.paths import HEARTBEAT_PATH
-from tsecbench_contracts.vocabulary import (ACTIVE_PHASES, FLUSH_KINDS, PHASES,
+from ghost_contracts.paths import HEARTBEAT_PATH
+from ghost_contracts.vocabulary import (ACTIVE_PHASES, FLUSH_KINDS, PHASES,
                                             strip_for_snapshot, strip_out_of_band)
 
-_CONTRACTS_DIR = Path(__file__).resolve().parent.parent / "tsecbench_contracts"
+_CONTRACTS_DIR = Path(__file__).resolve().parent.parent / "ghost_contracts"
 
 _ALLOWED_STDLIB = set(sys.stdlib_module_names)
 
@@ -35,7 +35,7 @@ def test_contracts_is_stdlib_only():
     for py in _CONTRACTS_DIR.rglob("*.py"):
         for mod in _iter_imports(py):
             root = mod.split(".")[0]
-            assert root in _ALLOWED_STDLIB or root == "tsecbench_contracts", \
+            assert root in _ALLOWED_STDLIB or root == "ghost_contracts", \
                 f"{py.name}: non-stdlib import {mod!r}"
 
 
@@ -70,14 +70,14 @@ def test_strip_for_snapshot_drops_envelope_and_oob():
 
 
 def test_snapshot_keys_are_snake_case_unique():
-    from tsecbench_contracts.snapshot import LIVE_SNAPSHOT_KEYS
+    from ghost_contracts.snapshot import LIVE_SNAPSHOT_KEYS
     assert len(LIVE_SNAPSHOT_KEYS) == 18
     assert len(set(LIVE_SNAPSHOT_KEYS)) == 18
     assert all(re.fullmatch(r"[a-z_][a-z0-9_]*", k) for k in LIVE_SNAPSHOT_KEYS)
 
 
 def test_safe_code_matches_local_scan_rule():
-    from tsecbench_contracts.paths import safe_code
+    from ghost_contracts.paths import safe_code
     # 可逆(纯 sanitize)名:原样返回
     assert safe_code("a-05") == "a-05"
     # 含非法字符:hash 后缀映射名(无法反解 -> scan_local 按目录名兜底)

@@ -2,7 +2,7 @@
 
 背景:participant 任务 token 原先即可改写/重启平台全局 openvpn(以 root 运行),
 配合 script-security/up 等指令即 root RCE(见安全审查 Vuln 1)。修复 =
-TSECBENCH_ADMIN_TOKEN 独立管理凭据(fail closed)+ 危险指令拒收 + argv 钉死
+GHOST_ADMIN_TOKEN 独立管理凭据(fail closed)+ 危险指令拒收 + argv 钉死
 --script-security 1。
 """
 
@@ -11,8 +11,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from tsecbench.api import create_app
-from tsecbench.config import Settings
+from ghost.api import create_app
+from ghost.config import Settings
 
 TASK_TOKEN = "task-tok"
 ADMIN_TOKEN = "adm-tok"
@@ -67,7 +67,7 @@ def test_vpn_endpoints_fail_closed_when_admin_token_unset(tmp_path):
 
 def test_vpn_status_ok_with_admin_token(client: TestClient):
     r = client.get("/openapi/v1/vpn/status",
-                   headers={"TSECBENCH_ADMIN_TOKEN": ADMIN_TOKEN})
+                   headers={"GHOST_ADMIN_TOKEN": ADMIN_TOKEN})
     assert r.status_code == 200
     assert r.json()["configured"] is False
 
@@ -75,7 +75,7 @@ def test_vpn_status_ok_with_admin_token(client: TestClient):
 def test_vpn_config_accepts_benign_and_rejects_dangerous(tmp_path):
     db = tmp_path / "db.sqlite3"
     with TestClient(_app(tmp_path)) as c:
-        h = {"TSECBENCH_ADMIN_TOKEN": ADMIN_TOKEN}
+        h = {"GHOST_ADMIN_TOKEN": ADMIN_TOKEN}
 
         ok = c.post("/openapi/v1/vpn/config", json={"content": BENIGN_CONFIG}, headers=h)
         assert ok.status_code == 200
@@ -96,16 +96,47 @@ def test_vpn_config_accepts_benign_and_rejects_dangerous(tmp_path):
             "status /etc/pwned.log\n",
             "writepid /etc/pwned.pid\n",
             "chroot /tmp\nuser nobody\n",
+            # openvpn 剥行首双横线:-- 前缀写法必须与裸指令同判 400
+            "--up /bin/sh -c 'id'\n",
+            "--script-security 3\n",
+            "--status /etc/pwned.log\n",
+            "--config /tmp/evil.ovpn\n",
+            "--writepid /etc/pwned.pid\n",
+            # 控制通道/环境变量/代理/外部凭据:以 root 身份生效,同样 400
+            "management 127.0.0.1 7505\n",
+            "management-hold\n",
+            "--management /tmp/mgmt.sock unix\n",
+            "setenv FOO bar\n",
+            "setenv-safe FOO bar\n",
+            "http-proxy 10.0.0.1 8080\n",
+            "socks-proxy 10.0.0.1 1080\n",
+            "auth-user-pass /etc/shadow\n",
+            # BOM 头 + 禁指令:首行 FEFF 不得绕过关键字比对
+            "﻿up /bin/sh -c 'id'\n",
         ):
             r = c.post("/openapi/v1/vpn/config", json={"content": evil}, headers=h)
             assert r.status_code == 400, f"expected 400 for {evil!r}"
             assert r.json()["code"] == "invalid_vpn_config"
         assert (tmp_path / "vpn" / "client.ovpn").read_text(encoding="utf-8") == BENIGN_CONFIG
 
+def test_vpn_config_allows_routing_and_locks_file_mode(tmp_path):
+    """route/redirect-gateway/dhcp-option 是合法路由语义,不得误杀;落盘 0600。"""
+    import os
+
+    with TestClient(_app(tmp_path)) as c:
+        h = {"GHOST_ADMIN_TOKEN": ADMIN_TOKEN}
+        ok = c.post("/openapi/v1/vpn/config", json={"content": BENIGN_CONFIG}, headers=h)
+        assert ok.status_code == 200
+        routed = BENIGN_CONFIG + "route 10.0.0.0 255.0.0.0\nredirect-gateway def1\ndhcp-option DNS 8.8.8.8\n"
+        ok = c.post("/openapi/v1/vpn/config", json={"content": routed}, headers=h)
+        assert ok.status_code == 200, ok.json()
+        mode = os.stat(tmp_path / "vpn" / "client.ovpn").st_mode & 0o777
+        assert mode == 0o600
+
 
 def test_vpn_config_rejects_empty(tmp_path):
     with TestClient(_app(tmp_path)) as c:
-        h = {"TSECBENCH_ADMIN_TOKEN": ADMIN_TOKEN}
+        h = {"GHOST_ADMIN_TOKEN": ADMIN_TOKEN}
         assert c.post("/openapi/v1/vpn/config", json={"content": "  "},
                       headers=h).status_code == 400
         assert c.post("/openapi/v1/vpn/config", json={"content": "script-security 3"},

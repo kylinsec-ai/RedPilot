@@ -5,7 +5,7 @@ stopReason=error 的收尾消息,pi_agent 漏读 → err=none → 编排层当�
 本文件覆盖:pi_agent 读出 stopReason=error(SolveResult.provider_failure)、
 solve_one 会话级重试与 ProviderFailure 上抛、driver 连续熔断 exit 3。
 
-pytest 由仓库根起(packages/worker 在 pythonpath,tsecbench_worker 可导入)。
+pytest 由仓库根起(packages/worker 在 pythonpath,ghost_worker 可导入)。
 """
 
 from __future__ import annotations
@@ -14,13 +14,13 @@ import json
 
 import pytest
 
-from tsecbench_worker.orchestration import (
+from ghost_worker.orchestration import (
     PROVIDER_FAILURE_RETRIES,
     ProviderFailure,
     LiveReporter,
     solve_one,
 )
-from tsecbench_worker.solver.base import SolveResult
+from ghost_worker.solver.base import SolveResult
 
 
 # ── SolveResult.provider_failure 判定 ──
@@ -57,8 +57,8 @@ def test_pi_agent_surfaces_stop_reason_error(tmp_path, monkeypatch):
     fake = tmp_path / "fakepi.sh"
     fake.write_text(f'#!/bin/sh\necho {_json_quote(_AGENT_END_ERROR_EVENT)}\n')
     fake.chmod(0o755)
-    from tsecbench_worker.solver.pi_agent import PiAgentBackend
-    from tsecbench_worker.config import SolverConfig
+    from ghost_worker.solver.pi_agent import PiAgentBackend
+    from ghost_worker.config import SolverConfig
 
     workdir = tmp_path / "wd"
     workdir.mkdir()
@@ -130,7 +130,7 @@ def test_solve_one_retries_then_raises_provider_failure(monkeypatch):
     import asyncio
 
     async def run():
-        monkeypatch.setattr("tsecbench_worker.orchestration._async_sleep", _async_sleep_noop)
+        monkeypatch.setattr("ghost_worker.orchestration._async_sleep", _async_sleep_noop)
         solver = _FlakySolver(failures=PROVIDER_FAILURE_RETRIES + 1)
         cfg = type("C", (), {"model": "prov/model", "session_seconds": 5})()
         with pytest.raises(ProviderFailure):
@@ -147,7 +147,7 @@ def test_solve_one_recovers_when_provider_recovers(monkeypatch):
     import asyncio
 
     async def run():
-        monkeypatch.setattr("tsecbench_worker.orchestration._async_sleep", _async_sleep_noop)
+        monkeypatch.setattr("ghost_worker.orchestration._async_sleep", _async_sleep_noop)
         solver = _FlakySolver(failures=2)
         cfg = type("C", (), {"model": "prov/model", "session_seconds": 5})()
         solved, accepted = await solve_one(_StubClient(), _Ch(), cfg=cfg,
@@ -171,7 +171,7 @@ def test_driver_exits_3_on_consecutive_provider_failures(monkeypatch):
     """连败 3 题必须 exit 3,绝不静默烧完 roster(第 4/5 题不被触碰)"""
     import asyncio
 
-    import tsecbench_worker.driver as driver
+    import ghost_worker.driver as driver
 
     calls = {"n": 0}
 
@@ -189,7 +189,7 @@ def test_driver_exits_3_on_consecutive_provider_failures(monkeypatch):
         async def __aexit__(self, *a):
             return False
 
-    monkeypatch.setattr(driver, "TSecBenchmarkAsync", lambda **kw: _StubClient2())
+    monkeypatch.setattr(driver, "GhostmarkAsync", lambda **kw: _StubClient2())
     monkeypatch.setattr(driver, "solve_one", fake_solve_one)
     monkeypatch.setattr(driver, "_reporter_set", lambda **kw: None)
 
@@ -216,7 +216,7 @@ def test_driver_streak_resets_on_success(monkeypatch):
     """败→成→败→成→败 相间出现:永不熔断,5 题全处理完正常收尾"""
     import asyncio
 
-    import tsecbench_worker.driver as driver
+    import ghost_worker.driver as driver
 
     # 交替出现:streak 每次被成功清零,最多到 1
     outcomes: list = [ProviderFailure("x-01: 0 turns"), (False, []),
@@ -252,7 +252,7 @@ def test_driver_streak_resets_on_success(monkeypatch):
             return False
 
     stub = _StubClient2()
-    monkeypatch.setattr(driver, "TSecBenchmarkAsync", lambda **kw: stub)
+    monkeypatch.setattr(driver, "GhostmarkAsync", lambda **kw: stub)
     monkeypatch.setattr(driver, "solve_one", fake_solve_one)
     monkeypatch.setattr(driver, "_reporter_set", lambda **kw: None)
 
@@ -265,7 +265,7 @@ def test_driver_streak_resets_on_success(monkeypatch):
         return None
 
     monkeypatch.setattr(driver.asyncio, "sleep", fake_sleep)
-    monkeypatch.setattr("tsecbench_worker.orchestration._async_sleep", _async_sleep_noop)
+    monkeypatch.setattr("ghost_worker.orchestration._async_sleep", _async_sleep_noop)
 
     async def runner():
         try:

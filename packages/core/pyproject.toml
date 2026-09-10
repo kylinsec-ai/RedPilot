@@ -3,11 +3,11 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tsecbench-core"
+name = "ghost-core"
 version = "0.1.0"
-description = "TSecBench core benchmark platform: challenges lifecycle REST API"
+description = "Ghost core benchmark platform: challenges lifecycle REST API"
 requires-python = ">=3.10"
-dependencies = ["fastapi", "uvicorn", "pydantic", "python-dotenv"]
+dependencies = ["fastapi", "uvicorn", "pydantic", "python-dotenv", "httpx", "ghost-contracts"]
 
 [tool.setuptools.packages.find]
-include = ["tsecbench*"]
+include = ["ghost*"]

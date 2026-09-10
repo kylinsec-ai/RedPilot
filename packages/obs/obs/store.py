@@ -23,11 +23,13 @@ from .schema import ACTIVE_PHASES, CLOSABLE_STATUSES
 # event_count 用单次聚合 LEFT JOIN 而非每行相关子查询(limit≤500 时少 500 次索引扫)。
 _RUN_FIELDS = (
     "r.run_id, r.worker_id, r.challenge_code, r.model, r.status,"
+    " r.evaluation_id, r.job_id, r.attempt_id,"
     " r.started_at, r.ended_at,"
     " CASE WHEN r.ended_at IS NOT NULL THEN MAX(0.0, r.ended_at - r.started_at) END"
     "   AS duration_s,"
     " r.error, r.turns, r.sessions, r.flags_found, r.flags_accepted, r.updated_at,"
-    " COALESCE(ev.event_count, 0) AS event_count"
+    " COALESCE(ev.event_count, 0) AS event_count,"
+    " r.canonical"
 )
 _RUN_FROM = (
     "FROM runs r LEFT JOIN"
@@ -88,24 +90,67 @@ class ObsStore:
 
     def append_events(self, run_id: str, worker_id: str, challenge_code: str,
                       rows: list[tuple[int, str, str]], model: str = "",
-                      started_at: float | None = None) -> tuple[int, bool]:
+                      started_at: float | None = None,
+                      evaluation_id: str | None = None,
+                      job_id: str | None = None,
+                      attempt_id: str | None = None) -> tuple[int, bool]:
         """run 行不存在则建(running),随后幂等批插事件 —— 单事务。
 
         rows 为 (seq, type, payload);UNIQUE(run_id, seq) + INSERT OR IGNORE
         保证整批重放新增=0。返回 (实际新增行数, 是否新建 run)。
+
+        attempt 归一:attempt_id 非空时先按 attempt_id 找已有关联行(同一
+        attempt 只留一行);命中则复用其 run_id 落事件,不再按传入 run_id
+        另起一行 —— canonical started/completed 与 relay telemetry
+        (run_id != attempt_id) 因此收敛到同一 run。排序把 canonical 行置顶,
+        已分裂的旧库收敛到权威行。复用时仅回填 evaluation/job(权威补全)+
+        占位值回填(unknown/空 worker/model → 真实值);绝不用 unknown 覆盖
+        真实值、不碰 status(后补 started 不洗终态)。
         """
         started_at = started_at if started_at is not None else time.time()
         with self._tx():
+            target = run_id
+            if attempt_id:
+                existing = self._conn.execute(
+                    "SELECT run_id, worker_id, challenge_code, model FROM runs"
+                    " WHERE attempt_id=?"
+                    " ORDER BY canonical DESC, started_at DESC, rowid DESC LIMIT 1",
+                    (attempt_id,)).fetchone()
+                if existing is not None:
+                    target = existing["run_id"]
+                    # 权威补全:只填 evaluation/job(传入非空才写),不动其他列
+                    for column, value in (("evaluation_id", evaluation_id),
+                                          ("job_id", job_id)):
+                        if value is not None:
+                            self._conn.execute(
+                                f"UPDATE runs SET {column}=? WHERE run_id=?",
+                                (value, target))
+                    # 占位回填:completed 先建的 unknown/空行被后补 started 纠正;
+                    # 反向(unknown 覆盖真实值)禁止。
+                    if (existing["challenge_code"] in ("", "unknown")
+                            and challenge_code not in ("", "unknown")):
+                        self._conn.execute(
+                            "UPDATE runs SET challenge_code=? WHERE run_id=?",
+                            (challenge_code, target))
+                    if not existing["worker_id"] and worker_id:
+                        self._conn.execute(
+                            "UPDATE runs SET worker_id=? WHERE run_id=?",
+                            (worker_id, target))
+                    if not existing["model"] and model:
+                        self._conn.execute(
+                            "UPDATE runs SET model=? WHERE run_id=?", (model, target))
             cur = self._conn.execute(
                 "INSERT OR IGNORE INTO runs(run_id, worker_id, challenge_code, model,"
-                " status, started_at, updated_at) VALUES(?,?,?,?, 'running',?,?)",
-                (run_id, worker_id, challenge_code, model, started_at, started_at))
+                " evaluation_id, job_id, attempt_id, status, started_at, updated_at)"
+                " VALUES(?,?,?,?,?,?,?, 'running',?,?)",
+                (target, worker_id, challenge_code, model, evaluation_id, job_id,
+                 attempt_id, started_at, started_at))
             created = cur.rowcount > 0
             before = self._conn.total_changes
             self._conn.executemany(
                 "INSERT OR IGNORE INTO events(run_id, seq, type, payload)"
                 " VALUES(?,?,?,?)",
-                [(run_id, seq, typ, payload) for seq, typ, payload in rows])
+                [(target, seq, typ, payload) for seq, typ, payload in rows])
             # 计数必须在锁内读取:锁外读 total_changes 会把并发线程刚提交的
             # 批计入本批(共享同一连接,total_changes 是连接级累计值)
             inserted = self._conn.total_changes - before
@@ -114,14 +159,80 @@ class ObsStore:
     def close_run(self, run_id: str, *, status: str, error: str | None = None,
                   turns: int | None = None, sessions: int | None = None,
                   flags_found: int | None = None, flags_accepted: list[str] | None = None,
-                  ended_at: float | None = None) -> bool:
-        """关闭 run;仅 running/interrupted 可写,终态幂等忽略。turns/sessions 缺省按 events 计数回填。"""
+                  ended_at: float | None = None,
+                  evaluation_id: str | None = None,
+                  job_id: str | None = None,
+                  attempt_id: str | None = None,
+                  canonical: bool = False,
+                  worker_id: str = "",
+                  challenge_code: str = "unknown",
+                  model: str = "") -> bool:
+        """关闭 run。
+
+        - relay(source=canonical=False): 仅 running/interrupted 可写;
+          若已有 canonical 终态,不能覆盖(含 run_id 不同但 attempt_id 相同的
+          跨行情形 —— 同一 attempt 任一行 canonical=1 即全局拒写)。
+        - canonical(source=canonical=True): 始终可写(覆盖 relay 终态);
+          重复投递幂等。run_id 未命中时按 attempt_id 回落关联;两侧均未命中
+          时新建占位终态行(乱序 completed 先到不丢失,started 后补复用该行)。
+        turns/sessions 缺省按 events 计数回填。
+        """
         ended_at = ended_at if ended_at is not None else time.time()
         with self._tx():
+            # 先按 run_id 查;未命中且 attempt_id 不一致时按 attempt_id 回落
+            # (canonical 置顶:已分裂旧库优先命中权威行,新写收敛)
             row = self._conn.execute(
-                "SELECT status FROM runs WHERE run_id=?", (run_id,)).fetchone()
-            if row is None or row["status"] not in CLOSABLE_STATUSES:
-                return False
+                "SELECT run_id, status, canonical, attempt_id FROM runs WHERE run_id=?",
+                (run_id,)).fetchone()
+            if row is None and attempt_id:
+                row = self._conn.execute(
+                    "SELECT run_id, status, canonical, attempt_id FROM runs"
+                    " WHERE attempt_id=?"
+                    " ORDER BY canonical DESC, started_at DESC, rowid DESC LIMIT 1",
+                    (attempt_id,)).fetchone()
+                if row is not None:
+                    run_id = row["run_id"]
+            if row is None:
+                if not canonical:
+                    return False
+                # 乱序 completed 无行可关:建占位终态行保留权威终态。
+                # worker/code 无处可取时用缺省(ingest 透传 worker,code 置 unknown
+                # 与 started 缺码回落一致);started_at 取 ended_at 保持 duration>=0。
+                self._conn.execute(
+                    "INSERT INTO runs(run_id, worker_id, challenge_code, model,"
+                    " evaluation_id, job_id, attempt_id, status,"
+                    " started_at, ended_at, turns, sessions,"
+                    " error, flags_found, flags_accepted, updated_at, canonical)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,1)",
+                    (run_id, worker_id, challenge_code, model,
+                     evaluation_id, job_id, attempt_id, status,
+                     ended_at, ended_at,
+                     turns if turns is not None else 0,
+                     sessions if sessions is not None else 0,
+                     error, flags_found,
+                     json.dumps(flags_accepted, ensure_ascii=False)
+                     if flags_accepted is not None else None,
+                     ended_at))
+                return True
+
+            if canonical:
+                pass  # 权威终态始终允许写入(幂等)
+            else:
+                if row["canonical"]:
+                    return False  # relay 不能覆盖 canonical 终态
+                if row["status"] not in CLOSABLE_STATUSES:
+                    return False
+                # 跨行守卫:同一 attempt 任一行已 canonical,relay 一律拒写。
+                # 覆盖 run_id 与 attempt_id 不一致、relay 未带 attempt_id
+                # (取行上 attempt_id)等情形;防分裂库的 relay 行被另行关闭。
+                effective_attempt = attempt_id or row["attempt_id"]
+                if effective_attempt:
+                    guard = self._conn.execute(
+                        "SELECT 1 FROM runs WHERE attempt_id=? AND canonical=1 LIMIT 1",
+                        (effective_attempt,)).fetchone()
+                    if guard is not None:
+                        return False
+
             sets = ["status=?", "ended_at=?",
                     "turns=COALESCE(?, (SELECT COUNT(*) FROM events e"
                     " WHERE e.run_id=runs.run_id AND e.type='tool_execution_start'))",
@@ -138,6 +249,13 @@ class ObsStore:
             if flags_accepted is not None:
                 sets.append("flags_accepted=?")
                 params.append(json.dumps(flags_accepted, ensure_ascii=False))
+            for column, value in (("evaluation_id", evaluation_id),
+                                  ("job_id", job_id), ("attempt_id", attempt_id)):
+                if value is not None:
+                    sets.append(f"{column}=?")
+                    params.append(value)
+            if canonical:
+                sets.append("canonical=1")
             params.append(run_id)
             cur = self._conn.execute(
                 f"UPDATE runs SET {', '.join(sets)} WHERE run_id=?", params)
@@ -363,6 +481,7 @@ class ObsStore:
         out = [dict(r) for r in rows]
         for row in out:
             row["flags_accepted"] = _decode_flags(row["flags_accepted"])
+            row["canonical"] = bool(row["canonical"])
         return out
 
     def challenge_flags(self, code: str) -> list[str]:
@@ -389,6 +508,7 @@ class ObsStore:
             return None
         out = dict(row)
         out["flags_accepted"] = _decode_flags(out["flags_accepted"])
+        out["canonical"] = bool(out["canonical"])
         return out
 
     def run_events(self, run_id: str, after: int = 0, limit: int = 500) -> dict[str, Any]:

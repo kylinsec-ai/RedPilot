@@ -1,9 +1,9 @@
 # ══════════════════════════════════════════════════════════════
-# TsecBench 平台接入层适配器 Dockerfile
-# 基于已构建的 TsecBench Kali 镜像，叠加 Pi Agent + 适配器代码
+# Ghost 平台接入层适配器 Dockerfile
+# 基于已构建的 Ghost Kali 镜像，叠加 Pi Agent + 适配器代码
 # ══════════════════════════════════════════════════════════════
 
-FROM tsecbench/kali:latest
+FROM ghost/kali:latest
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \

@@ -34,9 +34,10 @@ export const NAV: NavGroup[] = [
   {
     key: "g-main",
     label: "",
-    entries: [
-      { kind: "link", key: "overview", label: "总览", to: "#/", isActive: (view) => view === "overview" },
-    ],
+      entries: [
+        { kind: "link", key: "overview", label: "总览", to: "#/", isActive: (view) => view === "overview" },
+        { kind: "link", key: "control", label: "控制面", to: "#/control", isActive: (view) => view === "control" },
+      ],
   },
   {
     key: "g-chal",

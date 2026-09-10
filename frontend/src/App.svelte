@@ -3,6 +3,7 @@
   import Sidebar from "./components/Sidebar.svelte";
   import Overview from "./views/Overview.svelte";
   import Challenge from "./views/Challenge.svelte";
+  import Control from "./views/Control.svelte";
   import Runs from "./views/Runs.svelte";
   import Run from "./views/Run.svelte";
   import { route } from "./lib/route.svelte";
@@ -186,6 +187,8 @@
           <span class="truncate font-mono text-[13px] font-semibold text-ink"
             >run {route.runId.slice(0, 8)}…</span
           >
+        {:else if route.view === "control"}
+          <span class="truncate text-[13px] font-semibold text-ink">控制面</span>
         {/if}
         <span class="flex-1"></span>
         <span
@@ -209,6 +212,8 @@
               <Challenge code={c} />
             {/key}
           {/if}
+        {:else if route.view === "control"}
+          <Control />
         {:else if route.view === "runs"}
           <Runs />
         {:else if route.view === "run" && route.runId}

@@ -3,24 +3,24 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tsecbench-worker"
+name = "ghost-worker"
 version = "0.1.0"
-description = "TsecBench worker: Pi-agent solver, orchestration, platform SDK loop, obs relay, local dashboard"
+description = "Ghost worker: Pi-agent solver, assignment/SDK orchestration, obs relay, local dashboard"
 requires-python = ">=3.10"
 # deps: 官方 SDK(平台接入)+ httpx(观测中继)+ contracts + obs 基线(纯 stdlib localserver)。
 # fastapi/pydantic 不再进 Kali 镜像(镜像瘦身为既定决策)。
 dependencies = [
     "tsec-benchmark",
     "httpx",
-    "tsecbench-contracts",
-    "tsecbench-obs",
+    "ghost-contracts",
+    "ghost",
 ]
 
 [project.optional-dependencies]
 dev = ["pyflakes"]
 
 [project.scripts]
-tsecbench-worker = "tsecbench_worker.queue:main"
+ghost-worker = "ghost_worker.driver:main"
 
 [tool.setuptools.packages.find]
-include = ["tsecbench_worker*"]
+include = ["ghost_worker*"]

@@ -1,0 +1,20 @@
+# ══════════════════════════════════════════════════════════════
+# Ghost 控制面镜像 — 任务、调度、租约与判分
+# 不安装 VPN/渗透工具/Node/LLM 凭据。
+# ══════════════════════════════════════════════════════════════
+
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    LANG=C.UTF-8 \
+    GHOST_DB_PATH=/app/data/ghost.sqlite3
+
+WORKDIR /app
+
+COPY packages/contracts /opt/packages/contracts
+COPY packages/core /opt/packages/core
+RUN pip install --no-cache-dir /opt/packages/contracts /opt/packages/core
+
+EXPOSE 8000
+CMD ["sh", "-c", "exec uvicorn --factory ghost.api:create_app --host ${HOST:-0.0.0.0} --port ${PORT:-8000}"]

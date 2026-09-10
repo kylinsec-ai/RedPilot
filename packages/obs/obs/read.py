@@ -18,16 +18,16 @@ from fastapi.responses import Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from .schema import RUN_STATUSES, require_run_id
-from tsecbench_contracts.assets import ASSET_RX as _ASSET_RX
-from tsecbench_contracts.assets import ASSET_TYPES as _ASSET_TYPES
-from tsecbench_contracts.digest import fold_rows
+from ghost_contracts.assets import ASSET_RX as _ASSET_RX
+from ghost_contracts.assets import ASSET_TYPES as _ASSET_TYPES
+from ghost_contracts.digest import fold_rows
 
 log = logging.getLogger("obs.read")
 
 router = APIRouter(tags=["read"])
 
 # ── 前端构建产物(vite 多文件 dist → web/assets/*)──
-# mime 表与穿越守卫单源于 tsecbench_contracts.assets(与 worker 侧仪表板共用);
+# mime 表与穿越守卫单源于 ghost_contracts.assets(与 worker 侧仪表板共用);
 # 本服务的缓存策略(index/assets 头)是自身关切,不归 contracts。
 _VALID_RX = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -38,6 +38,10 @@ def _store(request: Request):
 
 def _web_dir(request: Request) -> str | None:
     return getattr(request.app.state, "web_dir", None)
+
+
+# NOTE:控制面反向代理已移至 obs.control_proxy(可选插件,默认不挂载);
+# 本模块只保留纯读端(观测 API),不再转发 /api/v1/*。
 
 
 def _no_store(body: bytes, media_type: str) -> Response:
