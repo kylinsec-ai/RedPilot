@@ -303,3 +303,52 @@ def test_nonzero_exit_with_only_stderr_is_provider_failure(tmp_path, monkeypatch
     assert result.error, "非零退出未留下 error —— 0-turn 护栏失效"
     assert "model not found" in result.error
     assert result.provider_failure
+
+
+# ── lease 丢失时必须真杀 pi 进程 ──
+
+def test_kill_solver_processes_terminates_group(tmp_path):
+    """取消 asyncio 任务杀不掉 to_thread 里的子进程 —— 登记表是唯一能杀它的路径。
+
+    不杀:pi 继续烧 LLM 时长、继续写同一 workdir,而 job 已回 pending 可能被再次
+    领取 → 同一 workdir 两个并发会话互相踩。
+    """
+    import subprocess, sys, time
+    from ghost_worker.solver.pi_agent import _LIVE_SOLVERS, kill_solver_processes
+
+    workdir = str(tmp_path / "wd")
+    (tmp_path / "wd").mkdir()
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"],
+                            start_new_session=True)
+    _LIVE_SOLVERS[workdir] = proc
+    try:
+        assert kill_solver_processes(workdir, grace=5.0) is True
+        assert proc.poll() is not None, "进程未被杀掉"
+        assert workdir not in _LIVE_SOLVERS, "登记未清理"
+        # 幂等:再杀一次安全返回 False
+        assert kill_solver_processes(workdir) is False
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+def test_kill_solver_processes_unknown_workdir_is_noop(tmp_path):
+    from ghost_worker.solver.pi_agent import kill_solver_processes
+
+    assert kill_solver_processes(str(tmp_path / "never")) is False
+
+
+def test_unregister_only_removes_own_entry(tmp_path):
+    """新会话登记后,旧会话的收尾不得误删它(否则取消时杀不到进程)。"""
+    from ghost_worker.solver.pi_agent import _LIVE_SOLVERS, _unregister_solver
+
+    workdir = str(tmp_path / "wd")
+    old, new = object(), object()
+    _LIVE_SOLVERS[workdir] = new
+    try:
+        _unregister_solver(workdir, old)          # 旧会话收尾
+        assert _LIVE_SOLVERS.get(workdir) is new, "误删了新会话的登记"
+        _unregister_solver(workdir, new)
+        assert workdir not in _LIVE_SOLVERS
+    finally:
+        _LIVE_SOLVERS.pop(workdir, None)

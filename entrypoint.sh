@@ -85,9 +85,25 @@ if [[ -n "${VPN_CONFIG}" && -f "${VPN_CONFIG}" ]]; then
   done
 
   if [[ "$up" != "1" ]]; then
-    echo "[adapter] WARNING: VPN tun0 not detected in 90s, check /tmp/openvpn.log" >&2
+    echo "[adapter] FATAL: VPN tun0 not detected in 90s" >&2
     tail -n 20 /tmp/openvpn.log >&2 2>/dev/null || true
-    # 不直接退出，继续尝试运行（可能 API 不需要 VPN）
+    # 配置了 VPN 就要求它真的起来:此前是"告警后继续",结果是整轮跑分都在
+    # 无隧道状态下撞靶场地址(每道题都失败,却看不出是网络层问题)。
+    # exit 4 = VPN 层瞬断语义,restart:on-failure 会拉起重试(与 driver 一致)。
+    # 确需容忍时显式设 VPN_REQUIRE_TUN=0。
+    if [[ "${VPN_REQUIRE_TUN:-1}" == "1" ]]; then
+      exit 4
+    fi
+    echo "[adapter] WARNING: VPN_REQUIRE_TUN=0, continuing without tun0" >&2
+  else
+    # tun0 出现 ≠ 隧道可用:openvpn 在鉴权完成前就会建 tun 设备。
+    # 再验一条到隧道的路由,把"设备在但没路由"这种半通状态挡在跑分之前。
+    if ! ip route get 1.1.1.1 2>/dev/null | grep -q "dev tun0"; then
+      # 默认路由未必走 tun(常见于 split-tunnel 配置),退化检查:是否存在 tun 路由
+      if ! ip route | grep -q " dev tun0"; then
+        echo "[adapter] WARNING: tun0 present but no route via tun0 — tunnel may not be established" >&2
+      fi
+    fi
   fi
 
   sleep 3

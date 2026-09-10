@@ -32,7 +32,7 @@ import time
 from ._sdk import InvalidState, GhostmarkAsync, VpnCheckError
 
 from ghost.obs.localserver import serve_forever_in_thread as _serve_local
-from ghost_contracts.paths import LIVE_DIR
+from ghost_contracts.paths import LIVE_DIR, safe_code
 
 from .assignment import AssignmentClient, AssignmentError
 from .assignment_session import complete_with_retry, lease_watch
@@ -42,6 +42,7 @@ from .relay import maybe_start_relay
 from .roster import RosterPoller
 from .settings import WorkerSettings
 from .solver import create_solver, touch_heartbeat
+from .solver.pi_agent import kill_solver_processes
 from .orchestration import LiveReporter, ProviderFailure, _prioritize, solve_one
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -137,6 +138,13 @@ async def _solve_assignment(
                 # (job 回 pending,下一轮可重做)。
                 log.error("assignment lease lost for %s, aborting solve", code)
                 solve_task.cancel()
+                # 关键:取消 asyncio 任务**杀不掉** to_thread 里已启动的 pi 子进程。
+                # 不显式杀,它会在后台继续烧 LLM 时长、继续写同一个 workdir,而 job 已回
+                # pending 可能被再次领取 —— 同一 workdir 两个会话互相踩。
+                killed = await asyncio.to_thread(
+                    kill_solver_processes, os.path.join(settings.workdir, safe_code(code)))
+                if killed:
+                    log.warning("killed in-flight pi process group for %s after lease loss", code)
                 try:
                     await solve_task
                 except asyncio.CancelledError:

@@ -18,12 +18,14 @@ Pi Agent CLI 求解器适配器
 from __future__ import annotations
 
 import codecs
+import contextlib
 import json
 import logging
 import math
 import os
 import select
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -65,6 +67,47 @@ def _join_content(content) -> str:
         elif isinstance(block, str):
             parts.append(block)
     return "\n".join(parts)
+
+
+# ── 在飞求解进程登记表 ───────────────────────────────────
+# 为什么需要:driver 用 asyncio.to_thread 跑 solve,而**取消线程不会终止它启动的
+# 子进程** —— lease 丢失后 solve_task.cancel() 只让等待方放手,pi 仍在跑,继续烧
+# LLM 时长、继续写同一个 workdir;而 job 已回 pending 可能被再次领取(甚至被本
+# worker 自己),于是同一 workdir 出现两个并发会话互相踩。
+# 登记表让取消方能真正杀掉它。(key = workdir,与"一次一个会话"的假设一致)
+_LIVE_SOLVERS: dict[str, subprocess.Popen] = {}
+_LIVE_LOCK = threading.Lock()
+
+
+def kill_solver_processes(workdir: str, *, grace: float = 10.0) -> bool:
+    """杀掉该 workdir 上在飞的 pi 进程组(SIGTERM → grace 秒 → SIGKILL)。
+
+    返回是否确实杀掉了进程。幂等:进程已退出、未登记、已清理都安全返回 False。
+    """
+    with _LIVE_LOCK:
+        proc = _LIVE_SOLVERS.pop(workdir, None)
+    if proc is None or proc.poll() is not None:
+        return False
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        with contextlib.suppress(Exception):
+            proc.terminate()
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(Exception):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=5)
+    return True
+
+
+def _unregister_solver(workdir: str, proc: subprocess.Popen) -> None:
+    """仅移除自己那一条 —— 避免新会话登记后又被旧会话的收尾误删。"""
+    with _LIVE_LOCK:
+        if _LIVE_SOLVERS.get(workdir) is proc:
+            _LIVE_SOLVERS.pop(workdir, None)
 
 
 def _drain_stderr_to(stderr, buf: deque, lock) -> None:
@@ -168,7 +211,11 @@ class PiAgentBackend(SolverBackend):
                     text=True,
                     errors="replace",  # stderr 非 UTF-8 字节不再杀死排空线程(否则 PIPE 满则子进程阻塞)
                     bufsize=1,
+                    # 自成进程组:取消时要整组杀 —— pi 可能带起子进程(curl/nmap 等),
+                    # 只杀父进程会留下孤儿继续占用靶场与网络。
+                    start_new_session=True,
                 )
+                _LIVE_SOLVERS[workdir] = proc
 
                 # stderr 排空线程：PIPE 从不读取会阻塞子进程；保留最后 20 行供报错
                 # (deque 经锁共享,join 侧不再裸迭代)
@@ -434,6 +481,7 @@ class PiAgentBackend(SolverBackend):
                             result.error = detail or f"pi exited with code {proc.returncode}"
 
                 finally:
+                    _unregister_solver(workdir, proc)
                     if transcript_f:
                         transcript_f.close()
                     if proc.poll() is None:
