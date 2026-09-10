@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fmtRel } from "../lib/format";
+  import { readAuth } from "../lib/auth.svelte";
   import { goChallenge } from "../lib/route.svelte";
   import { roster, sortRows, toRows, traceChips, refreshRoster } from "../lib/roster.svelte";
   import type { RowSortKey } from "../lib/roster.svelte";
@@ -12,7 +13,10 @@
   const snap = $derived(roster.data);
 
   // 挂载即补刷(共享节拍最长 10s 旧数据);无依赖,仅挂载跑一次
+  // 依赖读凭据:用户在门禁处补录 token 后必须立即重拉 —— 否则停留在挂载时那次
+  // 401 的错误态,直到手动刷新或 10s 轮询才恢复(实测过)。
   $effect(() => {
+    readAuth.token;
     void refreshRoster();
   });
 

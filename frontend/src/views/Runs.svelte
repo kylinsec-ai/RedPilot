@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { fetchRuns } from "../lib/api";
+  import { readAuth } from "../lib/auth.svelte";
   import { goChallenge, goRun } from "../lib/route.svelte";
   import { RUN_STATUSES, RUN_STATUS_LABEL } from "../lib/types";
   import type { RunRow, RunStatus } from "../lib/types";
@@ -67,7 +68,10 @@
 
   // 仅挂载时拉一次:untrack 防止 buildQs() 对 q* 的同步读把击键变成逐键请求
   // (手动刷新 = 查询按钮 / Enter,与 UI 文案一致)
+  // 依赖读凭据:补录 token 后立即重拉(否则停在挂载时的 401 错误态)。
+  // untrack 仍必要:防 buildQs() 对过滤项的同步读把击键变成逐键请求。
   $effect(() => {
+    readAuth.token;
     untrack(() => void load());
   });
 
