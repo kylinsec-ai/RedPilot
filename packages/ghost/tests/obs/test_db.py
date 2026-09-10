@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from obs import db as dbmod
+from ghost.obs import db as dbmod
 from ghost.obs.store import ObsStore
 
 

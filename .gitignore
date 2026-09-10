@@ -18,4 +18,8 @@ vpn/
 
 # Claude worktrees
 .claude/worktrees/
+
+# 历史事故:ghost/control/ 下曾出现整棵 monorepo 的递归自拷贝,被 setuptools
+# 命名空间发现收进 wheel 并污染 pytest 收集。此路径永不合法,兜底忽略。
+packages/ghost/ghost/control/packages/
 frontend/node_modules/

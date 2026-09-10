@@ -4,44 +4,47 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Ghost** is a security benchmark evaluation platform with three core components:
-- **Control plane** (`packages/core`): Task scheduling, job assignment, and scoring via REST API (:8000)
+**Ghost** is a security benchmark evaluation platform with two deployable units:
+- **Server** (`packages/ghost`): unified FastAPI app — control plane (task scheduling, job assignment, scoring) *and* observability platform (agent log ingestion, SQLite storage, read-only dashboard + SPA) on a single port (:8000)
 - **Worker** (`packages/worker`): Isolated solver containers with VPN + Pi Agent that claim jobs and solve challenges
-- **Observability platform** (`packages/obs`): Agent log ingestion, SQLite storage, and read-only dashboard + SPA (:8090)
 
 The project is transitioning from "TsecBench" to "Ghost" — package names use `ghost_*` / `ghost-*`.
 
 ## Architecture
 
-### Four-Package Monorepo
+### Three-Package Monorepo
 
 ```
 packages/
 ├── contracts/    # ghost-contracts — zero-dependency shared contracts
 │                 # (vocabulary, snapshot schema, redact, digest, paths, assets)
-├── core/         # ghost-core — control plane + challenges API
-├── worker/       # ghost-worker — orchestration, Pi solver, relay, assignment client
-└── obs/          # ghost-obs — observability platform (ingest + read API + SPA)
+├── ghost/        # ghost — unified server: ghost.control + ghost.obs + ghost.app
+└── worker/       # ghost-worker — orchestration, Pi solver, relay, assignment client
 ```
 
-**Dependency direction**: `contracts ← [core, worker, obs]`
+`packages/ghost` supersedes the former `packages/core` (ghost-core) and `packages/obs`
+(ghost-obs), which were merged into one process/port. Its base install depends only on
+`ghost-contracts`; FastAPI et al. live in the `[platform]` extra so the Kali worker image
+can install it for `ghost.obs.localserver` without pulling a web stack.
+
+**Dependency direction**: `contracts ← [ghost, worker]`
 - `contracts` has **zero dependencies** (stdlib only) — enforced by `packages/contracts/tests/test_purity.py`
-- `core` → `obs` (HTTP outbox only, no code import)
-- `worker` → `core` (HTTP via SDK / AssignmentClient)
-- `worker` → `obs` (HTTP relay + allowed import of `obs.localserver` for local dashboard)
-- `obs` must NOT import `core` or `worker` code
+- within `ghost`: `ghost.control` never imports `ghost.obs`, and `ghost.obs` never imports `ghost.control`
+- `worker` → server (HTTP via SDK / AssignmentClient)
+- `worker` → server (HTTP relay + allowed import of `ghost.obs.localserver` for local dashboard)
+- `ghost.obs` must NOT import `ghost.control` or `ghost_worker` code
 
 ### Data Flow
 
 ```
-Control (core) → creates evaluation → generates jobs
+Server (ghost.control) → creates evaluation → generates jobs
        ↓
 Worker claims job → Pi Agent solves → submits flags → reports attempt
        ↓                                    ↓
    Telemetry                          Canonical events
-   (relay)                            (core outbox)
+   (relay)                            (control outbox)
        ↓                                    ↓
-       └────────→  Obs Platform  ←─────────┘
+       └────────→  Server (ghost.obs)  ←────┘
                    (SQLite + API + SPA)
 ```
 
@@ -61,7 +64,7 @@ Worker claims job → Pi Agent solves → submits flags → reports attempt
 ```bash
 # Create venv and install all packages in editable mode
 python3 -m venv .venv
-.venv/bin/pip install -e packages/contracts -e packages/core -e packages/obs -e packages/worker
+.venv/bin/pip install -e packages/contracts -e "packages/ghost[platform]" -e packages/worker
 ```
 
 ### Running Tests
@@ -72,8 +75,8 @@ pytest
 
 # Specific package
 pytest packages/contracts/tests/
-pytest packages/core/tests/
-pytest packages/obs/tests/
+pytest packages/ghost/tests/control/
+pytest packages/ghost/tests/obs/
 pytest packages/worker/tests/
 
 # Run tests with output
@@ -81,7 +84,7 @@ pytest -v
 
 # Run specific test file or function
 pytest packages/contracts/tests/test_purity.py
-pytest packages/obs/tests/test_canonical_run_close.py -v
+pytest packages/ghost/tests/obs/test_canonical_run_close.py -v
 ```
 
 ### Running Components Locally
@@ -181,7 +184,7 @@ docker run --rm --env-file .env ghost-adapter:latest pi --print --model $SOLVER_
 
 - Both `core` and `obs` use **SQLite WAL mode** with `workers=1` (single writer per process)
 - This is a hard constraint — do not add multi-process workers
-- Schema migrations use versioned approach (see `packages/obs/obs/schema.py`)
+- Schema migrations use versioned approach (see `packages/ghost/ghost/obs/db.py` — the `MIGRATIONS` ladder driven by `PRAGMA user_version`)
 
 ### Token Security
 
@@ -203,7 +206,7 @@ All token comparisons use `hmac.compare_digest()` for constant-time comparison:
 
 ### Worker Provisioner Patterns
 
-Two provisioner types in `packages/core/ghost/provisioner.py`:
+Two provisioner types in `packages/ghost/ghost/control/provisioner.py`:
 - `StaticProvisioner`: Uses pre-configured `container_addr` from challenge definition
 - `DockerProvisioner`: Spawns containers via `docker run` subprocess
 
@@ -266,16 +269,15 @@ Failure to upgrade can cause silent failures (e.g., missing session headers caus
 
 ## File Organization
 
-- `main.py` — Core entry point (control plane)
+- `main.py` — Server entry point (control plane + observability, `ghost.app:app`)
 - `entrypoint.sh` — Worker container entrypoint (VPN setup + driver launch)
 - `packages/*/pyproject.toml` — Package metadata (each package is independently installable)
-- `docker-compose.yaml` — Full stack orchestration (control + worker + platform)
+- `docker-compose.yaml` — Full stack orchestration (server + worker)
 - `Dockerfile.base` — Base Kali image with Pi environment
-- `Dockerfile.core` — Control plane image
-- `Dockerfile.platform` — Obs platform image  
+- `Dockerfile.ghost` — Unified server image (control + observability)
 - `Dockerfile` — Worker image (extends base)
 - `pytest.ini` — Test configuration (root level)
-- `web/` — Frontend build output (committed, served by obs)
+- `web/` — Frontend build output (committed, served by the server)
 - `frontend/` — Frontend source (Svelte 5 + TypeScript + Tailwind v4)
 - `skills/` — Pi Agent skills knowledge base
 - `tools/` — Helper scripts (pw_fetch.py, pw_example.py for Playwright automation)
@@ -283,7 +285,7 @@ Failure to upgrade can cause silent failures (e.g., missing session headers caus
 
 ## Documentation
 
-- **README.md** — Quick start, environment variables, four-package architecture
+- **README.md** — Quick start, environment variables, three-package architecture
 - **ARCHITECTURE.md** — Design principles, layer responsibilities, state machines, trust boundaries
 - **CHALLENGES_API.md** — Server-side API contract
 - **SDK_API.md** — Official SDK usage for platform integration

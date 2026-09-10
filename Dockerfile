@@ -72,17 +72,18 @@ print("[build] playwright smoke:", "OK" if ok else "title mismatch")
 assert ok
 PY
 
-# ── 4. Python 依赖(四包 monorepo;editable 安装保留 compose 卷热补丁工作流) ──
+# ── 4. Python 依赖(三包 monorepo;editable 安装保留 compose 卷热补丁工作流) ──
 # --no-build-isolation:镜像 pip 走 BFSU 源,构建隔离会临时拉 setuptools;
 # apt 预装 python3-setuptools 后本地构建即可。
-# obs 只装基线(纯 stdlib + contracts):fastapi/pydantic 不进 Kali 镜像(瘦身既定决策)。
+# ghost 只装基线(纯 stdlib + contracts):fastapi/pydantic 不进 Kali 镜像(瘦身既定决策)。
+# worker 侧只用到 ghost.obs.localserver —— 该模块零 fastapi 依赖,基线安装即可。
 RUN apt-get update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
         python3-setuptools && rm -rf /var/lib/apt/lists/*
 COPY packages/contracts /opt/packages/contracts
-COPY packages/obs /opt/packages/obs
+COPY packages/ghost /opt/packages/ghost
 COPY packages/worker /opt/packages/worker
 RUN pip3 install --break-system-packages --no-build-isolation --no-cache-dir \
-        -e /opt/packages/contracts -e /opt/packages/obs -e /opt/packages/worker
+        -e /opt/packages/contracts -e /opt/packages/ghost -e /opt/packages/worker
 
 # ── 5. 复制题面工具与运行资产 ──
 COPY tools /opt/tools

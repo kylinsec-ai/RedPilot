@@ -85,7 +85,7 @@ class RosterPoller:
         if not base or not token:
             return None
         try:
-            from tsec_benchmark import Ghostmark
+            from ._sdk import Ghostmark
             self._client = Ghostmark(base_url=base, token=token, auto_check_vpn=False)
         except Exception:
             log.exception("tsec_benchmark unavailable; roster platform poll disabled")

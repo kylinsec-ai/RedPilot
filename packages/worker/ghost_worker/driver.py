@@ -29,7 +29,7 @@ import sys
 import threading
 import time
 
-from tsec_benchmark import InvalidState, GhostmarkAsync, VpnCheckError
+from ._sdk import InvalidState, GhostmarkAsync, VpnCheckError
 
 from ghost.obs.localserver import serve_forever_in_thread as _serve_local
 from ghost_contracts.paths import LIVE_DIR

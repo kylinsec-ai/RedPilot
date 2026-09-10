@@ -18,7 +18,7 @@ import logging
 import os
 import time
 
-from tsec_benchmark import (
+from ._sdk import (
     Challenge,
     ChallengeNotFound,
     DuplicateSubmit,

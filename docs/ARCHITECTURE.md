@@ -4,6 +4,22 @@
 > 状态：架构 RFC，只新增文档，不改动源码。  
 > 定位：**Ghost 是评估控制面与观测平台，不是 Agent 本身**。Agent（pi backend）只是被测实现之一，可替换。
 
+> ⚠️ **后续演进说明（阅读本文前必读）**
+>
+> 本文 §3 提出的"四个可部署单元（contracts / core / worker / obs）"已被
+> `.claude/plans/merge-core-obs.md` **取代**：core 与 obs 合并为单一 `packages/ghost`
+> 包（`ghost.control` + `ghost.obs` + `ghost.app`），单进程单端口 :8000 部署。
+> 当前仓库形态为**三包 monorepo**：`contracts` / `ghost` / `worker`。
+>
+> 本文仍然有效的部分：§1 设计原则、§5 各层责任与状态机、§6 事件 Envelope 与
+> canonical/telemetry 双流权威模型、§7 信任边界、§11 最小垂直切片的实现记录。
+> 已失效的部分：§3 的进程边界表（四单元→两单元）、§8 推荐目录树中的
+> `packages/core/` 与 `packages/obs/` 路径、§9 的 P0/P1/P2 迁移步骤（已全部落地）。
+>
+> 合并带来的**信任边界变化**尚未在 §7 反映：obs 读端（无鉴权、返回明文 flag 与完整
+> 实录）现与控制面共用同一端口，而 worker 必须能访问该端口。见
+> `.claude/plans/memoized-percolating-kite.md` 的 S3。
+
 ---
 
 ## 1. 设计原则

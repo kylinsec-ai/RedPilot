@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from tsec_benchmark import (
+from ._sdk import (
     ChallengeNotFound,
     InvalidState,
     ResourceUnavailable,

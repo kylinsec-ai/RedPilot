@@ -16,9 +16,10 @@ RUN printf '[global]\nindex-url = https://mirrors.bfsu.edu.cn/pypi/web/simple\ne
 WORKDIR /app
 
 # Install ghost unified package + contracts
+# [platform] extra:完整控制面 + 观测 API 需要 fastapi/uvicorn/pydantic/dotenv/httpx。
 COPY packages/contracts /opt/packages/contracts
 COPY packages/ghost /opt/packages/ghost
-RUN pip install --no-cache-dir /opt/packages/contracts /opt/packages/ghost
+RUN pip install --no-cache-dir /opt/packages/contracts "/opt/packages/ghost[platform]"
 
 # Data and SPA provided by compose bind-mounts: ./data:/app/data  ./web:/app/web:ro
 ENV GHOST_DB_PATH=/app/data/ghost.sqlite3 \
