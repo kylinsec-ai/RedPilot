@@ -278,3 +278,25 @@ def test_bus_drops_slow_subscriber():
         assert last["seq"] == 9  # 最新到达
 
     asyncio.run(scenario())
+
+
+# ── 已接受 flag 的窄通道(HTTP 层) ──
+
+def test_accepted_flags_endpoint_attaches_to_run(client, headers):
+    """assignment 模式补写:POST /api/internal/accepted_flags 后 /api/challenge 可见。"""
+    run_id = rid()
+    client.post("/api/internal/events", headers=headers, json={
+        "run_id": run_id, "worker_id": "worker-1", "challenge_code": "a-05",
+        "events": make_run_events([session_ev()]),
+    })
+    r = client.post("/api/internal/accepted_flags", headers=headers,
+                    json={"run_id": run_id, "flags": ["flag{found}"]})
+    assert r.status_code == 200 and r.json() == {"ok": True, "attached": True}
+    assert client.get("/api/challenge?code=a-05").json()["flags"] == ["flag{found}"]
+
+
+def test_accepted_flags_endpoint_rejects_anonymous(anon_client):
+    """明文 flag 通道与其它 ingest 同凭据,不得匿名写入(用无默认 header 的 client)。"""
+    r = anon_client.post("/api/internal/accepted_flags",
+                         json={"run_id": rid(), "flags": ["flag{x}"]})
+    assert r.status_code == 401

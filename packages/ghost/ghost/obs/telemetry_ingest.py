@@ -15,8 +15,8 @@ from starlette.concurrency import run_in_threadpool
 
 from ghost.obs.ingest_common import check_token, require_store
 from ghost_contracts.vocabulary import strip_for_snapshot
-from ghost.obs.schema import (ACTIVE_PHASES, EventsIn, LiveIn, PingIn, RosterIn,
-                     RunCloseIn, require_run_id)
+from ghost.obs.schema import (ACTIVE_PHASES, AcceptedFlagsIn, EventsIn, LiveIn,
+                              PingIn, RosterIn, RunCloseIn, require_run_id)
 
 log = logging.getLogger("obs.telemetry_ingest")
 
@@ -130,3 +130,22 @@ async def post_ping(body: PingIn, request: Request,
     store = _require_store(request)
     await run_in_threadpool(store.ping, body.worker_id)
     return {"ok": True}
+
+
+@router.post("/accepted_flags")
+async def post_accepted_flags(body: AcceptedFlagsIn, request: Request,
+                              _auth=Depends(_check_token)) -> dict:
+    """已接受 flag 明文(非权威,加性):只补 runs.flags_accepted 一列。
+
+    assignment 模式下 relay 不关 run(canonical 拥有生命周期权威),而该字段此前
+    只经 run_close 写入 —— 于是平台主推模式下 /api/challenge 恒返回 flags: []。
+    这里给明文一条不经过 core 的窄通道,保住「core 只存 SHA-256」(§7.1)。
+    """
+    store = _require_store(request)
+    require_run_id(body.run_id)
+    ok = await run_in_threadpool(store.attach_accepted_flags, body.run_id, body.flags)
+    if not ok:
+        # 行还没建(canonical started 与 relay events 都未到):不是错误,
+        # 调用方无需重试 —— 缺这条数据只会让 flags 显示为空,不影响计分。
+        log.debug("accepted flags for %s arrived before its run row; dropped", body.run_id)
+    return {"ok": True, "attached": ok}

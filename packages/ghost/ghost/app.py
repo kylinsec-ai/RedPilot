@@ -52,6 +52,19 @@ async def _housekeep(store: ObsStore, settings: ObsSettings) -> None:
                 log.info("housekeeper swept %d stale live row(s)", swept)
         except Exception:
             log.exception("housekeeper sweep error")
+        # 原文事件行保留:events 是唯一的无界增长路径。只删已结束 run 的原文行,
+        # runs 行保留(审计链不断);0 = 关闭。
+        if settings.events_retention_days > 0:
+            try:
+                removed = await run_in_threadpool(
+                    store.prune_events,
+                    older_than_days=settings.events_retention_days,
+                    batch=settings.events_prune_batch)
+                if removed:
+                    log.info("housekeeper pruned %d event row(s) older than %.0f day(s)",
+                             removed, settings.events_retention_days)
+            except Exception:
+                log.exception("housekeeper prune error")
 
 
 def create_app(

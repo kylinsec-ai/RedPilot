@@ -19,6 +19,17 @@ def _env_str(name: str) -> str | None:
     return v if v not in (None, "") else None
 
 
+def _env_float(name: str, default: float) -> float:
+    """数值解析:未设/坏值走 default(配置错误不该让进程起不来)。"""
+    raw = _env_str(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def _env_flag(name: str, default: bool) -> bool:
     """显式开关解析:未设走 default;设了按 0/false/no/off=关,其余=开。"""
     raw = os.environ.get(name)
@@ -32,6 +43,9 @@ def _env_flag(name: str, default: bool) -> bool:
 DEFAULT_STALE_AFTER = 150.0
 # housekeeper 周期(秒)
 DEFAULT_HOUSE_INTERVAL = 30.0
+# 原文事件行保留天数:0 = 永久保留。取 90 天是保守值 —— events 是 transcript 证据链,
+# 清理只针对已结束的 run 且保留 runs 行;需要更久请显式调大或设 0。
+DEFAULT_EVENTS_RETENTION_DAYS = 90.0
 
 
 @dataclass
@@ -56,6 +70,12 @@ class Settings:
     # 注:uvicorn 监听 host/port 由容器 CMD 读 OBSERVABILITY_HOST/PORT(不属本 Settings)。
     stale_after: float = DEFAULT_STALE_AFTER
     house_interval: float = DEFAULT_HOUSE_INTERVAL
+    # 原文事件行保留天数;0 = 永久保留(不清理)。
+    # 默认保守:events 同时是 transcript 证据链,清理只针对**已结束**的 run,
+    # 且只删原文行、保留 runs 行(审计链不断)。events 是唯一的无界增长路径。
+    events_retention_days: float = DEFAULT_EVENTS_RETENTION_DAYS
+    # 单批删除行数上界:单条大 DELETE 会长时间持写锁阻塞 ingest(单写者)。
+    events_prune_batch: int = 2000
 
     def effective_read_token(self) -> str | None:
         """读端凭据:显式配置优先,否则回落 ingest token。
@@ -74,6 +94,8 @@ class Settings:
             read_token=_env_str("OBSERVABILITY_READ_TOKEN"),
             db_path=_env_str("OBSERVABILITY_DB") or cls.db_path,
             web_dir=_env_str("OBSERVABILITY_WEB"),
+            events_retention_days=_env_float("OBS_EVENTS_RETENTION_DAYS",
+                                             cls.events_retention_days),
             control_url=control_url,
             # 默认关闭/不挂载:只有配了 URL 且未被显式开关关闭时才启用。
             control_proxy_enabled=bool(control_url) and _env_flag(

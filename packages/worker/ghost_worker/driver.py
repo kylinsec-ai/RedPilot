@@ -168,6 +168,14 @@ async def _solve_assignment(
             await lease_task
         except asyncio.CancelledError:
             pass
+        # 已接受 flag 明文补给平台(非权威,加性):assignment 模式不关 run,
+        # 而该字段此前只经 run_close 写入 —— 不补则 /api/challenge 恒返回空 flags。
+        # 放在 complete 之前:平台侧 run 行此时已由事件流建立,补写必命中。
+        if relay is not None and accepted:
+            try:
+                relay.send_accepted_flags(accepted)
+            except Exception:
+                log.exception("failed to ship accepted flags for %s", attempt_id)
         # 终态上报(租约语义单源 assignment_session.complete_with_retry)。
         await complete_with_retry(
             assignment_client, code, attempt_id, lease_id,

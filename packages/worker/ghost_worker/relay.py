@@ -174,6 +174,27 @@ class ObsRelay:
     def clear_attempt(self) -> None:
         self._assignment_context = {}
 
+    def send_accepted_flags(self, flags: list[str]) -> None:
+        """把已接受的 flag 明文补给平台(非权威,加性,只补 runs.flags_accepted 一列)。
+
+        为何需要:assignment 模式下 relay **有意跳过** run_close(canonical 拥有生命
+        周期权威),而 flags_accepted 此前只经 run_close 写入 —— 平台主推的模式反而
+        看不到已获得的 flag(/api/challenge 恒返回 [])。
+
+        为何走独立窄端点而不是塞进 canonical 事件:canonical 会持久化进 core 的
+        platform_events,而 ARCHITECTURE.md §7.1 规定 core 只存 SHA-256 不存明文。
+
+        零丢失语义与 events 相同(走无界 put):这是小体量一次性消息,丢了就永久缺一列。
+        """
+        if not flags or self._stop.is_set():
+            return
+        run_id = ((self._run or {}).get("run_id")
+                  or self._assignment_context.get("run_id"))
+        if not run_id:
+            log.debug("accepted flags dropped: no bound run yet")
+            return
+        self._fifo.put({"t": "flags", "run_id": run_id, "flags": list(flags)})
+
     # ── 事件行解析(与压缩同语义:message_update 丢弃;原文行入库) ──
 
     def _tail_once(self, run: dict, force: bool = False) -> bool:
@@ -416,6 +437,10 @@ class ObsRelay:
                                         json={"worker_id": msg["worker_id"],
                                               "kind": msg.get("kind", "lifecycle"),
                                               "snapshot": msg["frame"]}, headers=headers)
+                    elif msg["t"] == "flags":
+                        r = client.post(self._url + "/api/internal/accepted_flags",
+                                        json={"run_id": msg["run_id"],
+                                              "flags": msg["flags"]}, headers=headers)
                     elif msg["t"] == "close":
                         r = client.post(self._url + "/api/internal/run_close",
                                         json=msg["body"], headers=headers)

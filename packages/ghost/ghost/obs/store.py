@@ -20,7 +20,13 @@ from ghost.obs.config import DEFAULT_STALE_AFTER
 from ghost.obs.schema import ACTIVE_PHASES, CLOSABLE_STATUSES
 
 # runs 行投影(列表/详情共用;duration 由时间戳导出,不落列避免两处维护)。
-# event_count 用单次聚合 LEFT JOIN 而非每行相关子查询(limit≤500 时少 500 次索引扫)。
+#
+# event_count 用**相关标量子查询**,不是聚合 LEFT JOIN。曾以为 LEFT JOIN 更省
+# ("少 500 次索引扫"),EXPLAIN QUERY PLAN 实测相反:LEFT JOIN 的子查询会在每次调用时
+# MATERIALIZE 整张 events(GROUP BY 无法下推),再建 AUTOMATIC COVERING INDEX 回连 ——
+# 代价是全库事件量,与 LIMIT 无关,连单条 run 详情(run_row)也一样。改用相关子查询后
+# 计划变为 SEARCH events USING COVERING INDEX sqlite_autoindex_events_1 (run_id=?),
+# 即每返回行一次索引区间扫,物化消失。
 _RUN_FIELDS = (
     "r.run_id, r.worker_id, r.challenge_code, r.model, r.status,"
     " r.evaluation_id, r.job_id, r.attempt_id,"
@@ -28,14 +34,10 @@ _RUN_FIELDS = (
     " CASE WHEN r.ended_at IS NOT NULL THEN MAX(0.0, r.ended_at - r.started_at) END"
     "   AS duration_s,"
     " r.error, r.turns, r.sessions, r.flags_found, r.flags_accepted, r.updated_at,"
-    " COALESCE(ev.event_count, 0) AS event_count,"
+    " (SELECT COUNT(*) FROM events e WHERE e.run_id = r.run_id) AS event_count,"
     " r.canonical"
 )
-_RUN_FROM = (
-    "FROM runs r LEFT JOIN"
-    " (SELECT run_id, COUNT(*) AS event_count FROM events GROUP BY run_id) ev"
-    " ON ev.run_id = r.run_id"
-)
+_RUN_FROM = "FROM runs r"
 
 
 def _decode_flags(raw: str | None) -> list[str]:
@@ -60,19 +62,59 @@ class ObsStore:
         dbmod.migrate(self._conn)
         self._lock = threading.RLock()
         self._stale_after = stale_after
+        # 只读连接池(每线程一条):读不再与写抢同一把锁。
+        # WAL 天然支持「1 写 + N 读」,故单写者不变量不被破坏 —— 写连接仍唯一。
+        # 内存库例外:每个连接是各自独立的私有库,必须共用同一条连接。
+        self._shared_conn = str(db_path).startswith("file::memory:") or str(db_path) == ":memory:"
+        self._read_local = threading.local()
+        self._read_conns: list[sqlite3.Connection] = []
+        self._readers_lock = threading.Lock()
 
     # ── 基础设施 ──
 
     def close(self) -> None:
+        with self._readers_lock:
+            readers, self._read_conns = self._read_conns, []
+        for conn in readers:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
         with self._lock:
             self._conn.close()
 
     def health(self) -> bool:
-        with self._lock:
-            try:
-                return self._conn.execute("SELECT 1").fetchone()[0] == 1
-            except sqlite3.Error:
-                return False
+        try:
+            with self._read() as conn:
+                return conn.execute("SELECT 1").fetchone()[0] == 1
+        except sqlite3.Error:
+            return False
+
+    def _read_conn(self) -> sqlite3.Connection:
+        """本线程的只读连接(惰性建,进程退出时随 close 统一关闭)。"""
+        conn = getattr(self._read_local, "conn", None)
+        if conn is None:
+            conn = dbmod.connect(self._path)
+            # 结构性保证:读连接在 SQLite 层就不可能写(而非靠调用方自觉)。
+            conn.execute("PRAGMA query_only = ON")
+            self._read_local.conn = conn
+            with self._readers_lock:
+                self._read_conns.append(conn)
+        return conn
+
+    @contextmanager
+    def _read(self):
+        """读路径:独立只读连接,不与写事务争锁。
+
+        背景:此前读写共用同一把 RLock 与同一条连接,任何慢查询(如无 LIMIT 的
+        `/api/timeline` 全史折叠)都会阻塞 ingest —— 而 ingest 被阻塞会让控制面
+        outbox 重投堆积,把观测面的读压力放大成控制面的写压力。
+        """
+        if self._shared_conn:
+            with self._lock:  # 内存库单连接:读也必须串行
+                yield self._conn
+        else:
+            yield self._read_conn()
 
     @contextmanager
     def _tx(self):
@@ -233,14 +275,21 @@ class ObsStore:
                     if guard is not None:
                         return False
 
+            # turns/sessions 取值优先级:传入 > 既有 > 按事件计数回填。
+            # 此前缺中间项(COALESCE(?, 计数)),canonical 关闭传 None 时会用**事件计数
+            # 覆盖** relay 报上来的真实轮次 —— canonical 赢下生命周期,却把度量写坏了。
             sets = ["status=?", "ended_at=?",
-                    "turns=COALESCE(?, (SELECT COUNT(*) FROM events e"
+                    "turns=COALESCE(?, runs.turns, (SELECT COUNT(*) FROM events e"
                     " WHERE e.run_id=runs.run_id AND e.type='tool_execution_start'))",
-                    "sessions=COALESCE(?, (SELECT COUNT(*) FROM events e"
+                    "sessions=COALESCE(?, runs.sessions, (SELECT COUNT(*) FROM events e"
                     " WHERE e.run_id=runs.run_id AND e.type='session'))",
                     "updated_at=?"]
             params: list[Any] = [status, ended_at, turns, sessions, ended_at]
-            if error is not None:
+            # error:canonical 的 attempt.completed 载荷**恒含** error 键(core 侧
+            # {"status","solved","flags_found","error"}),故 None 确实表示"无错误",
+            # 应据此清掉 relay 可能留下的陈旧值;relay 侧则仍是"给了才写",避免
+            # 一次未带 error 的关闭擦掉已有信息。
+            if error is not None or canonical:
                 sets.append("error=?")
                 params.append(error)
             if flags_found is not None:
@@ -336,8 +385,8 @@ class ObsStore:
 
     def live_rows(self) -> list[dict[str, Any]]:
         """全部 worker 的 live 行(worker_id, updated_at, 已解析 snap)。"""
-        with self._lock:
-            rows = self._conn.execute(
+        with self._read() as conn:
+            rows = conn.execute(
                 "SELECT worker_id, updated_at, snapshot FROM live_state").fetchall()
         return [{"worker_id": r["worker_id"], "updated_at": r["updated_at"],
                  "snapshot": json.loads(r["snapshot"])} for r in rows]
@@ -390,8 +439,8 @@ class ObsStore:
     def roster_rows(self) -> list[dict[str, Any]]:
         """每 worker 一行:payload 快照全键 + worker_id/updated_at(快照 5 键由写入方保证)。
         身份列恒取自 DB 行:payload 若含同名键(脏数据/伪造)一律剥掉,不得覆盖行身份。"""
-        with self._lock:
-            rows = self._conn.execute(
+        with self._read() as conn:
+            rows = conn.execute(
                 "SELECT worker_id, payload, updated_at FROM roster_snapshot"
                 " ORDER BY updated_at DESC").fetchall()
         out = []
@@ -434,8 +483,8 @@ class ObsStore:
 
     def events_for_code(self, code: str) -> list[dict[str, Any]]:
         """某 code 的全部事件,按 (run 起始时间, run rowid, run 内 seq) 全局有序(供 fold/尾部)。"""
-        with self._lock:
-            rows = self._conn.execute(
+        with self._read() as conn:
+            rows = conn.execute(
                 "SELECT e.seq, e.type, e.payload, e.run_id FROM events e"
                 " JOIN runs r ON r.run_id = e.run_id"
                 " WHERE r.challenge_code=? ORDER BY r.started_at, r.rowid, e.seq",
@@ -443,16 +492,16 @@ class ObsStore:
         return [dict(r) for r in rows]
 
     def events_for_run(self, run_id: str) -> list[dict[str, Any]]:
-        with self._lock:
-            rows = self._conn.execute(
+        with self._read() as conn:
+            rows = conn.execute(
                 "SELECT seq, type, payload FROM events WHERE run_id=? ORDER BY seq",
                 (run_id,)).fetchall()
         return [dict(r) for r in rows]
 
     def transcript_tail(self, code: str, tail: int) -> list[str]:
         """该 code 最近 tail 条 payload(跨 run,时间倒序取尾再正序返回)。"""
-        with self._lock:
-            rows = self._conn.execute(
+        with self._read() as conn:
+            rows = conn.execute(
                 "SELECT e.payload FROM events e"
                 " JOIN runs r ON r.run_id = e.run_id"
                 " WHERE r.challenge_code=?"
@@ -473,8 +522,8 @@ class ObsStore:
             params.append(challenge)
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         params.append(min(max(limit, 1), 500))
-        with self._lock:
-            rows = self._conn.execute(
+        with self._read() as conn:
+            rows = conn.execute(
                 f"SELECT {_RUN_FIELDS} {_RUN_FROM}{clause}"
                 " ORDER BY r.started_at DESC, r.rowid DESC LIMIT ?",
                 params).fetchall()
@@ -484,10 +533,75 @@ class ObsStore:
             row["canonical"] = bool(row["canonical"])
         return out
 
+    def attach_accepted_flags(self, run_id: str, flags: list[str]) -> bool:
+        """只写 runs.flags_accepted 一列 —— **无状态语义**,故可用于 canonical 行。
+
+        与 close_run 的区别:close_run 承载生命周期,受 canonical 守卫约束(relay 不得
+        覆盖权威终态);本方法补的是加性观测数据(实测已获得的 flag 明文),不改变
+        status/canonical,因此对权威行也允许写入。
+
+        行定位:先按 run_id,再按 attempt_id 回落(与 close_run 同序,canonical 置顶),
+        以适配 relay 侧 run_id != attempt_id 的历史数据。无行则返回 False 不建行 ——
+        建 running 占位反而可能留下永不关闭的幽灵行。
+
+        幂等:同值重写无副作用;空列表视为"无数据"不覆盖已有值。
+        """
+        if not flags:
+            return False
+        with self._tx():
+            row = self._conn.execute(
+                "SELECT run_id FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            if row is None:
+                row = self._conn.execute(
+                    "SELECT run_id FROM runs WHERE attempt_id=?"
+                    " ORDER BY canonical DESC, started_at DESC, rowid DESC LIMIT 1",
+                    (run_id,)).fetchone()
+            if row is None:
+                return False
+            self._conn.execute(
+                "UPDATE runs SET flags_accepted=?, updated_at=? WHERE run_id=?",
+                (json.dumps(flags, ensure_ascii=False), time.time(), row["run_id"]))
+            return True
+
+    def prune_events(self, *, older_than_days: float, batch: int = 2000) -> int:
+        """删除**已结束** run 的原文事件行,返回删除行数;runs 行本身永久保留。
+
+        events 无上界增长是唯一的磁盘增长路径(housekeeper 此前只 GC live_state)。
+        注意 events 同时是 transcript 证据链,故:
+          - 只动 status<>'running' 的 run(在飞的求解不受影响);
+          - 只删原文行,runs 行(含 status/canonical/flags/耗时)留着,审计链不断;
+          - 默认阈值取得保守,0 = 关闭(见 Settings.events_retention_days)。
+
+        分批执行:单条大 DELETE 会长时间持写锁阻塞 ingest(单写者)。
+        终止性:每批选"尚存事件行的 run"并删光其事件,故不会重复选中同一批。
+        """
+        if older_than_days <= 0:
+            return 0
+        cutoff = time.time() - older_than_days * 86400.0
+        removed = 0
+        while True:
+            with self._tx():
+                rows = self._conn.execute(
+                    "SELECT r.run_id FROM runs r"
+                    " WHERE r.status <> 'running'"
+                    "   AND COALESCE(r.ended_at, r.updated_at) < ?"
+                    "   AND EXISTS(SELECT 1 FROM events e WHERE e.run_id = r.run_id)"
+                    " LIMIT ?",
+                    (cutoff, batch)).fetchall()
+                if not rows:
+                    return removed
+                ids = [r["run_id"] for r in rows]
+                marks = ",".join("?" * len(ids))
+                cur = self._conn.execute(
+                    f"DELETE FROM events WHERE run_id IN ({marks})", ids)
+                removed += cur.rowcount
+            if len(ids) < batch:
+                return removed
+
     def challenge_flags(self, code: str) -> list[str]:
         """该 code 最近一次携带 flags_accepted 的 run 的 flag 明文(=FLAG 文件同信任域)。"""
-        with self._lock:
-            row = self._conn.execute(
+        with self._read() as conn:
+            row = conn.execute(
                 "SELECT flags_accepted FROM runs WHERE challenge_code=? AND flags_accepted IS NOT NULL"
                 " ORDER BY COALESCE(ended_at, updated_at) DESC, rowid DESC LIMIT 1",
                 (code,)).fetchone()
@@ -495,14 +609,14 @@ class ObsStore:
 
     def run_exists(self, run_id: str) -> bool:
         """存在性探测(详情端点 404 守卫用,免拉整行投影)。"""
-        with self._lock:
-            row = self._conn.execute(
+        with self._read() as conn:
+            row = conn.execute(
                 "SELECT 1 FROM runs WHERE run_id=?", (run_id,)).fetchone()
         return row is not None
 
     def run_row(self, run_id: str) -> dict[str, Any] | None:
-        with self._lock:
-            row = self._conn.execute(
+        with self._read() as conn:
+            row = conn.execute(
                 f"SELECT {_RUN_FIELDS} {_RUN_FROM} WHERE r.run_id=?", (run_id,)).fetchone()
         if row is None:
             return None
@@ -514,8 +628,8 @@ class ObsStore:
     def run_events(self, run_id: str, after: int = 0, limit: int = 500) -> dict[str, Any]:
         """增量事件页:{events, next_seq, end}。next_seq = 本页末条 seq+1(续拉语义,与 seq 空洞无关)。"""
         limit = min(max(limit, 1), 1000)
-        with self._lock:
-            rows = self._conn.execute(
+        with self._read() as conn:
+            rows = conn.execute(
                 "SELECT seq, type, payload FROM events WHERE run_id=? AND seq>=?"
                 " ORDER BY seq LIMIT ?", (run_id, after, limit + 1)).fetchall()
         has_more = len(rows) > limit
