@@ -21,6 +21,7 @@ from ghost.control.errors import (APIError, admin_not_configured, admin_required
                      lease_conflict, worker_required,
                      worker_token_not_configured)
 from ghost.control.models import parse_task_config
+from ghost.control.maintenance import start_lease_sweeper, stop_lease_sweeper
 from ghost.control.outbox import outbox_lifespan
 from ghost.control.provisioner import ContainerProvisioner, provisioner_for
 from ghost.control.scheduling import SchedulingFacade
@@ -161,7 +162,11 @@ def create_app(
         async with outbox_lifespan(
             store, settings.observability_url, settings.observability_token
         ):
-            yield
+            sweeper = start_lease_sweeper(store, settings.lease_sweep_interval)
+            try:
+                yield
+            finally:
+                await stop_lease_sweeper(sweeper)
     app = FastAPI(title="Ghost Platform", version="1.0.0", lifespan=lifespan)
     app.state.store = store
     app.state.service = service

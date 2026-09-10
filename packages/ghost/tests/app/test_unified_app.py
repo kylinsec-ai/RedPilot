@@ -96,6 +96,24 @@ def test_outbox_dispatch_started(tmp_path, web_dir, monkeypatch):
     assert started[0][2] == OBS_TOKEN
 
 
+def test_lease_sweeper_started(tmp_path, web_dir, monkeypatch):
+    """过期租约 sweeper 必须随 lifespan 起停 —— 没有它,无人再 claim 时
+    过期 job 会永远钉在 running,obs 侧 run 无 canonical 终态。"""
+    started: list[float] = []
+    import ghost.app as gapp
+
+    def _spy(store, interval):
+        started.append(interval)
+        import asyncio
+        return asyncio.create_task(asyncio.sleep(3600))
+
+    monkeypatch.setattr(gapp, "start_lease_sweeper", _spy)
+    with TestClient(_app(tmp_path, web_dir)):
+        pass
+    assert started, "lease sweeper 未随 lifespan 装配"
+    assert started[0] > 0
+
+
 def test_outbox_not_started_when_unconfigured(tmp_path, web_dir, monkeypatch):
     """未配置观测地址时不装配(且不得因此报错)。"""
     started: list[tuple] = []

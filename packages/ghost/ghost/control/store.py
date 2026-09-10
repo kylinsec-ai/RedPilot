@@ -431,22 +431,35 @@ class Store:
         status: str,
         addresses: tuple[str, ...] = (),
         container_id: str | None = None,
-    ) -> None:
+        *,
+        expect: tuple[str, ...] | None = None,
+    ) -> bool:
+        """容器状态迁移的**唯一写者**。expect 非空时走 CAS,返回是否迁移成功。
+
+        为何必须 CAS:start/close 都是两段式(锁内改状态 → 锁外调 provisioner
+        side effect,秒级 → 回锁内落终态)。没有前置条件时,交错会产出
+        "客户端被告知已关闭、行却是 available、容器永不回收" —— 以及失败路径用
+        stopped 抹掉并发成功 start 的 addresses/container_id。
+
+        语义约定:调用方**输掉 CAS 即表示状态已被并发推进越过自己**,此时只做
+        副作用补偿,绝不写状态(见 service.start/close)。
+        """
+        sql = ("UPDATE challenges"
+               "   SET container_status = ?, container_addr_json = ?, container_id = ?"
+               " WHERE task_token = ? AND unique_code = ?")
+        params: list[Any] = [
+            status,
+            json.dumps(addresses, separators=(",", ":")),
+            container_id,
+            token,
+            unique_code,
+        ]
+        if expect:
+            sql += " AND container_status IN (%s)" % ",".join("?" * len(expect))
+            params.extend(expect)
         with self._transaction() as connection:
-            connection.execute(
-                """
-                UPDATE challenges
-                   SET container_status = ?, container_addr_json = ?, container_id = ?
-                 WHERE task_token = ? AND unique_code = ?
-                """,
-                (
-                    status,
-                    json.dumps(addresses, separators=(",", ":")),
-                    container_id,
-                    token,
-                    unique_code,
-                ),
-            )
+            cursor = connection.execute(sql, params)
+        return cursor.rowcount == 1
 
     def mark_hint_viewed(self, token: str, unique_code: str) -> None:
         with self._transaction() as connection:
@@ -617,6 +630,131 @@ class Store:
                 ).fetchall()
             return [self._evaluation_payload_locked(self._connection, row) for row in rows]
 
+    def _reap_expired_leases_locked(self, connection, now: float) -> list[str]:
+        """回收过期租约:在飞 attempt 置 interrupted(job 回 pending),并**发 canonical 事件**。
+
+        此前是两段裸 UPDATE,不发事件 —— 契约要求 interrupted 也是 canonical 终态
+        (ghost_contracts.CANONICAL_TERMINAL_STATUSES),不发则 obs 侧 run 永挂 running。
+
+        必须在调用方事务内运行(_locked 后缀):claim_job 自己已持有 BEGIN IMMEDIATE,
+        嵌套开事务会失败。
+        """
+        expired = connection.execute(
+            """
+            SELECT a.attempt_id, a.worker_id, j.job_id, j.evaluation_id
+              FROM jobs j JOIN attempts a ON a.job_id = j.job_id
+             WHERE j.status = 'running' AND j.lease_expires_at IS NOT NULL
+               AND j.lease_expires_at < ?
+               AND a.status IN ('starting', 'solving', 'submitting', 'closing')
+            """,
+            (now,),
+        ).fetchall()
+        reaped: list[str] = []
+        for attempt in expired:
+            self._terminate_attempt_locked(
+                connection,
+                attempt_id=attempt["attempt_id"],
+                row=attempt,
+                status="interrupted",
+                error="lease expired",
+                worker_id=attempt["worker_id"],
+                reason="lease_expired",
+                now=now,
+            )
+            reaped.append(attempt["attempt_id"])
+        return reaped
+
+    def reap_expired_leases(self) -> list[str]:
+        """公开入口(lease sweeper 用):自己开事务回收过期租约。
+
+        放在 core 而非 obs housekeeper:lease/attempt/job 都是 core 的表,且事件要写进
+        core 的 platform_events + outbox_events;obs 不得 import control。
+        """
+        with self._transaction() as connection:
+            return self._reap_expired_leases_locked(connection, time.time())
+
+    def _terminate_attempt_locked(
+        self,
+        connection,
+        *,
+        attempt_id: str,
+        row,
+        status: str,
+        solved: bool = False,
+        flags_found: int | None = None,
+        error: str | None = None,
+        worker_id: str | None = None,
+        reason: str | None = None,
+        now: float | None = None,
+    ) -> None:
+        """单题终态写入 + canonical `attempt.completed` —— **唯一终态写者**。
+
+        抽取原因:lease 过期回收与 evaluation 取消此前各自用裸 UPDATE 写
+        attempts.status,绕过了事件写入。而 ghost_contracts.CANONICAL_TERMINAL_STATUSES
+        含 `interrupted`,即契约要求这些终态也必须发 canonical 事件 —— 不发则 obs 侧
+        run 永远停在 running(权威终态缺失),且 core 的 platform_events 序列不完整。
+
+        调用方必须已在同一事务内取好 row(需含 job_id/evaluation_id)。
+        reason 进 payload(lease_expired / evaluation_canceled),供观测侧区分来源。
+        """
+        now = now if now is not None else time.time()
+        if status == "interrupted":
+            job_status, worker_value = "pending", None
+        elif status in {"solved", "done"}:
+            job_status, worker_value = "completed", worker_id
+        else:
+            job_status, worker_value = "failed", worker_id
+        connection.execute(
+            """
+            UPDATE attempts SET status = ?, solved = ?, flags_found = ?,
+                error = ?, ended_at = ?, updated_at = ?
+             WHERE attempt_id = ?
+            """,
+            (status, int(solved), flags_found, error, now, now, attempt_id),
+        )
+        connection.execute(
+            """
+            UPDATE jobs SET status = ?, result_status = ?, worker_id = ?,
+                lease_id = NULL, lease_expires_at = NULL, error = ?, updated_at = ?
+             WHERE job_id = ?
+            """,
+            (job_status, status, worker_value, error, now, row["job_id"]),
+        )
+        payload: dict = {"status": status, "solved": bool(solved),
+                         "flags_found": flags_found, "error": error}
+        if reason:
+            payload["reason"] = reason
+        event = EventEnvelope.create(
+            "attempt.completed",
+            evaluation_id=row["evaluation_id"],
+            job_id=row["job_id"],
+            attempt_id=attempt_id,
+            worker_id=worker_id or "",
+            seq=self._next_event_seq_locked(connection, attempt_id),
+            payload=payload,
+        )
+        self._insert_event_locked(connection, event)
+        if worker_id:
+            connection.execute(
+                "UPDATE workers SET status = 'idle', last_seen_at = ?, updated_at = ?"
+                " WHERE worker_id = ?",
+                (now, now, worker_id),
+            )
+        # evaluation 收口:不再有 pending/running job 时置 completed。
+        remaining = connection.execute(
+            """
+            SELECT COUNT(*) AS count FROM jobs
+             WHERE evaluation_id = ? AND status IN ('pending', 'running')
+            """,
+            (row["evaluation_id"],),
+        ).fetchone()["count"]
+        if int(remaining) == 0:
+            connection.execute(
+                "UPDATE evaluations SET status = 'completed', ended_at = ?"
+                " WHERE evaluation_id = ?",
+                (now, row["evaluation_id"]),
+            )
+
     def cancel_evaluation(self, evaluation_id: str) -> dict | None:
         now = time.time()
         with self._transaction() as connection:
@@ -626,6 +764,30 @@ class Store:
             if row is None:
                 return None
             if row["status"] not in {"completed", "canceled", "expired"}:
+                # 顺序要紧:先把在飞的 attempt 走**统一终态写者**(发 canonical 事件、
+                # job 回 pending),再把仍在 pending/running 的 job 置 canceled,
+                # 最后置 evaluation。反过来会让终态写入找不到 running job。
+                inflight = connection.execute(
+                    """
+                    SELECT a.attempt_id, a.worker_id, a.status AS attempt_status,
+                           j.job_id, j.evaluation_id
+                      FROM attempts a JOIN jobs j ON j.job_id = a.job_id
+                     WHERE j.evaluation_id = ?
+                       AND a.status IN ('starting', 'solving', 'submitting', 'closing')
+                    """,
+                    (evaluation_id,),
+                ).fetchall()
+                for attempt in inflight:
+                    self._terminate_attempt_locked(
+                        connection,
+                        attempt_id=attempt["attempt_id"],
+                        row=attempt,
+                        status="interrupted",
+                        error="evaluation canceled",
+                        worker_id=attempt["worker_id"],
+                        reason="evaluation_canceled",
+                        now=now,
+                    )
                 connection.execute(
                     """
                     UPDATE evaluations SET status = 'canceled', ended_at = ?
@@ -641,16 +803,6 @@ class Store:
                      WHERE evaluation_id = ? AND status IN ('pending', 'running')
                     """,
                     (now, evaluation_id),
-                )
-                connection.execute(
-                    """
-                    UPDATE attempts SET status = 'interrupted', ended_at = ?,
-                        error = 'evaluation canceled', updated_at = ?
-                     WHERE job_id IN (
-                         SELECT job_id FROM jobs WHERE evaluation_id = ?
-                     ) AND status IN ('starting', 'solving', 'submitting', 'closing')
-                    """,
-                    (now, now, evaluation_id),
                 )
             row = connection.execute(
                 "SELECT * FROM evaluations WHERE evaluation_id = ?", (evaluation_id,)
@@ -767,34 +919,7 @@ class Store:
             if worker is None:
                 raise KeyError("worker_not_registered")
 
-            expired_jobs = connection.execute(
-                """
-                SELECT job_id FROM jobs
-                 WHERE status = 'running' AND lease_expires_at IS NOT NULL
-                   AND lease_expires_at < ?
-                """,
-                (now,),
-            ).fetchall()
-            if expired_jobs:
-                ids = [row["job_id"] for row in expired_jobs]
-                marks = ",".join("?" for _ in ids)
-                connection.execute(
-                    f"""
-                    UPDATE attempts SET status = 'interrupted', ended_at = ?,
-                        error = 'lease expired', updated_at = ?
-                     WHERE job_id IN ({marks})
-                       AND status IN ('starting', 'solving', 'submitting', 'closing')
-                    """,
-                    [now, now, *ids],
-                )
-                connection.execute(
-                    f"""
-                    UPDATE jobs SET status = 'pending', worker_id = NULL,
-                        lease_id = NULL, lease_expires_at = NULL, updated_at = ?
-                     WHERE job_id IN ({marks}) AND status = 'running'
-                    """,
-                    [now, *ids],
-                )
+            self._reap_expired_leases_locked(connection, now)
 
             row = connection.execute(
                 """
@@ -827,14 +952,6 @@ class Store:
             attempt_id = new_id()
             lease_id = new_id()
             attempt_no = int(row["attempt_no"]) + 1
-            connection.execute(
-                """
-                UPDATE evaluations SET status = 'running',
-                    started_at = COALESCE(started_at, ?)
-                 WHERE evaluation_id = ?
-                """,
-                (now, evaluation_id),
-            )
             cursor = connection.execute(
                 """
                 UPDATE jobs SET status = 'running', attempt_no = ?, worker_id = ?,
@@ -845,12 +962,25 @@ class Store:
             )
             if cursor.rowcount != 1:
                 # 并发 claim 丢了这一行:另一 worker 先行,本次领取作空,调用方按空队
-                # 列轮询(上层 evaluation 状态变更 harmless,事务照常提交)。
+                # 列轮询。
+                #
+                # 注意 evaluation 置 running **必须放在 CAS 成功之后**:此前它先于 CAS
+                # 执行,丢单时也会提交,把 evaluation 无端推到 running —— 若这是它唯一的
+                # job 且已被人领走,尚可由对方完成;但"无 challenge 行"的边界下会留下
+                # 一个永远无人推进的 running evaluation。
                 connection.execute(
                     "UPDATE workers SET status = 'idle', last_seen_at = ?, updated_at = ? WHERE worker_id = ?",
                     (now, now, worker_id),
                 )
                 return None
+            connection.execute(
+                """
+                UPDATE evaluations SET status = 'running',
+                    started_at = COALESCE(started_at, ?)
+                 WHERE evaluation_id = ?
+                """,
+                (now, evaluation_id),
+            )
             connection.execute(
                 """
                 INSERT INTO attempts(
@@ -913,13 +1043,17 @@ class Store:
             ).fetchone()
             if row is None:
                 return False
-            # 先确认 job 租约归属;失败(错 worker/stale lease/已取消)直接返回,不得留下 updated_at/worker 状态变更
+            # 先确认 job 租约归属;失败(错 worker/stale lease/已取消)直接返回,不得留下 updated_at/worker 状态变更。
+            #
+            # 过期校验是必需的:没有它,早已过期的租约只要赶在别人 claim 之前续一次
+            # 就能"复活",把 job 永久钉在 running(claim_job 的机会性回收再也回收不到它)。
             cursor = connection.execute(
                 """
                 UPDATE jobs SET lease_expires_at = ?, updated_at = ?
                  WHERE job_id = ? AND worker_id = ? AND lease_id = ? AND status = 'running'
+                   AND lease_expires_at IS NOT NULL AND lease_expires_at >= ?
                 """,
-                (expires, now, row["job_id"], worker_id, lease_id),
+                (expires, now, row["job_id"], worker_id, lease_id, now),
             )
             if cursor.rowcount != 1:
                 return False
@@ -1013,58 +1147,19 @@ class Store:
                     "idempotent": True,
                 }
 
-            if status == "interrupted":
-                job_status = "pending"
-                worker_value = None
-            elif status in {"solved", "done"}:
-                job_status = "completed"
-                worker_value = worker_id
-            else:
-                job_status = "failed"
-                worker_value = worker_id
-            connection.execute(
-                """
-                UPDATE attempts SET status = ?, solved = ?, flags_found = ?,
-                    error = ?, ended_at = ?, updated_at = ?
-                 WHERE attempt_id = ?
-                """,
-                (status, int(solved), flags_found, error, now, now, attempt_id),
-            )
-            connection.execute(
-                """
-                UPDATE jobs SET status = ?, result_status = ?, worker_id = ?,
-                    lease_id = NULL, lease_expires_at = NULL, error = ?, updated_at = ?
-                 WHERE job_id = ?
-                """,
-                (job_status, status, worker_value, error, now, row["job_id"]),
-            )
-            event = EventEnvelope.create(
-                "attempt.completed",
-                evaluation_id=row["evaluation_id"],
-                job_id=row["job_id"],
+            # 终态写入与 canonical 事件单源在 _terminate_attempt_locked
+            # (lease 过期与 evaluation 取消走同一实现,不再各自裸写)。
+            self._terminate_attempt_locked(
+                connection,
                 attempt_id=attempt_id,
+                row=row,
+                status=status,
+                solved=solved,
+                flags_found=flags_found,
+                error=error,
                 worker_id=worker_id,
-                seq=self._next_event_seq_locked(connection, attempt_id),
-                payload={"status": status, "solved": bool(solved),
-                         "flags_found": flags_found, "error": error},
+                now=now,
             )
-            self._insert_event_locked(connection, event)
-            connection.execute(
-                "UPDATE workers SET status = 'idle', last_seen_at = ?, updated_at = ? WHERE worker_id = ?",
-                (now, now, worker_id),
-            )
-            remaining = connection.execute(
-                """
-                SELECT COUNT(*) AS count FROM jobs
-                 WHERE evaluation_id = ? AND status IN ('pending', 'running')
-                """,
-                (row["evaluation_id"],),
-            ).fetchone()["count"]
-            if int(remaining) == 0:
-                connection.execute(
-                    "UPDATE evaluations SET status = 'completed', ended_at = ? WHERE evaluation_id = ?",
-                    (now, row["evaluation_id"]),
-                )
             return {
                 "attempt_id": attempt_id,
                 "job_id": row["job_id"],

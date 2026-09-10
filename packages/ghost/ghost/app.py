@@ -25,6 +25,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .control.api import create_app as create_control_app
 from .control.config import Settings as ControlSettings
+from .control.maintenance import start_lease_sweeper, stop_lease_sweeper
 from .control.outbox import outbox_lifespan
 from .obs.bus import LiveBus
 from .obs.config import Settings as ObsSettings
@@ -160,7 +161,13 @@ def create_app(
                 control_settings.observability_url,
                 control_settings.observability_token,
             ):
-                yield
+                # 过期租约回收:没有它,无人再 claim 时过期 job 会永远钉在 running。
+                sweeper = start_lease_sweeper(
+                    control_store, control_settings.lease_sweep_interval)
+                try:
+                    yield
+                finally:
+                    await stop_lease_sweeper(sweeper)
         finally:
             # Shutdown obs
             house.cancel()

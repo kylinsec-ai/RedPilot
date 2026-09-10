@@ -13,6 +13,17 @@ from dotenv import load_dotenv
 from ghost.control.models import ConfigurationError, TaskDefinition, parse_task_config
 
 
+def _float_env(name: str, default: float) -> float:
+    """数值型 env:未设/坏值 → 报错(配置错误应显式暴露,而非静默用默认值)。"""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ConfigurationError(f"{name} must be a number") from exc
+
+
 @dataclass(frozen=True)
 class Settings:
     database_path: str = "./data/ghost.sqlite3"
@@ -29,6 +40,9 @@ class Settings:
     observability_url: str | None = None
     observability_token: str | None = None
     max_active_challenges: int = 3
+    # 过期租约扫描周期(秒);0 = 关闭(退回"仅在 claim 时机会性回收")。
+    # 没有 sweeper 时,若无人再 claim,过期 job 会永远钉在 running。
+    lease_sweep_interval: float = 30.0
     provisioner: str = "static"
     host: str = "0.0.0.0"
     port: int = 8000
@@ -74,6 +88,7 @@ class Settings:
             observability_url=observability_url,
             observability_token=observability_token,
             max_active_challenges=max_active,
+            lease_sweep_interval=_float_env("GHOST_LEASE_SWEEP_INTERVAL", cls.lease_sweep_interval),
             provisioner=os.getenv("GHOST_PROVISIONER", "static").lower(),
             host=os.getenv("HOST", "0.0.0.0"),
             port=port,

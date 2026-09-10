@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import logging
 from threading import RLock
 from typing import Iterable
+
 
 from ghost.control.errors import APIError, challenge_not_found, duplicate, invalid_state, resource_unavailable, task_not_found
 from ghost.control.models import TaskDefinition, discounted_score
 from ghost.control.provisioner import ContainerProvisioner, ProvisionerError, ProvisionedContainer, ResourceUnavailable
 from ghost.control.store import ChallengeRow, DuplicateSubmission, Store
+
+logger = logging.getLogger("ghost.control.service")
 
 
 
@@ -93,6 +98,19 @@ class ChallengeService:
             if reservation == "limit":
                 raise invalid_state("Maximum active challenge limit reached")
 
+        def _revert_to_stopped() -> None:
+            """启动失败回滚:pending → stopped。
+
+            带 CAS:pending 期间并发 close 已把状态推到 stop_pending/stopped 时,
+            这里**不再写** —— 否则会用 stopped 抹掉并发成功启动那条路径写下的
+            addresses/container_id(容器泄漏且句柄丢失)。
+            """
+            if not self.store.set_container(token, unique_code, "stopped",
+                                            expect=("pending",)):
+                logger.warning(
+                    "start rollback skipped for %s/%s: container state advanced concurrently",
+                    token, unique_code)
+
         try:
             provisioned = self.provisioner.start(token, row.definition)
             if not isinstance(provisioned, ProvisionedContainer) or not provisioned.addresses:
@@ -101,15 +119,23 @@ class ChallengeService:
             if not addresses:
                 raise ResourceUnavailable("Challenge instance returned no address")
         except ResourceUnavailable as exc:
-            self.store.set_container(token, unique_code, "stopped")
+            _revert_to_stopped()
             raise resource_unavailable(str(exc)) from exc
         except ProvisionerError as exc:
-            self.store.set_container(token, unique_code, "stopped")
+            _revert_to_stopped()
             raise resource_unavailable(str(exc)) from exc
         except Exception as exc:
-            self.store.set_container(token, unique_code, "stopped")
+            _revert_to_stopped()
             raise APIError(500, "internal_error", "Internal server error") from exc
-        self.store.set_container(token, unique_code, "available", addresses, provisioned.container_id)
+        if not self.store.set_container(token, unique_code, "available", addresses,
+                                        provisioned.container_id, expect=("pending",)):
+            # 容器已起但我们输掉了状态迁移(并发 close 抢先):必须回收刚起的容器,
+            # 否则它既不在任何可关闭状态里、也没人持有句柄 —— 永久泄漏。
+            logger.warning("start raced with close for %s/%s: reclaiming container %s",
+                           token, unique_code, provisioned.container_id)
+            with contextlib.suppress(Exception):
+                self.provisioner.stop(token, row.definition, provisioned.container_id)
+            raise resource_unavailable("Challenge instance state changed concurrently")
         return {"unique_code": unique_code, "container_addr": list(addresses)}
 
     def hint(self, token: str, unique_code: str) -> dict:
@@ -165,21 +191,44 @@ class ChallengeService:
             self.authenticate(token)
             row = self._get_challenge(token, unique_code)
             if row.container_status not in {"available", "pending", "stop_pending"}:
-                self.store.set_container(token, unique_code, "stopped")
+                # 已不在可关闭状态(stopped/空):幂等返回,且不做无条件盲写。
                 return {"unique_code": unique_code, "closed": True}
-            self.store.set_container(token, unique_code, "stop_pending", row.container_addresses, row.container_id)
+            if not self.store.set_container(token, unique_code, "stop_pending",
+                                            row.container_addresses, row.container_id,
+                                            expect=("available", "pending")):
+                # 并发者已推进(另一 close 抢到 / 已 stopped):幂等返回。
+                # 关键是不再调 provisioner —— 避免重复 docker rm -f。
+                return {"unique_code": unique_code, "closed": True}
             definition, container_id = row.definition, row.container_id
             saved_addresses = row.container_addresses
+
+        def _rollback_to_available() -> None:
+            """停止失败回滚:stop_pending → available。
+
+            带 CAS:并发者已把状态推离 stop_pending 时不写,免得覆盖更晚的进度。
+            """
+            if not self.store.set_container(token, unique_code, "available",
+                                            saved_addresses, container_id,
+                                            expect=("stop_pending",)):
+                logger.warning(
+                    "close rollback skipped for %s/%s: container state advanced concurrently",
+                    token, unique_code)
+
         try:
             self.provisioner.stop(token, definition, container_id)
         except ResourceUnavailable as exc:
-            self.store.set_container(token, unique_code, "available", saved_addresses, container_id)
+            _rollback_to_available()
             raise resource_unavailable(str(exc)) from exc
         except ProvisionerError as exc:
-            self.store.set_container(token, unique_code, "available", saved_addresses, container_id)
+            _rollback_to_available()
             raise APIError(500, "internal_error", "Internal server error") from exc
         except Exception as exc:
-            self.store.set_container(token, unique_code, "available", saved_addresses, container_id)
+            _rollback_to_available()
             raise APIError(500, "internal_error", "Internal server error") from exc
-        self.store.set_container(token, unique_code, "stopped")
+        if not self.store.set_container(token, unique_code, "stopped",
+                                        expect=("stop_pending", "stopped")):
+            # 容器确实已停,但状态被并发推进(如另一 close 已落 stopped):
+            # 记录而非覆盖 —— 结果等价(都是停)。
+            logger.warning("close finalize raced for %s/%s; leaving state to the winner",
+                           token, unique_code)
         return {"unique_code": unique_code, "closed": True}
