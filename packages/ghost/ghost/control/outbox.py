@@ -19,11 +19,19 @@ import httpx
 log = logging.getLogger("ghost.outbox")
 
 
-async def dispatch_outbox_loop(store, url: str, token: str) -> None:
-    """常驻投递循环(调用方以 asyncio Task 装配,取消即停)。"""
+async def dispatch_outbox_loop(store, url: str, token: str, *, client_factory=None,
+                               max_rounds: int | None = None) -> None:
+    """常驻投递循环(调用方以 asyncio Task 装配,取消即停)。
+
+    client_factory: 测试缝合点 —— 传 `lambda: httpx.AsyncClient(transport=ASGITransport(app))`
+    即可在进程内跑通 outbox → obs 全链路,无需起真实服务。默认走真实网络。
+    max_rounds: 仅测试用 —— 跑满轮数后返回(默认 None = 常驻)。
+    """
 
     endpoint = url.rstrip("/") + "/api/internal/canonical-events"
-    async with httpx.AsyncClient(timeout=5.0) as client:
+    make_client = client_factory or (lambda: httpx.AsyncClient(timeout=5.0))
+    rounds = 0
+    async with make_client() as client:
         while True:
             try:
                 events = await asyncio.to_thread(store.pending_outbox, 100)
@@ -54,13 +62,18 @@ async def dispatch_outbox_loop(store, url: str, token: str) -> None:
                 raise
             except Exception:
                 log.warning("canonical event delivery failed", exc_info=True)
+            rounds += 1
+            if max_rounds is not None and rounds >= max_rounds:
+                return
             await asyncio.sleep(1.0)
 
 
-def start_dispatch_task(store, url: str, token: str):
+def start_dispatch_task(store, url: str, token: str, *, client_factory=None):
     """装配辅助:起投递 Task;调用方在 lifespan finally 里 cancel/await。"""
 
-    return asyncio.create_task(dispatch_outbox_loop(store, url, token))
+    return asyncio.create_task(
+        dispatch_outbox_loop(store, url, token, client_factory=client_factory)
+    )
 
 
 async def stop_dispatch_task(task) -> None:
