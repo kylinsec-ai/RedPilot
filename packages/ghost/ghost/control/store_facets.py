@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Protocol
 
 from ghost.control.store import AssignmentRow, ChallengeRow, SubmissionRow
 
@@ -57,24 +57,3 @@ class ControlStorePort(Protocol):
     def attempt_events(self, attempt_id: str) -> list[dict]: ...
     def pending_outbox(self, limit: int = ...) -> list[dict]: ...
     def mark_outbox_delivered(self, event_ids: list[str]) -> int: ...
-
-
-def check_store_facets(store: Any) -> tuple[bool, bool]:
-    """断言 store 同时满足双切面(回归测试用,防方法漂移)。"""
-
-    challenge_methods = (
-        "has_task", "task_is_active", "stop_task", "get_challenge",
-        "list_challenges", "active_container_count", "reserve_container",
-        "set_container", "mark_hint_viewed", "submissions", "record_submission",
-    )
-    control_methods = (
-        "create_evaluation", "get_evaluation", "list_evaluations",
-        "cancel_evaluation", "register_worker", "list_workers",
-        "worker_heartbeat", "claim_job", "heartbeat_assignment",
-        "append_attempt_events", "attempt_context", "complete_attempt",
-        "attempt_events", "pending_outbox", "mark_outbox_delivered",
-    )
-    return (
-        all(callable(getattr(store, name, None)) for name in challenge_methods),
-        all(callable(getattr(store, name, None)) for name in control_methods),
-    )

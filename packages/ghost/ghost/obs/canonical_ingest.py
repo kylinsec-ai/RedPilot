@@ -27,24 +27,16 @@ log = logging.getLogger("obs.canonical_ingest")
 router = APIRouter(prefix="/api/internal", tags=["internal"])
 
 
-def _check_token(request: Request) -> None:
-    check_token(request)
-
-
-def _require_store(request: Request):
-    return require_store(request)
-
-
 @router.post("/canonical-events")
 async def post_canonical_events(body: CanonicalEventsIn, request: Request,
-                                _auth=Depends(_check_token)) -> dict:
+                                _auth=Depends(check_token)) -> dict:
     """接收 core outbox 的 attempt 生命周期，投影到同一条 obs run。"""
     # 先全量校验 attempt_id 形态,任一非法即 400 且不落任何写(避免批内部分提交与 /events 语义不一致)
     for event in body.events:
         attempt_id = str(event.get("attempt_id") or "")
         if attempt_id:
             require_run_id(attempt_id)
-    store = _require_store(request)
+    store = require_store(request)
     processed = 0
     skipped = 0
     for event in body.events:

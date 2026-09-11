@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from conftest import TOKEN, make_run_events, rid, session_ev
+from conftest import make_run_events, rid, session_ev
 
 
 def _events_body(run_id: str, attempt_id: str | None = None, code: str = "a-05") -> dict:

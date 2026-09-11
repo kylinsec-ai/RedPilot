@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager, suppress
 import logging
+import random
 
 import httpx
 
@@ -27,8 +28,6 @@ _BACKOFF_MAX = 60.0
 
 def _backoff(failures: int) -> float:
     """指数退避 + 抖动:上限 60s,抖动避免多实例同步重试(thundering herd)。"""
-    import random
-
     raw = min(_BACKOFF_BASE * (2 ** max(0, failures - 1)), _BACKOFF_MAX)
     return raw * (0.5 + random.random() * 0.5)
 

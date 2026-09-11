@@ -28,6 +28,13 @@ class _Recorder(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(n) or b"{}")
         with self.server.lock:  # type: ignore[attr-defined]
             self.server.records.append((self.path, body))  # type: ignore[attr-defined]
+        fail = getattr(self.server, "fail_paths", ())  # type: ignore[attr-defined]
+        if self.path in fail:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"detail": "boom"}')
+            return
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -41,11 +48,16 @@ class MockServer:
         self._srv = ThreadingHTTPServer(("127.0.0.1", port), _Recorder)
         self._srv.lock = self.lock
         self._srv.records = self.records
+        self._srv.fail_paths = set()
         self.port = self._srv.server_address[1]
         threading.Thread(target=self._srv.serve_forever, daemon=True).start()
 
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
+
+    def fail(self, *paths: str) -> None:
+        """令这些路径恒定 500(其余照常 200),模拟平台侧持续拒绝某类载荷。"""
+        self._srv.fail_paths = set(paths)
 
     def by_path(self, path: str) -> list[dict]:
         with self.lock:
@@ -89,6 +101,15 @@ def _relay(tmp_path, url: str, token: str = "tok", workdir: str | None = None):
     r = ObsRelay(live, bus, workdir or str(tmp_path), url, token, worker_id="worker-1")
     r.start()
     return live, bus, r
+
+
+def _relay_unstarted(tmp_path, url: str, token: str = "tok"):
+    """只构造、不 start():单测直接驱动 _sender,不经引擎与节拍线程。"""
+    live = LiveState(worker_id="worker-1", state_path=None)
+    bus = LiveBus()
+    from ghost_worker.relay import ObsRelay
+    return live, bus, ObsRelay(live, bus, str(tmp_path), url, token,
+                               worker_id="worker-1")
 
 
 def _events_of(records: list[dict]) -> list[dict]:
@@ -296,4 +317,90 @@ def test_platform_down_then_recover(tmp_path):
         assert types == ["_attempt", "session"]  # 零丢失
     finally:
         srv.close()
+        relay.stop()
+
+
+@pytest.fixture
+def sender_backoff_noop(monkeypatch):
+    """把 sender 线程的退避 sleep 变成 no-op。
+
+    只对 obs-sender 线程生效:ghost_worker.relay 里的 `time` 是共享模块,
+    直接 patch time.sleep 会让本模块 _wait 的 50ms 轮询变成忙等。
+    """
+    import ghost_worker.relay as relay_mod
+    real_sleep = relay_mod.time.sleep
+
+    def fake_sleep(seconds):
+        if threading.current_thread().name == "obs-sender":
+            return
+        real_sleep(seconds)
+
+    monkeypatch.setattr(relay_mod.time, "sleep", fake_sleep)
+
+
+def test_permanent_500_does_not_block_later_messages(tmp_path, mock_server,
+                                                     sender_backoff_noop):
+    """被平台持续 500 的消息不得永久占住队首 —— 重试必须有终点。
+
+    回归:此前失败消息经 requeue 放回**队首**且无尝试上限、无截止时间,一条毒
+    消息会把它后面的 live/events/ping 永久堵死;平台据此在 stale_after=150s 后
+    判定 worker 离线,而 worker 其实还在正常解题,且没有任何恢复路径(只能重启进程)。
+    """
+    mock_server.fail("/api/internal/events")
+    live, bus, relay = _relay_unstarted(tmp_path, mock_server.url())
+
+    run = {"run_id": "a" * 32, "worker_id": "worker-1", "code": "a-05"}
+    relay._fifo.put({"t": "events", "run": run,
+                     "rows": [{"seq": 0, "type": "session", "payload": "{}"}]})
+    relay._fifo.put({"t": "ping", "worker_id": "worker-1"})
+
+    threading.Thread(target=relay._sender, daemon=True, name="obs-sender").start()
+    try:
+        _wait(lambda: bool(mock_server.by_path("/api/internal/ping")), timeout=10.0,
+              what="毒消息之后的 ping 送达(队首未被永久占住)")
+    finally:
+        relay.stop()
+
+
+def test_transport_failure_never_counts_as_poison(tmp_path, monkeypatch,
+                                                  sender_backoff_noop):
+    """平台 down(连接失败)无论重试多少次都不许丢 —— 重试终点只认"回了话的失败"。
+
+    毒消息上限(_POISON_TRIES)只对 HTTP 5xx/429 这类**有响应**的失败计数。若日后
+    有人把连接异常一并计入,长 down 就会静默吃掉积压事件 —— 直接破掉 relay 的
+    零丢失不变量,而这条不变量恰是「失败放回队首」重试存在的唯一理由。
+    """
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()  # 端口空着:连接必被拒(HTTP 无响应)
+
+    live, bus, relay = _relay_unstarted(tmp_path, f"http://127.0.0.1:{port}")
+    failed_tries: list[int] = []
+    real_requeue = relay._fifo.requeue
+
+    def spy(msg):
+        failed_tries.append(msg.get("_tries", 0))
+        real_requeue(msg)
+
+    monkeypatch.setattr(relay._fifo, "requeue", spy)
+
+    run = {"run_id": "a" * 32, "worker_id": "worker-1", "code": "a-05"}
+    relay._fifo.put({"t": "events", "run": run,
+                     "rows": [{"seq": 0, "type": "session", "payload": "{}"}]})
+
+    threading.Thread(target=relay._sender, daemon=True, name="obs-sender").start()
+    srv = None
+    try:
+        _wait(lambda: len(failed_tries) > 6, timeout=10.0,
+              what="连接失败重试次数超过毒消息上限")
+        assert not any(failed_tries[-1:]), \
+            "连接失败被当毒消息计数(平台 down 将静默丢事件)"
+        srv = MockServer(port=port)
+        _wait(lambda: bool(srv.by_path("/api/internal/events")), timeout=15.0,
+              what="平台恢复后积压事件仍送达(零丢失)")
+    finally:
+        if srv:
+            srv.close()
         relay.stop()

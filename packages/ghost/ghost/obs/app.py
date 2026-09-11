@@ -13,37 +13,17 @@ import logging
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
-from starlette.concurrency import run_in_threadpool
 
 from ghost.obs import __version__
 from ghost.obs.bus import LiveBus
 from ghost.obs.config import Settings
 from ghost.obs.control_proxy import router as control_proxy_router
 from ghost.obs.ingest import router as ingest_router
+from ghost.obs.maintenance import housekeep
 from ghost.obs.read import router as read_router
 from ghost.obs.store import ObsStore
 
 log = logging.getLogger("obs.app")
-
-
-async def _housekeep(store: ObsStore, settings: Settings) -> None:
-    # 窗口阈值已由 lifespan 注入 store(ObsStore.stale_after = Settings.stale_after),
-    # 房管直接吃 store 缺省 —— 关 stale run 与读端"在线上"判定永同一把尺。
-    while True:
-        await asyncio.sleep(settings.house_interval)
-        try:
-            closed = await run_in_threadpool(store.close_stale_runs)
-            if closed:
-                log.info("housekeeper interrupted stale run(s): %s", closed)
-        except Exception:
-            log.exception("housekeeper error")
-        try:
-            # GC 死 worker 的 live 残留(关闭其 running run 之后 4x 窗口)
-            swept = await run_in_threadpool(store.sweep_live)
-            if swept:
-                log.info("housekeeper swept %d stale live row(s)", swept)
-        except Exception:
-            log.exception("housekeeper sweep error")
 
 
 def create_app(db_path: str | None = None, web_dir: str | None = None,
@@ -79,7 +59,7 @@ def create_app(db_path: str | None = None, web_dir: str | None = None,
         app.state.web_dir = settings.web_dir
         app.state.control_url = settings.control_url
         app.state.bus = LiveBus()
-        house = asyncio.create_task(_housekeep(store, settings))
+        house = asyncio.create_task(housekeep(store, settings))
         try:
             yield
         finally:

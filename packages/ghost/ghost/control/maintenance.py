@@ -15,8 +15,10 @@ attempt 也永远停在中间态,obs 侧 run 无终态。
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 import logging
+
+from .outbox import outbox_lifespan
 
 log = logging.getLogger("ghost.maintenance")
 
@@ -59,3 +61,22 @@ async def stop_lease_sweeper(task) -> None:
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+
+
+@asynccontextmanager
+async def control_lifespan(store, *, url: str | None, token: str | None,
+                           sweep_interval: float):
+    """控制面全部后台任务的启停 —— **所有** app 工厂的唯一装配点。
+
+    outbox 与租约回收必须同生共死:两者都是"状态机自愈"的一环(权威事件投递 +
+    过期租约回收),任一漏启都会让 attempt 永久停在中间态。此前统一 app 与独立
+    控制面工厂各自手抄这段启停,新增后台任务时极易只改一处 —— 见 outbox_lifespan
+    docstring 记录的"装配路径漏一步"事故。新增后台任务请只加在这里。
+    """
+
+    async with outbox_lifespan(store, url, token):
+        sweeper = start_lease_sweeper(store, sweep_interval)
+        try:
+            yield
+        finally:
+            await stop_lease_sweeper(sweeper)

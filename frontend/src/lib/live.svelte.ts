@@ -10,8 +10,7 @@
  * 帧格式(纯文本解析,无新依赖),从而把凭据放进 header 而非 URL
  * ——URL 会进 uvicorn access log / 浏览器历史 / Referer。
  */
-import { fetchStatus, OBS_READ_HEADER } from "./api";
-import { readAuth } from "./auth.svelte";
+import { fetchStatus, obsReadHeaders } from "./api";
 import type { LiveSnap } from "./types";
 
 export const live = $state<{
@@ -61,9 +60,10 @@ export function startLiveWatchers(): () => void {
     running = true;
     ctrl = new AbortController();
     try {
-      const headers: Record<string, string> = {};
-      if (readAuth.token) headers[OBS_READ_HEADER] = readAuth.token;
-      const r = await fetch("/api/events", { headers, signal: ctrl.signal });
+      const r = await fetch("/api/events", {
+        headers: obsReadHeaders(),
+        signal: ctrl.signal,
+      });
       if (!r.ok || !r.body) {
         // 凭据问题:重试无意义(且会持续打服务端)—— 停在待授权态,由用户补 token 后重连
         if (r.status === 401 || r.status === 403 || r.status === 503) {

@@ -16,56 +16,23 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager, suppress
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
-from starlette.concurrency import run_in_threadpool
 
 from .control.api import create_app as create_control_app
 from .control.config import Settings as ControlSettings
-from .control.maintenance import start_lease_sweeper, stop_lease_sweeper
-from .control.outbox import outbox_lifespan
+from .control.maintenance import control_lifespan
 from .obs.bus import LiveBus
 from .obs.config import Settings as ObsSettings
 from .obs.control_proxy import router as control_proxy_router
 from .obs.ingest import router as ingest_router
+from .obs.maintenance import housekeep
 from .obs.read import router as read_router
 from .obs.store import ObsStore
 
 log = logging.getLogger("ghost.app")
-
-
-async def _housekeep(store: ObsStore, settings: ObsSettings) -> None:
-    """Obs housekeeper: close stale runs and sweep dead workers."""
-    while True:
-        await asyncio.sleep(settings.house_interval)
-        try:
-            closed = await run_in_threadpool(store.close_stale_runs)
-            if closed:
-                log.info("housekeeper interrupted stale run(s): %s", closed)
-        except Exception:
-            log.exception("housekeeper error")
-        try:
-            swept = await run_in_threadpool(store.sweep_live)
-            if swept:
-                log.info("housekeeper swept %d stale live row(s)", swept)
-        except Exception:
-            log.exception("housekeeper sweep error")
-        # 原文事件行保留:events 是唯一的无界增长路径。只删已结束 run 的原文行,
-        # runs 行保留(审计链不断);0 = 关闭。
-        if settings.events_retention_days > 0:
-            try:
-                removed = await run_in_threadpool(
-                    store.prune_events,
-                    older_than_days=settings.events_retention_days,
-                    batch=settings.events_prune_batch)
-                if removed:
-                    log.info("housekeeper pruned %d event row(s) older than %.0f day(s)",
-                             removed, settings.events_retention_days)
-            except Exception:
-                log.exception("housekeeper prune error")
 
 
 def create_app(
@@ -151,23 +118,19 @@ def create_app(
         app.state.bus = LiveBus()
 
         # Start obs housekeeper
-        house = asyncio.create_task(_housekeep(store, obs_settings))
+        house = asyncio.create_task(housekeep(store, obs_settings))
 
         try:
-            # canonical 事件投递:与独立控制面共用 outbox_lifespan 单一实现。
-            # 合并初期此处遗漏,导致权威事件通道完全断开(见 outbox_lifespan docstring)。
-            async with outbox_lifespan(
+            # 控制面后台任务:与独立控制面工厂共用 control_lifespan 单一实现。
+            # 合并初期此处遗漏了 outbox,导致权威事件通道完全断开
+            # (见 outbox_lifespan docstring)。
+            async with control_lifespan(
                 control_store,
-                control_settings.observability_url,
-                control_settings.observability_token,
+                url=control_settings.observability_url,
+                token=control_settings.observability_token,
+                sweep_interval=control_settings.lease_sweep_interval,
             ):
-                # 过期租约回收:没有它,无人再 claim 时过期 job 会永远钉在 running。
-                sweeper = start_lease_sweeper(
-                    control_store, control_settings.lease_sweep_interval)
-                try:
-                    yield
-                finally:
-                    await stop_lease_sweeper(sweeper)
+                yield
         finally:
             # Shutdown obs
             house.cancel()

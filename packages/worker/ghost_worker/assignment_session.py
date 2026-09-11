@@ -45,9 +45,7 @@ async def lease_watch(client: AssignmentClient, assignment: dict,
                 assignment["attempt_id"], assignment["lease_id"], lease_seconds
             )
         except AssignmentError as exc:
-            if exc.status_code in {401, 403, 404, 409} or exc.code in {
-                "attempt_not_found", "lease_conflict", "worker_not_registered",
-            }:
+            if is_terminal_rejection(exc):
                 log.error("assignment lease lost for %s (%s), abandoning solve",
                           assignment.get("job_id"), exc.code)
                 lease_lost.set()

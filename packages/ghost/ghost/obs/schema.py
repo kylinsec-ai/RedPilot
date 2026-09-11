@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field, model_validator
 from ghost_contracts.vocabulary import (  # noqa: F401  (re-export)
     ACTIVE_PHASES,
     CLOSABLE_STATUSES,
-    RUN_CLOSE_STATUSES as CLOSE_STATUSES,
     RUN_ID_RX,
     RUN_STATUSES,
 )

@@ -8,7 +8,6 @@ import hmac
 from pathlib import Path
 from typing import Any, Literal
 
-import httpx  # noqa: F401 (保留:历史导入路径兼容,实际投递见 outbox 模块)
 from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -21,8 +20,7 @@ from ghost.control.errors import (APIError, admin_not_configured, admin_required
                      lease_conflict, worker_required,
                      worker_token_not_configured)
 from ghost.control.models import parse_task_config
-from ghost.control.maintenance import start_lease_sweeper, stop_lease_sweeper
-from ghost.control.outbox import outbox_lifespan
+from ghost.control.maintenance import control_lifespan
 from ghost.control.provisioner import ContainerProvisioner, provisioner_for
 from ghost.control.scheduling import SchedulingFacade
 from ghost.control.service import ChallengeService
@@ -158,15 +156,14 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        # 启停语义单源在 outbox_lifespan(统一 app 与本工厂共用,防装配路径漂移)。
-        async with outbox_lifespan(
-            store, settings.observability_url, settings.observability_token
+        # 启停语义单源在 control_lifespan(统一 app 与本工厂共用,防装配路径漂移)。
+        async with control_lifespan(
+            store,
+            url=settings.observability_url,
+            token=settings.observability_token,
+            sweep_interval=settings.lease_sweep_interval,
         ):
-            sweeper = start_lease_sweeper(store, settings.lease_sweep_interval)
-            try:
-                yield
-            finally:
-                await stop_lease_sweeper(sweeper)
+            yield
     app = FastAPI(title="Ghost Platform", version="1.0.0", lifespan=lifespan)
     app.state.store = store
     app.state.service = service

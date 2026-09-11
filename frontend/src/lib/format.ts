@@ -10,6 +10,11 @@ export function fmtClock(ms?: number | null): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+/** 秒级时间戳 -> 本地日期时间(zh-CN,24 小时制);缺值给占位符 */
+export function fmtDateTime(ts?: number | null, dash = "—"): string {
+  return ts ? new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false }) : dash;
+}
+
 /** 秒级时间戳 -> 相对时间(roster last_activity 等是秒) */
 export function fmtRel(ts?: number | null): string {
   if (!ts) return "—";

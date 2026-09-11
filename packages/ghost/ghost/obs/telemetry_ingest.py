@@ -26,19 +26,11 @@ router = APIRouter(prefix="/api/internal", tags=["internal"])
 _IDLE_ERROR = "worker restarted idle"
 
 
-def _check_token(request: Request) -> None:
-    check_token(request)
-
-
-def _require_store(request: Request):
-    return require_store(request)
-
-
 @router.post("/live")
 async def post_live(body: LiveIn, request: Request,
-                    _auth=Depends(_check_token)) -> dict:
+                    _auth=Depends(check_token)) -> dict:
     """worker 每 ~1s 一份快照;返回前份快照做崩溃守卫:换题未关旧 run / 重启残留 → interrupted。"""
-    store = _require_store(request)
+    store = require_store(request)
     # 落库前剥掉 `_` 前缀带外键:ghost_contracts.vocabulary 规定这些键(如
     # `_accepted_flags` 明文 flag)只在中继→平台链路内部流转,不得进快照/仪表板。
     # 此前未剥,导致明文 flag 可经 /api/status 与 SSE 播给任何读端。
@@ -71,9 +63,9 @@ async def post_live(body: LiveIn, request: Request,
 
 @router.post("/events")
 async def post_events(body: EventsIn, request: Request,
-                      _auth=Depends(_check_token)) -> dict:
+                      _auth=Depends(check_token)) -> dict:
     """事件流批插入:UNIQUE(run_id,seq) 幂等;全重放新增=0。建行与批插单事务。"""
-    store = _require_store(request)
+    store = require_store(request)
     require_run_id(body.run_id)
     if not body.events:
         return {"ok": True, "inserted": 0}
@@ -89,13 +81,13 @@ async def post_events(body: EventsIn, request: Request,
 
 @router.post("/run_close")
 async def post_run_close(body: RunCloseIn, request: Request,
-                         _auth=Depends(_check_token)) -> dict:
+                         _auth=Depends(check_token)) -> dict:
     """关闭 run;终态幂等,无行静默忽略(relay 全序保证事件先于 close 到达)。
 
     非权威:目标行 canonical=1(或同 attempt 任一行 canonical=1)时拒写,
     详见 ObsStore.close_run。
     """
-    store = _require_store(request)
+    store = require_store(request)
     require_run_id(body.run_id)
     closed = await run_in_threadpool(
         store.close_run, body.run_id,
@@ -116,32 +108,32 @@ async def post_run_close(body: RunCloseIn, request: Request,
 
 @router.post("/roster")
 async def post_roster(body: RosterIn, request: Request,
-                      _auth=Depends(_check_token)) -> dict:
+                      _auth=Depends(check_token)) -> dict:
     """整份旧格式快照(worker RosterPoller 60s 节奏;每 worker 一行)。"""
-    store = _require_store(request)
+    store = require_store(request)
     await run_in_threadpool(store.put_roster, body.worker_id, body.snapshot)
     return {"ok": True}
 
 
 @router.post("/ping")
 async def post_ping(body: PingIn, request: Request,
-                    _auth=Depends(_check_token)) -> dict:
+                    _auth=Depends(check_token)) -> dict:
     """30s 心跳:仅刷新 updated_at;无 live 行则忽略。"""
-    store = _require_store(request)
+    store = require_store(request)
     await run_in_threadpool(store.ping, body.worker_id)
     return {"ok": True}
 
 
 @router.post("/accepted_flags")
 async def post_accepted_flags(body: AcceptedFlagsIn, request: Request,
-                              _auth=Depends(_check_token)) -> dict:
+                              _auth=Depends(check_token)) -> dict:
     """已接受 flag 明文(非权威,加性):只补 runs.flags_accepted 一列。
 
     assignment 模式下 relay 不关 run(canonical 拥有生命周期权威),而该字段此前
     只经 run_close 写入 —— 于是平台主推模式下 /api/challenge 恒返回 flags: []。
     这里给明文一条不经过 core 的窄通道,保住「core 只存 SHA-256」(§7.1)。
     """
-    store = _require_store(request)
+    store = require_store(request)
     require_run_id(body.run_id)
     ok = await run_in_threadpool(store.attach_accepted_flags, body.run_id, body.flags)
     if not ok:

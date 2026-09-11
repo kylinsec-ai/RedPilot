@@ -1,5 +1,5 @@
 /**
- * 类型化只读 API 客户端。同源:平台服务(obs)提供 /api/*;dev 由 vite 代理到 :8090。
+ * 类型化只读 API 客户端。同源:统一服务提供 /api/* 与 /api/v1/*;dev 由 vite 代理到 :8000。
  */
 import type {
   ChallengeDetail,
@@ -16,6 +16,11 @@ import { adminAuth, readAuth } from "./auth.svelte";
 
 /** 观测读端 / 写端共用的头名(取值不同:读端 read_token,写端 ingest token)。 */
 export const OBS_READ_HEADER = "X-Observability-Token";
+
+/** 观测读端凭据头 —— 单源:凡自取 fetch(如 SSE)的调用方都从这里取,别再手搓。 */
+export function obsReadHeaders(): Record<string, string> {
+  return readAuth.token ? { [OBS_READ_HEADER]: readAuth.token } : {};
+}
 
 export class ApiError extends Error {
   status: number;

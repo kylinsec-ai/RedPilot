@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import { ApiError, cancelEvaluation, createEvaluation, fetchEvaluations, fetchWorkers } from "../lib/api";
   import { adminAuth, setAdminToken } from "../lib/auth.svelte";
+  import { fmtDateTime } from "../lib/format";
   import type { EvaluationRow, WorkerRow } from "../lib/types";
   import Banner from "../components/Banner.svelte";
   import StatCard from "../components/StatCard.svelte";
@@ -23,45 +24,29 @@
     workers.filter((x) => x.status === "idle" || x.status === "busy").length,
   );
 
-  function fmt(ts?: number | null): string {
-    return ts ? new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false }) : "—";
-  }
-
   async function load(): Promise<void> {
     if (!adminAuth.token) return;
     loading = true;
-    error = "";
     // 两表独立加载:一端 401/502 不丢另一端的旧数据,不再全有全无。
     const [e, w] = await Promise.allSettled([fetchEvaluations(), fetchWorkers()]);
-    const failures: unknown[] = [];
     if (e.status === "fulfilled") evaluations = e.value.evaluations;
-    else {
-      error = String(e.reason);
-      failures.push(e.reason);
-    }
     if (w.status === "fulfilled") workers = w.value.workers;
-    else {
-      error = error ? error + "\n" + String(w.reason) : String(w.reason);
-      failures.push(w.reason);
-    }
+    const failures = [e, w].flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
+    error = failures.map((r) => String(r)).join("\n");
     // token 错了留着只会每次同错:清掉并提示重登。
-    if (failures.some((r) => r instanceof ApiError && r.status === 401)) {
-      setAdminToken("");
-      evaluations = [];
-      workers = [];
-    }
+    if (failures.some((r) => r instanceof ApiError && r.status === 401)) resetSession();
     loading = false;
+  }
+
+  function resetSession(): void {
+    setAdminToken("");
+    evaluations = [];
+    workers = [];
   }
 
   function login(): void {
     setAdminToken(tokenInput);
     // 加载由下方 $effect 拥有:此处不再显式 load(原来双发两次 GET)。
-  }
-
-  function logout(): void {
-    setAdminToken("");
-    evaluations = [];
-    workers = [];
   }
 
   async function submitEvaluation(): Promise<void> {
@@ -144,7 +129,7 @@
       <button
         type="button"
         class="text-[12px] text-dim hover:text-ink"
-        onclick={logout}
+        onclick={resetSession}
       >
         断开凭据
       </button>
@@ -213,7 +198,7 @@
               <td class="px-1 py-2 tabular-nums text-[12px] text-mut">
                 {item.pending_count}/{item.running_count}/{item.failed_count}
               </td>
-              <td class="px-1 py-2 text-[12px] text-mut">{fmt(item.created_at)}</td>
+              <td class="px-1 py-2 text-[12px] text-mut">{fmtDateTime(item.created_at)}</td>
               <td class="px-1 py-2">
                 {#if item.status === "queued" || item.status === "running"}
                   <button
@@ -254,7 +239,7 @@
               <td class="px-1 py-2 font-mono text-[11.5px] text-mut">
                 {Object.keys(item.capabilities).join(", ") || "—"}
               </td>
-              <td class="px-1 py-2 text-[12px] text-mut">{fmt(item.last_seen_at)}</td>
+              <td class="px-1 py-2 text-[12px] text-mut">{fmtDateTime(item.last_seen_at)}</td>
             </tr>
           {:else}
             <tr><td colspan="4" class="py-5 text-center text-dim">暂无 Worker</td></tr>

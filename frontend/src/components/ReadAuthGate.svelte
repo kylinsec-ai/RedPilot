@@ -32,8 +32,8 @@
     class="mb-4 rounded-lg border border-[rgba(232,163,61,0.4)] bg-[rgba(232,163,61,0.09)] px-4 py-3"
   >
     <div class="mb-2 text-[13px] font-medium text-amberlight">需要观测凭据</div>
-    <p class="mb-3 text-[12.5px] leading-relaxed text-mid">
-      观测读端返回<strong class="text-high">明文 flag 与完整 agent 实录</strong>,服务端不再匿名开放。
+    <p class="mb-3 text-[12.5px] leading-relaxed text-dim">
+      观测读端返回<strong class="text-ink">明文 flag 与完整 agent 实录</strong>,服务端不再匿名开放。
       请输入平台配置的观测读 token(未单独配置 <code>OBSERVABILITY_READ_TOKEN</code> 时即为 ingest token)。
     </p>
     <form class="flex flex-wrap items-center gap-2" onsubmit={(e) => (e.preventDefault(), submit())}>
@@ -42,11 +42,11 @@
         bind:value
         placeholder="观测读 token"
         autocomplete="off"
-        class="min-w-[220px] flex-1 rounded-md border border-linebg bg-panel px-2.5 py-1.5 text-[13px] text-high outline-none focus:border-bluetint"
+        class="h-8 min-w-[220px] flex-1 rounded-md border border-line2 bg-panel2 px-2.5 font-mono text-[12.5px] text-ink placeholder:text-dim focus:border-blue focus:outline-none"
       />
       <button
         type="submit"
-        class="rounded-md border border-linebg bg-panel px-3 py-1.5 text-[13px] text-high hover:border-bluetint"
+        class="h-8 rounded-md border border-line2 bg-panel2 px-3 font-mono text-[12.5px] text-ink hover:border-blue"
       >
         应用
       </button>

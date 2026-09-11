@@ -63,17 +63,6 @@ _LOOP: "asyncio.AbstractEventLoop | None" = None
 # ── 主循环 ──────────────────────────────────────────────────
 
 
-async def _assignment_lease_watch(
-    client: AssignmentClient,
-    assignment: dict,
-    lease_seconds: int,
-    lease_lost: "asyncio.Event",
-) -> None:
-    """兼容包装:实现见 assignment_session.lease_watch(租约生命周期单源)。"""
-
-    await lease_watch(client, assignment, lease_seconds, lease_lost)
-
-
 async def _solve_assignment(
     settings: WorkerSettings,
     cfg: SolverConfig,
@@ -105,8 +94,8 @@ async def _solve_assignment(
             log.exception("failed to bind obs run to assignment %s", attempt_id)
     lease_lost = asyncio.Event()
     lease_task = asyncio.create_task(
-        _assignment_lease_watch(assignment_client, assignment,
-                                settings.assignment_lease_seconds, lease_lost)
+        lease_watch(assignment_client, assignment,
+                    settings.assignment_lease_seconds, lease_lost)
     )
     vpn_failed = False
     try:
@@ -407,20 +396,6 @@ async def amain(settings: WorkerSettings, cfg: SolverConfig, solver_backend, *,
         sys.exit(4)
 
 
-def _reporter_set(**fields) -> None:
-    """模块级便捷转发(测试 monkeypatch 兼容);amain 已改走参数注入,仅保留薄壳。"""
-    if _REPORTER is not None:
-        _REPORTER.set(**fields)
-
-
-# ── 装配单例(main() 初始化;None 时求解照常,仅无推送) ────────
-
-_LIVE: LiveState | None = None
-_BUS: LiveBus | None = None
-_RELAY = None
-_REPORTER: LiveReporter | None = None
-
-
 def _heartbeat_loop() -> None:
     """独立心跳线程: 30s 刷心跳文件(compose healthcheck 依据);
     同时探测事件循环活性 —— 纯文件心跳只证明进程存活,asyncio loop 同步卡死
@@ -454,7 +429,6 @@ def _heartbeat_loop() -> None:
 
 
 def main() -> None:
-    global _LIVE, _BUS, _RELAY, _REPORTER
     settings = WorkerSettings.from_env()
     if getattr(settings, "worker_mode", "legacy") == "assignment":
         if not settings.platform_url or not settings.platform_worker_token:
@@ -477,11 +451,11 @@ def main() -> None:
     touch_heartbeat()
 
     # 实时监视:LiveState(原子文件 <workdir>/.live/<worker>.json)+ SSE 广播线程
-    _LIVE = LiveState(worker_id=settings.worker_id,
-                      state_path=os.path.join(settings.workdir, LIVE_DIR,
-                                              f"{settings.worker_id}.json"))
-    _BUS = LiveBus()
-    _REPORTER = LiveReporter(_LIVE, _BUS)
+    live = LiveState(worker_id=settings.worker_id,
+                     state_path=os.path.join(settings.workdir, LIVE_DIR,
+                                             f"{settings.worker_id}.json"))
+    bus = LiveBus()
+    reporter = LiveReporter(live, bus)
     # 题目总览轮询单实例:localserver 与 relay 共享同一 RosterPoller
     # (同 worker 只跑一个 60s 轮询,避免双线程双写 /work/.live/roster.json)。
     # 两边都没启用则不建。obs 是否启用以 OBSERVABILITY_URL 为准(maybe_start_relay 同判)。
@@ -496,15 +470,15 @@ def main() -> None:
             log.exception("roster poller start failed (dashboard shows local-only)")
             roster_poller = None
     try:
-        _RELAY = maybe_start_relay(_LIVE, _BUS, settings=settings,
-                                   roster_poller=roster_poller)
+        relay = maybe_start_relay(live, bus, settings=settings,
+                                  roster_poller=roster_poller)
     except Exception:
         log.exception("obs relay start failed (platform ingestion disabled)")
-        _RELAY = None
+        relay = None
     try:
         # 数据无鉴权 → 默认只绑回环(STATUS_BIND);compose 内编排显式 0.0.0.0(proxy 转发),
         # 宿主侧再默认收成回环发布 —— 见 docker-compose.yaml 注释
-        _serve_local(_LIVE, _BUS, settings.status_port,
+        _serve_local(live, bus, settings.status_port,
                      workdir=settings.workdir, poller=roster_poller,
                      host=settings.status_bind)
     except Exception:
@@ -514,11 +488,8 @@ def main() -> None:
 
     log.info("ghost-worker starting: model=%s base=%s",
              cfg.model, settings.benchmark_base_url)
-    try:
-        asyncio.run(amain(settings, cfg, create_solver(),
-                          reporter=_REPORTER, relay=_RELAY))
-    finally:
-        pass
+    asyncio.run(amain(settings, cfg, create_solver(),
+                      reporter=reporter, relay=relay))
 
 
 if __name__ == "__main__":

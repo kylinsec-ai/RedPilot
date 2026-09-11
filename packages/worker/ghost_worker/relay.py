@@ -38,6 +38,9 @@ _ERR_MAX = 2000
 # (恒最新一帧)、续读暂停、ping/roster 队满即丢下节拍再生 —— 队列因此有界
 # (put_droppable 门控可再生消息;requeue 只循环同批消息不增长)
 _QUEUE_CAP = 500
+# 「平台回了话却持续拒收」的重试上限(见 _sender 的失败分类)。只用于 HTTP 5xx/429
+# 这类**有响应**的失败;连接异常/超时是平台 down,不限次(零丢失)。
+_POISON_TRIES = 5
 
 
 class _Fifo:
@@ -45,6 +48,11 @@ class _Fifo:
 
     失败消息经 requeue 放回队首重试:同一 run 的 events 恒先于 run_close 送达,
     平台长时间 down 时事件留在 FIFO(无界),恢复后续传零丢失。
+
+    队首重试的代价是队首即全局闸门 —— 一条平台**回话拒收**的毒消息会把它后面的
+    live/events/ping 全堵死(平台据此 stale_after 判 worker 离线,而 worker 其实在
+    正常解题,且只有重启进程一条恢复路径)。故有响应的失败按 _POISON_TRIES 设终点;
+    无响应的失败(平台 down)仍不限次,两条不变量在此互不干扰。
     """
 
     def __init__(self) -> None:
@@ -472,7 +480,19 @@ class ObsRelay:
                     retryable = (r.status_code >= 500 or r.status_code == 429) \
                         and "token not configured" not in detail
                     if retryable and msg["t"] != "live":
-                        self._fifo.requeue(msg)
+                        # 平台**回了话**(收到 HTTP 响应)却持续拒收 → 这条载荷本身是毒
+                        # 消息。队首即全局闸门,无上限重试会把它后面的 live/events/ping
+                        # 永久堵死(平台进而 stale_after 判 worker 离线,而 worker 其实
+                        # 在正常解题),故给一个终点。连接异常走 except:那是平台 down,
+                        # 仍不限次 —— 保住「长 down 零丢失 + 队首保序」。
+                        tries = msg.get("_tries", 0) + 1
+                        msg["_tries"] = tries
+                        if tries >= _POISON_TRIES:
+                            log.error("obs POST %s HTTP %d — 连续 %d 次被拒,丢弃该消息"
+                                      "(避免毒消息永久堵死队首): %s",
+                                      msg["t"], r.status_code, tries, detail)
+                        else:
+                            self._fifo.requeue(msg)
                 except Exception as e:
                     if time.monotonic() - warned.get("exc", 0.0) > 60:
                         log.warning("obs platform unreachable (%s) — retrying, message requeued", e)

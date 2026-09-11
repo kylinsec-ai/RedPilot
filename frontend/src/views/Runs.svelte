@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import { fetchRuns } from "../lib/api";
   import { readAuth } from "../lib/auth.svelte";
+  import { fmtDateTime } from "../lib/format";
   import { goChallenge, goRun } from "../lib/route.svelte";
   import { RUN_STATUSES, RUN_STATUS_LABEL } from "../lib/types";
   import type { RunRow, RunStatus } from "../lib/types";
@@ -31,10 +32,6 @@
     const h = Math.floor(s / 3600);
     const m = Math.round((s % 3600) / 60);
     return h + "h" + (m ? " " + m + "m" : "");
-  }
-
-  function fmtStart(ts: number): string {
-    return new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false });
   }
 
   function buildQs(): string {
@@ -174,7 +171,7 @@
               }}
             >
               <td class="whitespace-nowrap px-2.5 py-2 text-[12px] tabular-nums text-mut">
-                {fmtStart(x.started_at)}
+                {fmtDateTime(x.started_at)}
               </td>
               <td class="whitespace-nowrap px-2.5 py-2">
                 <span

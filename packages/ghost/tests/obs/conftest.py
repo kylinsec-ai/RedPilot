@@ -93,6 +93,19 @@ def make_run_events(events: list[dict]) -> list[dict]:
 
 # ── fixtures ──
 
+@pytest.fixture(autouse=True)
+def _no_ambient_obs_env(monkeypatch):
+    """摘掉宿主 .env 带来的观测凭据,保证本包测试与开发者环境无关。
+
+    `ghost.obs.config` 在 import 期 `load_dotenv(override=False)`,而 `create_app`
+    先 `Settings.from_env()` 再覆写参数 —— 注入的 `obs_token=TOKEN` 不会覆盖 env 里
+    的 `OBSERVABILITY_READ_TOKEN`,`effective_read_token()` 便回落到宿主 .env 的读凭据,
+    读端一律 401:测试全红,且"红/绿"取决于本机有没有 .env。
+    """
+    for name in ("OBSERVABILITY_TOKEN", "OBSERVABILITY_READ_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def store(tmp_path) -> ObsStore:
     s = ObsStore(str(tmp_path / "obs.sqlite3"))
@@ -112,8 +125,9 @@ def web_dir(tmp_path) -> str:
 @pytest.fixture
 def client(tmp_path, web_dir):
     # 读端与写端同一头名同一取值(未单独配置 OBSERVABILITY_READ_TOKEN 时回落 ingest
-    # token)。设为 client 默认 header,使既有读断言聚焦业务语义;"无凭据必须被拒"
-    # 由 test_read_auth.py 显式覆盖。
+    # token)。设为 client 默认 header,使既有读断言聚焦业务语义。
+    # 注:读端的"无凭据必须被拒"由 read.py 的 protected router 统一承担(整面鉴权),
+    # 不再逐端点断言。
     with TestClient(create_app(db_path=str(tmp_path / "obs.sqlite3"),
                                web_dir=web_dir, obs_token=TOKEN),
                     headers={"X-Observability-Token": TOKEN}) as c:
@@ -121,11 +135,8 @@ def client(tmp_path, web_dir):
 
 
 @pytest.fixture
-def client_no_token(tmp_path, web_dir, monkeypatch):
-    # obs.config import 时 load_dotenv() 会把 .env 的 OBSERVABILITY_TOKEN 带进进程;
-    # "无 token 应用" 语义要求真无 token → 显式摘掉 env(否则 401 顶替 503,测试失真)
-    monkeypatch.delenv("OBSERVABILITY_TOKEN", raising=False)
-    monkeypatch.delenv("OBSERVABILITY_READ_TOKEN", raising=False)
+def client_no_token(tmp_path, web_dir):
+    # "无 token 应用" 语义:env 已由 _no_ambient_obs_env 摘净,此处只需不注入 obs_token。
     with TestClient(create_app(db_path=str(tmp_path / "obs.sqlite3"),
                                web_dir=web_dir, obs_token=None)) as c:
         yield c

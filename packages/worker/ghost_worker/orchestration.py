@@ -20,21 +20,23 @@ import time
 
 from ._sdk import (
     Challenge,
-    ChallengeNotFound,
     DuplicateSubmit,
-    InvalidState,
-    ResourceUnavailable,
     GhostmarkAsync,
     VpnCheckError,
 )
 
 from ghost_contracts.paths import safe_code
-from ghost_contracts.text import ASSISTANT_PREVIEW_MAX, ERROR_HEAD_MAX, head_text, tail_text
+from ghost_contracts.text import (
+    ASSISTANT_PREVIEW_MAX,
+    ERROR_HEAD_MAX,
+    OUTPUT_TAIL_MAX,
+    head_text,
+    tail_text,
+)
 from ghost_contracts.vocabulary import FLUSH_KINDS
 
 from .config import SolverConfig
 from .flags import extract_flags, is_valid_flag
-from .solver import touch_heartbeat  # noqa: F401 (兼容重导出,心跳单源 contracts.paths)
 from .solver.base import AgentAdapter
 from .target import CLOSE_RETRIES, START_MAX_RETRIES, close_target, start_target
 from .task import AgentTask
@@ -43,11 +45,7 @@ from .transcripts import compress_transcript
 
 log = logging.getLogger("ghost_worker.orchestration")
 
-# 靶场生命周期常量/实现单源 target.py;此处重导出保持旧 import 路径兼容。
-# (from .orchestration import START_MAX_RETRIES / _start_with_retry 仍可用)
-__all__ = ["solve_one", "build_task", "_prioritize", "LiveReporter", "make_live_hooks",
-           "START_MAX_RETRIES", "CLOSE_RETRIES", "PROVIDER_FAILURE_RETRIES", "ProviderFailure",
-           "_start_with_retry", "_close_with_retry"]
+# 靶场生命周期常量/实现单源 target.py。
 PROVIDER_FAILURE_RETRIES = 2  # 0-turn+报错(provider 失败)的会话级重开次数
 
 
@@ -115,7 +113,7 @@ def _ev_system(p: dict) -> dict:
 
 _EVENT_TABLE = {
     "tool_start": _ev_tool_start,
-    "tool_progress": lambda p: {"last_output_tail": tail_text(p.get("preview", "") or "", 2048)},
+    "tool_progress": lambda p: {"last_output_tail": tail_text(p.get("preview", "") or "", OUTPUT_TAIL_MAX)},
     "text": lambda p: {"assistant_preview": tail_text(p.get("preview", "") or "", ASSISTANT_PREVIEW_MAX)},
     "thinking": lambda p: {"thinking_len": int(p.get("length", 0) or 0)},
     "turn_done": lambda p: {"current_tool": ""},
@@ -138,7 +136,7 @@ def make_live_hooks(reporter: LiveReporter):
         # update 节流保存 + kind 命中 FLUSH_KINDS 的一次强制 flush,恰好一次落盘
         reporter.set("tool_end",
                      last_tool=tool_name or "",
-                     last_output_tail=tail_text(out or "", 2048),
+                     last_output_tail=tail_text(out or "", OUTPUT_TAIL_MAX),
                      current_tool="",
                      flags_found=len(found))
 
@@ -179,17 +177,7 @@ def build_task(ch: Challenge, workdir: str, targets: list, *,
     )
 
 
-# ── 靶场生命周期(实现单源 target.py;旧名保留兼容) ─────────────
-
-async def _start_with_retry(client: GhostmarkAsync, code: str):
-    """兼容包装:实现见 target.start_target。"""
-    return await start_target(client, code)
-
-
-async def _close_with_retry(client: GhostmarkAsync, code: str) -> bool:
-    """兼容包装:实现见 target.close_target。"""
-    return await close_target(client, code)
-
+# ── 靶场生命周期(实现单源 target.py) ───────────────────────
 
 async def _async_sleep(s: float) -> None:
     import asyncio
@@ -227,7 +215,7 @@ async def solve_one(
               started_at=time.time(), turns=0, error="",
               current_tool="", last_output_tail="",
               assistant_preview="", flags_found=0, accepted=0)
-    started = await _start_with_retry(client, code)
+    started = await start_target(client, code)
     if started is None:
         _live_set(phase="idle", error="start failed")
         return False, []
@@ -342,7 +330,7 @@ async def solve_one(
         # 单会话结束即释放实例(多 flag 剩题由下一轮重新 start 冷启动)。
         # _accepted_flags = 本会话平台确认正确的明文(FLAG 文件含被拒候选,不能作 accepted)
         _live_set(phase="closing", _extra={"_accepted_flags": list(accepted)})
-        if not await _close_with_retry(client, code):
+        if not await close_target(client, code):
             log.warning("challenge %s left running on platform", code)
 
 

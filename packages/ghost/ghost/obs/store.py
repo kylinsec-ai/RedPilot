@@ -118,15 +118,23 @@ class ObsStore:
 
     @contextmanager
     def _tx(self):
+        """写事务。COMMIT 必须留在 try 内 —— 否则 COMMIT 自身失败(磁盘满/锁冲突)
+        时不会 ROLLBACK,事务悬挂;isolation_level=None 下 Python 不跟踪事务状态,
+        之后每次 BEGIN IMMEDIATE 都报 "cannot start a transaction within a
+        transaction",所有写入直到重启全部失败。见 test_db 的同名回归。
+
+        ROLLBACK 前查 in_transaction:某些触发(SQLITE_FULL)SQLite 已自动回滚,
+        此时再 ROLLBACK 会二次抛错、掩盖原始异常。
+        """
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 yield
-            except BaseException:
-                self._conn.execute("ROLLBACK")
-                raise
-            else:
                 self._conn.execute("COMMIT")
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
 
     # ── 摄取(全部幂等) ──
 
@@ -257,9 +265,8 @@ class ObsStore:
                      ended_at))
                 return True
 
-            if canonical:
-                pass  # 权威终态始终允许写入(幂等)
-            else:
+            # 权威终态始终允许写入(幂等);以下守卫只约束 relay 侧。
+            if not canonical:
                 if row["canonical"]:
                     return False  # relay 不能覆盖 canonical 终态
                 if row["status"] not in CLOSABLE_STATUSES:

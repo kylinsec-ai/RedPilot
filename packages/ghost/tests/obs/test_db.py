@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from ghost.obs import db as dbmod
 from ghost.obs.store import ObsStore
 
@@ -113,5 +115,57 @@ def test_migrate_rebuilds_drifted_events(tmp_path):
                                           [(0, "agent_message", "{}")])
         assert (n, created) == (1, True)
         assert store_.events_for_run("b" * 32)[0]["seq"] == 0
+    finally:
+        store_.close()
+
+
+class _CommitBomb:
+    """委托真连接,但让 COMMIT 抛错 —— 真事务因此确实留在打开状态。
+
+    为何用代理而非 monkeypatch.execute:sqlite3.Connection 是 C 类型,
+    `monkeypatch.setattr(conn, "execute", …)` 直接 AttributeError(read-only)。
+    为何不用 `PRAGMA max_page_count` 造 SQLITE_FULL:那种触发下 SQLite 会**自动
+    回滚**(in_transaction 已是 False),在旧代码上照样通过,钉不住这个 bug。
+    """
+
+    def __init__(self, conn, fails: int = 1):
+        self._conn = conn
+        self._left = fails
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def execute(self, sql, *args):
+        if sql == "COMMIT" and self._left:
+            self._left -= 1
+            raise sqlite3.OperationalError("database is locked")
+        return self._conn.execute(sql, *args)
+
+
+def test_tx_recovers_from_failed_commit(tmp_path, monkeypatch):
+    """COMMIT 自身失败后写路径必须仍然可用(磁盘满是现实触发条件)。
+
+    回归:此前 _tx 的 COMMIT 写在 try **之外**,抛错时不会 ROLLBACK,事务悬挂;
+    isolation_level=None 下 Python 不跟踪事务状态,于是之后每次 BEGIN IMMEDIATE
+    都报 "cannot start a transaction within a transaction" —— 所有写入直到重启
+    全部失败。
+    """
+    store_ = ObsStore(str(tmp_path / "obs.sqlite3"))
+    try:
+        bomb = _CommitBomb(store_._conn, fails=1)
+        monkeypatch.setattr(store_, "_conn", bomb)
+
+        rid = "a" * 32
+        with pytest.raises(sqlite3.OperationalError):
+            store_.append_events(rid, "worker-1", "a-05", [(0, "session", "{}")])
+
+        assert bomb.in_transaction is False, "失败后事务仍悬挂,写路径已被锁死"
+
+        # 写路径必须自愈(旧代码在这行炸 BEGIN IMMEDIATE)
+        n, created = store_.append_events(rid, "worker-1", "a-05", [(0, "session", "{}")])
+        assert (n, created) == (1, True)
+        # 读路径同样要能看到
+        assert store_.run_row(rid) is not None
+        assert [e["seq"] for e in store_.events_for_run(rid)] == [0]
     finally:
         store_.close()

@@ -191,7 +191,6 @@ def test_driver_exits_3_on_consecutive_provider_failures(monkeypatch):
 
     monkeypatch.setattr(driver, "GhostmarkAsync", lambda **kw: _StubClient2())
     monkeypatch.setattr(driver, "solve_one", fake_solve_one)
-    monkeypatch.setattr(driver, "_reporter_set", lambda **kw: None)
 
     settings = type("S", (), {"benchmark_base_url": "http://x", "benchmark_token": "t",
                               "workdir": "/tmp/tsec-test-work",
@@ -254,7 +253,6 @@ def test_driver_streak_resets_on_success(monkeypatch):
     stub = _StubClient2()
     monkeypatch.setattr(driver, "GhostmarkAsync", lambda **kw: stub)
     monkeypatch.setattr(driver, "solve_one", fake_solve_one)
-    monkeypatch.setattr(driver, "_reporter_set", lambda **kw: None)
 
     settings = type("S", (), {"benchmark_base_url": "http://x", "benchmark_token": "t",
                               "workdir": "/tmp/tsec-test-work",
@@ -313,7 +311,7 @@ def test_kill_solver_processes_terminates_group(tmp_path):
     不杀:pi 继续烧 LLM 时长、继续写同一 workdir,而 job 已回 pending 可能被再次
     领取 → 同一 workdir 两个并发会话互相踩。
     """
-    import subprocess, sys, time
+    import subprocess, sys
     from ghost_worker.solver.pi_agent import _LIVE_SOLVERS, kill_solver_processes
 
     workdir = str(tmp_path / "wd")

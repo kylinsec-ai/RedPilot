@@ -100,14 +100,15 @@ def test_lease_sweeper_started(tmp_path, web_dir, monkeypatch):
     """过期租约 sweeper 必须随 lifespan 起停 —— 没有它,无人再 claim 时
     过期 job 会永远钉在 running,obs 侧 run 无 canonical 终态。"""
     started: list[float] = []
-    import ghost.app as gapp
+    import ghost.control.maintenance as maint
 
     def _spy(store, interval):
         started.append(interval)
         import asyncio
         return asyncio.create_task(asyncio.sleep(3600))
 
-    monkeypatch.setattr(gapp, "start_lease_sweeper", _spy)
+    # 装配点单源在 control_lifespan,故 patch 其解析处(maintenance),而非 ghost.app。
+    monkeypatch.setattr(maint, "start_lease_sweeper", _spy)
     with TestClient(_app(tmp_path, web_dir)):
         pass
     assert started, "lease sweeper 未随 lifespan 装配"

@@ -23,15 +23,6 @@ def _env(name: str, default: str | None = None) -> str | None:
     return val
 
 
-def _envs(name: str, default: str = "") -> str:
-    """strip 版 _env:WORKER_ID/BASE_URL/TOKEN 类"空白即缺省"读取统一走这里"""
-    val = os.environ.get(name)
-    if val is None:
-        return default
-    val = val.strip()
-    return val if val else default
-
-
 @dataclass
 class SolverConfig:
     """Pi Agent 求解引擎配置"""

@@ -22,11 +22,15 @@ from ghost.obs.schema import RUN_STATUSES, require_run_id
 from ghost_contracts.assets import ASSET_RX as _ASSET_RX
 from ghost_contracts.assets import ASSET_TYPES as _ASSET_TYPES
 from ghost_contracts.digest import fold_rows
-from ghost_contracts.vocabulary import strip_out_of_band
+from ghost_contracts.vocabulary import SSE_HEARTBEAT_S, SNAPSHOT_KIND, strip_out_of_band
 
 log = logging.getLogger("obs.read")
 
-router = APIRouter(tags=["read"])
+# 两个 router:保护是**面的属性**,不是逐端点的记得。
+# 默认(protected)带读凭据 —— 新增 /api/* 路由天然受保护,漏挂不再等于裸奔;
+# 只有 SPA 资产与健康检查放行(不含任何答案材料)。
+public = APIRouter(tags=["read"])
+protected = APIRouter(tags=["read"], dependencies=[Depends(check_read_token)])
 
 # ── 前端构建产物(vite 多文件 dist → web/assets/*)──
 # mime 表与穿越守卫单源于 ghost_contracts.assets(与 worker 侧仪表板共用);
@@ -64,8 +68,8 @@ def _check_code(code: str) -> None:
 
 # ── 静态 SPA ──
 
-@router.get("/", include_in_schema=False)
-@router.get("/index.html", include_in_schema=False)
+@public.get("/", include_in_schema=False)
+@public.get("/index.html", include_in_schema=False)
 def index(request: Request) -> Response:
     web_dir = _web_dir(request)
     if not web_dir:
@@ -79,7 +83,7 @@ def index(request: Request) -> Response:
             404, "web/index.html not baked (run `cd frontend && npm run build`; commit web/)")
 
 
-@router.get("/assets/{name:path}", include_in_schema=False)
+@public.get("/assets/{name:path}", include_in_schema=False)
 def asset(name: str, request: Request) -> Response:
     """静态构建产物(web/assets/*)。名字只允许 URL 安全平铺名,杜绝穿越。"""
     ext = os.path.splitext(name)[1].lower()
@@ -104,7 +108,7 @@ def asset(name: str, request: Request) -> Response:
 
 # ── 系统 ──
 
-@router.get("/api/health")
+@public.get("/api/health")
 async def health(request: Request) -> Response:
     store = _store(request)
     if not await run_in_threadpool(store.health):
@@ -114,7 +118,7 @@ async def health(request: Request) -> Response:
 
 # ── 状态 / 事件推送 ──
 
-@router.get("/api/status", dependencies=[Depends(check_read_token)])
+@protected.get("/api/status")
 async def status(request: Request) -> dict:
     """最新活 worker 的 LiveState 快照;无任何数据时 {}。
 
@@ -126,7 +130,7 @@ async def status(request: Request) -> dict:
     return strip_out_of_band(dict(snap)) if snap else {}
 
 
-@router.get("/api/events", dependencies=[Depends(check_read_token)])
+@protected.get("/api/events")
 async def events(request: Request) -> StreamingResponse:
     """SSE:首帧 = 最新快照(kind=snapshot);其后每帧 = 一次 live POST;15s 心跳。"""
     import asyncio
@@ -139,13 +143,13 @@ async def events(request: Request) -> StreamingResponse:
         try:
             latest = await run_in_threadpool(store.live_latest)
             first = dict(latest) if latest else {}
-            first.setdefault("kind", "snapshot")
+            first.setdefault("kind", SNAPSHOT_KIND)
             first.setdefault("ts", time.time())
             # 出口统一剥带外键(见 status 的说明);落库侧已剥,此处为防御性再剥。
             yield "data: " + json.dumps(strip_out_of_band(first), ensure_ascii=False) + "\n\n"
             while True:
                 try:
-                    ev = await asyncio.wait_for(q.get(), timeout=15)
+                    ev = await asyncio.wait_for(q.get(), timeout=SSE_HEARTBEAT_S)
                     yield "data: " + json.dumps(strip_out_of_band(ev), ensure_ascii=False) + "\n\n"
                 except asyncio.TimeoutError:
                     yield ": heartbeat\n\n"
@@ -159,14 +163,14 @@ async def events(request: Request) -> StreamingResponse:
 
 # ── 题目总览 / 详情 ──
 
-@router.get("/api/roster", dependencies=[Depends(check_read_token)])
+@protected.get("/api/roster")
 async def roster(request: Request) -> dict:
     """题目总览:多 worker roster 读合并(单 worker 与原快照同键同值)。"""
     store = _store(request)
     return await run_in_threadpool(store.roster_merged)
 
 
-@router.get("/api/challenge", dependencies=[Depends(check_read_token)])
+@protected.get("/api/challenge")
 async def challenge(code: str = Query(...), request: Request = None) -> dict:
     """单题详情:平台行 + local + flags(取自最近一次含 flags_accepted 的 run);
     行选择与 /api/roster 同一份合并视图(非 local_only 优先)。本地无数据返回最小行,不 500。"""
@@ -183,7 +187,7 @@ async def challenge(code: str = Query(...), request: Request = None) -> dict:
     return out
 
 
-@router.get("/api/transcript", dependencies=[Depends(check_read_token)])
+@protected.get("/api/transcript")
 async def transcript(code: str = Query(...), tail: int = Query(200),
                      request: Request = None) -> dict:
     """该 code 的原文事件尾部(跨 run):行 = events.payload(无 message_update)。"""
@@ -198,7 +202,7 @@ async def transcript(code: str = Query(...), tail: int = Query(200),
     return {"code": code, "lines": lines}
 
 
-@router.get("/api/timeline", dependencies=[Depends(check_read_token)])
+@protected.get("/api/timeline")
 async def timeline(code: str = Query(...), after: int = Query(0),
                    request: Request = None) -> dict:
     """该 code 的时间线(跨 run 合流折叠);after=上一轮 next_seq 增量续拉。"""
@@ -213,7 +217,7 @@ async def timeline(code: str = Query(...), after: int = Query(0),
 
 # ── runs 历史 ──
 
-@router.get("/api/runs", dependencies=[Depends(check_read_token)])
+@protected.get("/api/runs")
 async def runs_list(status: str | None = None, worker: str | None = None,
                     challenge: str | None = None, limit: int = Query(200, ge=1, le=500),
                     request: Request = None) -> dict:
@@ -229,7 +233,7 @@ async def runs_list(status: str | None = None, worker: str | None = None,
     return {"runs": rows}
 
 
-@router.get("/api/runs/{run_id}", dependencies=[Depends(check_read_token)])
+@protected.get("/api/runs/{run_id}")
 async def runs_detail(run_id: str, request: Request = None) -> dict:
     require_run_id(run_id)
     store = _store(request)
@@ -239,7 +243,7 @@ async def runs_detail(run_id: str, request: Request = None) -> dict:
     return row
 
 
-@router.get("/api/runs/{run_id}/events", dependencies=[Depends(check_read_token)])
+@protected.get("/api/runs/{run_id}/events")
 async def runs_events(run_id: str, after: int = Query(0),
                       limit: int = Query(500, ge=1, le=1000),
                       request: Request = None) -> dict:
@@ -252,7 +256,7 @@ async def runs_events(run_id: str, after: int = Query(0),
     return await run_in_threadpool(store.run_events, run_id, after, limit)
 
 
-@router.get("/api/runs/{run_id}/timeline", dependencies=[Depends(check_read_token)])
+@protected.get("/api/runs/{run_id}/timeline")
 async def runs_timeline(run_id: str, after: int = Query(0),
                         request: Request = None) -> dict:
     """单 run 折叠时间线(复用同一 fold,seq 为该 run 内序)。"""
@@ -263,3 +267,9 @@ async def runs_timeline(run_id: str, after: int = Query(0),
         raise HTTPException(404, "run not found")
     rows = await run_in_threadpool(store.events_for_run, run_id)
     return await run_in_threadpool(fold_rows, rows, after=after, live=False)
+
+
+# 对外单一入口(装配方 include_router(read.router) 不变)。
+router = APIRouter()
+router.include_router(public)
+router.include_router(protected)
