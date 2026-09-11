@@ -1,9 +1,9 @@
 # ══════════════════════════════════════════════════════════
-# TsecBench Kali 基础镜像 — 自包含可移植环境
+# Ghost Kali 基础镜像 — 自包含可移植环境
 # kali-linux-headless + Node.js + Pi Agent(官方 npm 包)
 #
 # 构建(一次性,耗时较长):
-#   docker build -f Dockerfile.base -t tsecbench/kali:latest .
+#   docker build -f Dockerfile.base -t ghost/kali:latest .
 # 之后 worker 镜像(docker-compose.yaml / Dockerfile)直接 FROM 本 tag。
 # 可 docker save/load 或推送到任意仓库,随处运行。
 # ══════════════════════════════════════════════════════════

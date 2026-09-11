@@ -11,8 +11,8 @@
 # 使用须知
 在使用本API之前，你必须完成以下步骤：
 
-1. 获取BENCHMARK_BASE_URL 和 BENCHMARK_TOKEN 配置信息。（在TSecBench平台创建跑分任务后下发）
-2. 连接靶场VPN。所有题目入口地址，必须在连接靶场环境VPN后才可访问，否则将无法解题拿到答案。（靶场VPN和BENCHMARK_BASE_URL、BENCHMARK_TOKEN一起在TSecBench平台创建跑分任务后下发）
+1. 获取BENCHMARK_BASE_URL 和 BENCHMARK_TOKEN 配置信息。（在Ghost平台创建跑分任务后下发）
+2. 连接靶场VPN。所有题目入口地址，必须在连接靶场环境VPN后才可访问，否则将无法解题拿到答案。（靶场VPN和BENCHMARK_BASE_URL、BENCHMARK_TOKEN一起在Ghost平台创建跑分任务后下发）
 
 # 一、总览
 
@@ -35,7 +35,7 @@ BENCHMARK_TOKEN: a1b2c3d4-e5f6-7890-abcd-ef1234567890
 > 若 token 无效或缺失，返回 `404 task_not_found` 错误。
 
 > 注:平台另存在管理端点(`/openapi/v1/vpn/*`,openvpn 生命周期),由独立的
-> `TSECBENCH_ADMIN_TOKEN` 请求头保护,**任务 token 不可触达**;任务方请勿尝试调用。
+> `GHOST_ADMIN_TOKEN` 请求头保护,**任务 token 不可触达**;任务方请勿尝试调用。
 
 ---
 

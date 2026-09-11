@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghost"
+version = "0.1.0"
+description = "Ghost security benchmark platform: control plane + observability platform (unified)"
+requires-python = ">=3.10"
+# 基线零 fastapi:worker(Kali)镜像安装本发行版只为 ghost.obs.localserver(stdlib),
+# contracts 是唯一依赖 —— 与合并前的 ghost-obs 基线设计一致(镜像瘦身为既定决策)。
+# [platform] extra 供平台镜像拉起完整控制面 + 观测 API。
+dependencies = ["ghost-contracts"]
+
+[project.optional-dependencies]
+platform = ["fastapi", "uvicorn", "pydantic", "python-dotenv", "httpx"]
+
+[tool.setuptools.packages.find]
+# namespaces=false:每个包目录必须有 __init__.py。默认的命名空间模式会把
+# 嵌套的自拷贝目录(history: ghost/control/packages/ghost/...)一并收进 wheel。
+include = ["ghost*"]
+# 兜底:即便嵌套目录复现,也永不进 wheel。
+exclude = ["ghost.control.packages*", "ghost.packages*"]
+namespaces = false

@@ -3,7 +3,7 @@
  * code 白名单与旧版 parseHash 一致([A-Za-z0-9_-]{1,64});run_id 白名单 32hex ——
  * 不匹配的 hash 一律回落总览。
  */
-export type RouteView = "overview" | "challenge" | "runs" | "run";
+export type RouteView = "overview" | "challenge" | "runs" | "run" | "control";
 
 export const route = $state<{
   view: RouteView;
@@ -19,10 +19,12 @@ export const route = $state<{
 const CODE_RX = /^[A-Za-z0-9_-]{1,64}$/;
 const CHAL_RX = /^#\/c\/(.+)$/;
 const RUNS_RX = /^#\/runs(?:\/([0-9a-f]{32}))?$/;
+const CONTROL_RX = /^#\/control$/;
 
 function parseHash(): { view: RouteView; code: string | null; runId: string | null } {
   const fallback = { view: "overview" as RouteView, code: null, runId: null };
   const hash = location.hash || "#/";
+  if (CONTROL_RX.test(hash)) return { view: "control", code: null, runId: null };
   const m = hash.match(RUNS_RX);
   if (m) {
     return m[1] ? { view: "run", code: null, runId: m[1] } : { view: "runs", code: null, runId: null };
@@ -50,6 +52,9 @@ export function goChallenge(code: string): void {
 }
 export function goRuns(): void {
   location.hash = "#/runs";
+}
+export function goControl(): void {
+  location.hash = "#/control";
 }
 /** run_id 为 32hex,无需编码;统一经此构造以防未来字符集变化 */
 export function runHref(runId: string): string {

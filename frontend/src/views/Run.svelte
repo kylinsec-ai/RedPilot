@@ -4,6 +4,7 @@
     fetchRunEvents,
     fetchRunTimeline,
   } from "../lib/api";
+  import { fmtDateTime } from "../lib/format";
   import { goChallenge } from "../lib/route.svelte";
   import { RUN_STATUS_LABEL } from "../lib/types";
   import type {
@@ -40,12 +41,6 @@
     failed: "text-red border-[rgba(229,83,75,0.55)]",
     interrupted: "text-dim border-line2",
   };
-
-  function fmtSec(ts?: number | null): string {
-    return ts
-      ? new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false })
-      : "—";
-  }
 
   async function loadTimeline(): Promise<void> {
     const tl = await fetchRunTimeline(runId, nextSeq);
@@ -161,12 +156,12 @@
       </div>
       <div>
         <div class="text-[11.5px] text-dim">开始</div>
-        <div class="mt-px text-[13.5px] tabular-nums">{fmtSec(d.started_at)}</div>
+        <div class="mt-px text-[13.5px] tabular-nums">{fmtDateTime(d.started_at)}</div>
       </div>
       <div>
         <div class="text-[11.5px] text-dim">结束</div>
         <div class="mt-px text-[13.5px] tabular-nums">
-          {d.ended_at ? fmtSec(d.ended_at) : d.status === "running" ? "…" : "—"}
+          {d.ended_at ? fmtDateTime(d.ended_at) : d.status === "running" ? "…" : "—"}
         </div>
       </div>
       <div>

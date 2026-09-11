@@ -1,2 +1,0 @@
-[console_scripts]
-tsecbench-worker = tsecbench_worker.queue:main

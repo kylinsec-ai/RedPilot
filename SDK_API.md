@@ -16,7 +16,7 @@ pip install tsec-benchmark
 > - BENCHMARK_BASE_URL：跑分API的BASE_URL（例如 `https://benchmark.example.com`）
 > - 必须已连接靶场环境 VPN（用于访问题目容器地址）
 > 
-> 以上配置，在tsecbench平台创建跑分任务后下发
+> 以上配置，在ghost平台创建跑分任务后下发
 
 
 ## 快速开始
@@ -27,7 +27,7 @@ pip install tsec-benchmark
 
 ### 同步方式（最简单）
 ```python
-from tsec_benchmark import TSecBenchmark, DuplicateSubmit, InvalidState, VpnCheckError
+from tsec_benchmark import Ghostmark, DuplicateSubmit, InvalidState, VpnCheckError
 
 
 BENCHMARK_TOKEN=os.getenv("BENCHMARK_TOKEN", "")
@@ -46,7 +46,7 @@ def call_your_agent(ch, started):
 
 
 # 进入 with 时 SDK 自动做 VPN 联通预检；不通则抛 VpnCheckError 中断，不会发起任何平台请求。
-with TSecBenchmark(base_url=BENCHMARK_BASE_URL, token=BENCHMARK_TOKEN) as client:
+with Ghostmark(base_url=BENCHMARK_BASE_URL, token=BENCHMARK_TOKEN) as client:
     # 1) 列出题目：拿到本轮所有题目及每题作答进度（已通关的跳过）
     challenges = client.list_challenges()
     for ch in challenges:
@@ -79,7 +79,7 @@ with TSecBenchmark(base_url=BENCHMARK_BASE_URL, token=BENCHMARK_TOKEN) as client
 
 ```python
 import asyncio
-from tsec_benchmark import TSecBenchmarkAsync
+from tsec_benchmark import GhostmarkAsync
 
 BENCHMARK_TOKEN=os.getenv("BENCHMARK_TOKEN", "")
 BENCHMARK_BASE_URL=os.getenv("BENCHMARK_BASE_URL", "")
@@ -93,7 +93,7 @@ async def call_your_agent(ch, started):
 
 async def main():
     # 进入 async with 时 SDK 自动做 VPN 联通预检；不通则抛 VpnCheckError 中断。
-    async with TSecBenchmarkAsync(base_url=BENCHMARK_BASE_URL, token=BENCHMARK_TOKEN) as client:
+    async with GhostmarkAsync(base_url=BENCHMARK_BASE_URL, token=BENCHMARK_TOKEN) as client:
         challenges = await client.list_challenges()              # 1) 列出题目及进度
         for ch in challenges:
             if ch.is_completed:
@@ -195,12 +195,12 @@ VPN 连通性检测结果数据类，由 `check_vpn()` 返回，或在上下文�
 
 ```python
 from tsec_benchmark import (
-    TSecBenchmark, TSecError, VpnCheckError, TaskNotFound, InvalidState,
+    Ghostmark, TSecError, VpnCheckError, TaskNotFound, InvalidState,
     DuplicateSubmit, ResourceUnavailable, TSecConnectionError,
 )
 
 try:
-    with TSecBenchmark(base_url="...", token="...") as client:  # 自动预检 VPN
+    with Ghostmark(base_url="...", token="...") as client:  # 自动预检 VPN
         res = client.submit_flag(code, flag)
 except VpnCheckError as e:
     print(e)                    # VPN检测未通过,请检查靶场VPN网络配置 —— 先连 VPN 再重试

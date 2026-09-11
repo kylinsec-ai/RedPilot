@@ -1,8 +1,10 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import Sidebar from "./components/Sidebar.svelte";
+  import ReadAuthGate from "./components/ReadAuthGate.svelte";
   import Overview from "./views/Overview.svelte";
   import Challenge from "./views/Challenge.svelte";
+  import Control from "./views/Control.svelte";
   import Runs from "./views/Runs.svelte";
   import Run from "./views/Run.svelte";
   import { route } from "./lib/route.svelte";
@@ -38,9 +40,11 @@
   const conn = $derived(
     live.conn === "live"
       ? { text: "● 实时连接", dot: "bg-green" }
-      : live.conn === "reconnecting"
-        ? { text: "● 重连中…", dot: "bg-amber animate-pulse-ring" }
-        : { text: "● 连接中…", dot: "bg-dim" },
+      : live.conn === "unauthorized"
+        ? { text: "● 需观测凭据", dot: "bg-red" }
+        : live.conn === "reconnecting"
+          ? { text: "● 重连中…", dot: "bg-amber animate-pulse-ring" }
+          : { text: "● 连接中…", dot: "bg-dim" },
   );
 
   const drawerHidden = $derived(narrow && !drawerOpen);
@@ -186,6 +190,8 @@
           <span class="truncate font-mono text-[13px] font-semibold text-ink"
             >run {route.runId.slice(0, 8)}…</span
           >
+        {:else if route.view === "control"}
+          <span class="truncate text-[13px] font-semibold text-ink">控制面</span>
         {/if}
         <span class="flex-1"></span>
         <span
@@ -202,6 +208,7 @@
       class="scroll-thin min-h-0 flex-1 overflow-y-auto overscroll-contain"
     >
       <div class="mx-auto w-full max-w-[1240px] px-5 pb-16 pt-5 max-[720px]:px-3.5">
+        <ReadAuthGate />
         {#if route.view === "challenge"}
           {#if route.code}
             {@const c = route.code}
@@ -209,6 +216,8 @@
               <Challenge code={c} />
             {/key}
           {/if}
+        {:else if route.view === "control"}
+          <Control />
         {:else if route.view === "runs"}
           <Runs />
         {:else if route.view === "run" && route.runId}

@@ -1,20 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[adapter] === TsecBench 平台接入层适配器 ==="
+echo "[adapter] === Ghost 平台接入层适配器 ==="
 echo "[adapter] BENCHMARK_BASE_URL=${BENCHMARK_BASE_URL:-<unset>}"
+echo "[adapter] WORKER_MODE=${WORKER_MODE:-legacy}"
 
 # ── 校验必需环境变量 ──
 # 缺失 = 配置错误:明示后 exit 0 停止(restart:on-failure 会重启一切非零退出,
 # 只有 exit 0 能"停一次";用 :? 会 exit 1 无限闷循环,掩盖真因)
-if [[ -z "${BENCHMARK_TOKEN:-}" ]]; then
-  echo "[adapter] FATAL: BENCHMARK_TOKEN 未设置(.env 或 compose 环境变量)——容器停止,补齐后重新 docker compose up -d" >&2
-  exit 0
-fi
-if [[ -z "${BENCHMARK_BASE_URL:-}" ]]; then
-  echo "[adapter] FATAL: BENCHMARK_BASE_URL 未设置——容器停止,补齐后重新 docker compose up -d" >&2
-  exit 0
-fi
+case "${WORKER_MODE:-legacy}" in
+  assignment)
+    if [[ -z "${PLATFORM_URL:-}" ]]; then
+      echo "[adapter] FATAL: assignment 模式需设置 PLATFORM_URL(控制面地址)——容器停止,补齐后重新 docker compose up -d" >&2
+      exit 0
+    fi
+    if [[ -z "${PLATFORM_WORKER_TOKEN:-}" ]]; then
+      echo "[adapter] FATAL: assignment 模式需设置 PLATFORM_WORKER_TOKEN(须与 core GHOST_WORKER_TOKEN 相同)——容器停止,补齐后重新 docker compose up -d" >&2
+      exit 0
+    fi
+    ;;
+  legacy)
+    if [[ -z "${BENCHMARK_TOKEN:-}" ]]; then
+      echo "[adapter] FATAL: BENCHMARK_TOKEN 未设置(.env 或 compose 环境变量)——容器停止,补齐后重新 docker compose up -d" >&2
+      exit 0
+    elif [[ -z "${BENCHMARK_BASE_URL:-}" ]]; then
+      echo "[adapter] FATAL: BENCHMARK_BASE_URL 未设置——容器停止,补齐后重新 docker compose up -d" >&2
+      exit 0
+    fi
+    ;;
+  *)
+    echo "[adapter] FATAL: 未知 WORKER_MODE='${WORKER_MODE}'(仅支持 legacy/assignment)——容器停止,修正后重新 docker compose up -d" >&2
+    exit 0
+    ;;
+esac
 
 # LLM 凭据由 pi 自行解析(官方 env 名,其次 ~/.pi/agent/auth.json)。
 # 空字符串的 *_API_KEY 视为未设后 unset(避免空值歧义;provider 凭据 env 名
@@ -38,7 +56,7 @@ fi
 cd /app 2>/dev/null || true
 
 # ── VPN 连接 ──
-# TsecBench 要求: 所有题目入口地址必须通过 VPN 才能访问
+# Ghost 要求: 所有题目入口地址必须通过 VPN 才能访问
 # ADAPTER_VPN_CONFIG 为空/未设时跳过（如共享 worker-1 网络的 worker-2/3）
 VPN_CONFIG="${ADAPTER_VPN_CONFIG:-}"
 
@@ -67,9 +85,25 @@ if [[ -n "${VPN_CONFIG}" && -f "${VPN_CONFIG}" ]]; then
   done
 
   if [[ "$up" != "1" ]]; then
-    echo "[adapter] WARNING: VPN tun0 not detected in 90s, check /tmp/openvpn.log" >&2
+    echo "[adapter] FATAL: VPN tun0 not detected in 90s" >&2
     tail -n 20 /tmp/openvpn.log >&2 2>/dev/null || true
-    # 不直接退出，继续尝试运行（可能 API 不需要 VPN）
+    # 配置了 VPN 就要求它真的起来:此前是"告警后继续",结果是整轮跑分都在
+    # 无隧道状态下撞靶场地址(每道题都失败,却看不出是网络层问题)。
+    # exit 4 = VPN 层瞬断语义,restart:on-failure 会拉起重试(与 driver 一致)。
+    # 确需容忍时显式设 VPN_REQUIRE_TUN=0。
+    if [[ "${VPN_REQUIRE_TUN:-1}" == "1" ]]; then
+      exit 4
+    fi
+    echo "[adapter] WARNING: VPN_REQUIRE_TUN=0, continuing without tun0" >&2
+  else
+    # tun0 出现 ≠ 隧道可用:openvpn 在鉴权完成前就会建 tun 设备。
+    # 再验一条到隧道的路由,把"设备在但没路由"这种半通状态挡在跑分之前。
+    if ! ip route get 1.1.1.1 2>/dev/null | grep -q "dev tun0"; then
+      # 默认路由未必走 tun(常见于 split-tunnel 配置),退化检查:是否存在 tun 路由
+      if ! ip route | grep -q " dev tun0"; then
+        echo "[adapter] WARNING: tun0 present but no route via tun0 — tunnel may not be established" >&2
+      fi
+    fi
   fi
 
   sleep 3
@@ -81,18 +115,25 @@ else
   echo "[adapter] WARNING: 题目入口地址需要 VPN 才能访问！"
 fi
 
-# ── 创建工作目录 ──
-mkdir -p "${ADAPTER_WORKDIR:-/work}"
+# ── 创建工作目录(失败=配置错:exit 0 明示停止,不进 restart 闷循环) ──
+if ! mkdir -p "${ADAPTER_WORKDIR:-/work}"; then
+  echo "[adapter] FATAL: cannot create ADAPTER_WORKDIR=${ADAPTER_WORKDIR:-/work}" >&2
+  exit 0
+fi
 
-# ── 验证平台连通性（tsec-run 冒烟:官方 SDK CLI,只读 list;非致命,仅告警）──
-echo "[adapter] testing platform API connectivity via tsec-run..."
-if TSEC_BASE_URL="${BENCHMARK_BASE_URL}" TSEC_TOKEN="${BENCHMARK_TOKEN}" tsec-run > /tmp/tsec-run.log 2>&1; then
-  echo "[adapter] platform API reachable"
-  head -5 /tmp/tsec-run.log
+if [[ "${WORKER_MODE:-legacy}" == "assignment" ]]; then
+  echo "[adapter] assignment mode: platform connectivity is checked during worker registration"
 else
-  echo "[adapter] WARNING: platform unreachable / bad token (see /tmp/tsec-run.log)" >&2
-  head -20 /tmp/tsec-run.log >&2 2>/dev/null || true
+  # ── 验证平台连通性（tsec-run 冒烟:官方 SDK CLI,只读 list;非致命,仅告警）──
+  echo "[adapter] testing platform API connectivity via tsec-run..."
+  if TSEC_BASE_URL="${BENCHMARK_BASE_URL}" TSEC_TOKEN="${BENCHMARK_TOKEN}" tsec-run > /tmp/tsec-run.log 2>&1; then
+    echo "[adapter] platform API reachable"
+    head -5 /tmp/tsec-run.log
+  else
+    echo "[adapter] WARNING: platform unreachable / bad token (see /tmp/tsec-run.log)" >&2
+    head -20 /tmp/tsec-run.log >&2 2>/dev/null || true
+  fi
 fi
 
 echo "[adapter] starting benchmark driver..."
-exec python3 -m tsecbench_worker.driver
+exec python3 -m ghost_worker.driver

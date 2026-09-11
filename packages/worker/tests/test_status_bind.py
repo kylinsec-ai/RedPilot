@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tsecbench_worker.settings import WorkerSettings, _status_bind
+from ghost_worker.settings import WorkerSettings, _status_bind
 
 
 def test_status_bind_default_loopback(monkeypatch):

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from tsecbench_contracts.redact import summarize_args
-from tsecbench_contracts.text import ARGS_SUMMARY_MAX
+from ghost_contracts.redact import summarize_args
+from ghost_contracts.text import ARGS_SUMMARY_MAX
 
 
 def test_redact_key_names():

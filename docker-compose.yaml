@@ -1,37 +1,53 @@
 # ══════════════════════════════════════════════════════════
-# TsecBench 双服务编排 — 求解 worker + 本地观测平台(obs)
-# worker = 常驻 Pi Agent 求解容器(VPN 持有者),串行刷题;
-# platform = 观测平台:agent 日志入库(SQLite WAL) + 只读态势 API + SPA(:8090)。
-# 远端官方跑分平台与本地 core 均不经由此编排(worker 经 BENCHMARK_BASE_URL 访问)。
+# Ghost 平台编排 — 统一服务器 + 求解 worker
+# server = 控制面 + 观测平台统一服务(:8000)
+# worker = 常驻 Pi Agent 求解容器(VPN 持有者),串行刷题
+# legacy 模式仍可让 worker 经 BENCHMARK_BASE_URL 访问远端官方平台。
 # ══════════════════════════════════════════════════════════
 
 services:
-  # ── 本地观测平台:摄取(带 token)+ 查询/SSE/SPA 同源;零渗透工具/SDK/key 挂载 ──
-  platform:
+  # ── 统一服务器:控制面 + 观测平台 ──
+  server:
     build:
       context: .
-      dockerfile: Dockerfile.platform
-    image: tsecbench-platform:latest
-    container_name: tsecbench-platform
+      dockerfile: Dockerfile.ghost
+    image: ghost-server:latest
+    container_name: ghost-server
     restart: unless-stopped
     environment:
-      # 摄取鉴权 token;未配 → ingest 响亮 503(防静默空转);与 worker 中继同值
+      # Control plane settings
+      GHOST_TASKS_JSON: ${GHOST_TASKS_JSON:-}
+      BENCHMARK_TOKEN: ${BENCHMARK_TOKEN:-}
+      GHOST_ADMIN_TOKEN: ${GHOST_ADMIN_TOKEN:-}
+      GHOST_WORKER_TOKEN: ${PLATFORM_WORKER_TOKEN:-}
+      GHOST_PUBLIC_BASE_URL: ${GHOST_PUBLIC_BASE_URL:-http://server:8000}
+      GHOST_PROVISIONER: ${GHOST_PROVISIONER:-static}
+      GHOST_MAX_ACTIVE_CHALLENGES: ${GHOST_MAX_ACTIVE_CHALLENGES:-3}
+      GHOST_DB_PATH: /app/data/ghost.sqlite3
+      # Observability settings
       OBSERVABILITY_TOKEN: ${OBSERVABILITY_TOKEN:-}
+      # 读端凭据(态势台/runs/transcript)。读端返回明文 flag 与完整实录,不再匿名开放;
+      # 未设置则回落 OBSERVABILITY_TOKEN。注意本项**不转发给 worker** —— 让"能写遥测"
+      # 不等于"能读答案"。
+      OBSERVABILITY_READ_TOKEN: ${OBSERVABILITY_READ_TOKEN:-}
       OBSERVABILITY_DB: /app/data/obs.sqlite3
       OBSERVABILITY_WEB: /app/web
+      # Self-reference for canonical event outbox
+      OBSERVABILITY_URL: ${OBSERVABILITY_URL:-http://localhost:8000}
     ports:
-      # 读端 API 无鉴权且含 flag 明文/完整实录 → 宿主侧默认只绑回环(localhost 浏览器即可)。
-      # 需要局域网/远程查看时显式放行:OBS_HOST_IP=0.0.0.0 docker compose up -d platform
-      # (容器侧仍须 0.0.0.0 监听:compose 网络内 worker 中继走 platform:8090)
-      - target: ${OBSERVABILITY_PORT:-8090}
-        host_ip: ${OBS_HOST_IP:-127.0.0.1}
-        published: ${OBS_PORT:-8090}
+      # 统一端口 8000 提供所有 API (控制面 + 观测)
+      # 宿主侧默认只绑回环;需要局域网访问时设置 SERVER_HOST_IP=0.0.0.0
+      - target: 8000
+        host_ip: ${SERVER_HOST_IP:-127.0.0.1}
+        published: ${SERVER_PORT:-8000}
     volumes:
-      # data/ 首次有 compose 挂载:SQLite(+wal/shm)与 vpn/ 一样持久化在宿主机
       - ./data:/app/data
       - ./web:/app/web:ro
+      # 热补丁挂载(开发用):免重建镜像直接生效代码修改
+      - ./packages/contracts:/opt/packages/contracts:ro
+      - ./packages/ghost:/opt/packages/ghost:ro
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:${OBSERVABILITY_PORT:-8090}/api/health',timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -41,8 +57,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: tsecbench-adapter:latest
-    container_name: tsecbench-worker
+    image: ghost-adapter:latest
+    container_name: ghost-worker
     # restart 语义与 driver/entrypoint 退出码契约对齐:
     #   exit 0(任务完成/配置错误,driver 与 entrypoint 均以 0 明示)= 正常终止,不重启;
     #   exit 3(API 瞬断)/exit 4(VPN 层)= 自动拉起;其余非零(意外崩溃)= on-failure 自动拉起。
@@ -67,8 +83,13 @@ services:
       - /dev/net/tun:/dev/net/tun
     environment:
       # ── 平台凭据 (必填, 跑分任务下发) ──
-      BENCHMARK_TOKEN: ${BENCHMARK_TOKEN}
-      BENCHMARK_BASE_URL: ${BENCHMARK_BASE_URL}
+      BENCHMARK_TOKEN: ${BENCHMARK_TOKEN:-}
+      BENCHMARK_BASE_URL: ${BENCHMARK_BASE_URL:-}
+      # assignment 模式:Worker 只领取 job,控制面地址与服务凭据独立于题目 token
+      WORKER_MODE: ${WORKER_MODE:-legacy}
+      PLATFORM_URL: ${PLATFORM_URL:-http://server:8000}
+      PLATFORM_WORKER_TOKEN: ${PLATFORM_WORKER_TOKEN:-}
+      ASSIGNMENT_LEASE_SECONDS: ${ASSIGNMENT_LEASE_SECONDS:-300}
       # ── LLM 凭据: pi 官方 provider env 名直通容器(仓库代码不读不改;
       #    pi 解析顺序: auth.json > env;默认 provider: deepseek;
       #    换 provider 在此加一行同名转发,env 名对照表见 README) ──
@@ -92,8 +113,8 @@ services:
       STATUS_BIND: ${STATUS_BIND:-0.0.0.0}
       WORKER_ID: ${WORKER_ID:-worker-1}
       # ── 观测平台摄取(可选):compose 网络内以 service DNS 可达;
-      #    宿主直跑 driver 时设 OBSERVABILITY_URL=http://127.0.0.1:8090 ──
-      OBSERVABILITY_URL: ${OBSERVABILITY_URL:-http://platform:8090}
+      #    宿主直跑 driver 时设 OBSERVABILITY_URL=http://127.0.0.1:8000 ──
+      OBSERVABILITY_URL: ${OBSERVABILITY_URL:-http://server:8000}
       OBSERVABILITY_TOKEN: ${OBSERVABILITY_TOKEN:-}
       # ── VPN 配置路径 (容器内, entrypoint 读取;文件不存在则跳过) ──
       ADAPTER_VPN_CONFIG: /vpn/client.ovpn
@@ -112,11 +133,14 @@ services:
       # - ./pi:/root/.pi/agent:ro
       # 挂载宿主最新包源(免重建镜像;editable 安装指向 /opt/packages/*,热补丁即生效)
       - ./packages/contracts:/opt/packages/contracts:ro
-      - ./packages/obs:/opt/packages/obs:ro
+      - ./packages/ghost:/opt/packages/ghost:ro
       - ./packages/worker:/opt/packages/worker:ro
       - ./tools:/opt/tools:ro
       # pi skills 自动发现目录(~/.pi/agent/skills):改 skill 内容免重建镜像,下一题即生效
       - ./skills:/root/.pi/agent/skills:ro
       - ./web:/app/web:ro
+    depends_on:
+      server:
+        condition: service_healthy
 
 # worker 解题产物 bind-mount 到宿主机 ./work(不入库)
