@@ -328,6 +328,7 @@ async def solve_one(
     workdir_root: str = "/work",
     flag_format: str = "flag{...}",
     submitted: dict[str, set[str]] | None = None,
+    instance_token: str = "",
 ) -> tuple[bool, list[str]]:
     """
     单题单会话求解: start → hint(每题无条件取,平台规则扣分) → 工作目录 →
@@ -337,6 +338,10 @@ async def solve_one(
     solver_backend: AgentAdapter 接口(pi 只是其中一个实现),本函数不依赖 pi。
     靶场生命周期经 target.start_target/close_target,telemetry 经 relay。
     relay:obs 中继(compress 前必须 flush_run 排干未读字节);None 跳过。
+    instance_token:逐次访问的进程回收令牌。**只能由 driver 在同一事件循环、
+    同一协作点分配** —— 乱序或嵌套的 solve_one 若各自 secrets.token_hex()，
+    后写的那次会覆盖先写的，先跑的会话收尾时就找不回自己的标记了。
+    空值 = 不盖标记(回收退化为空操作，安全但不回收)。
     """
     code = ch.unique_code
     submitted = submitted if submitted is not None else {}
@@ -380,6 +385,17 @@ async def solve_one(
         _live_set(phase="solving", challenge_code=code,
                   transcript_path=transcript_path,
                   model=getattr(cfg, "model", ""))
+        # 逐题实例令牌:引擎据此把 pi 及其全部子孙打上标记,收尾时按标记回收
+        # 脱组的 nohup/setsid 子孙(驱动崩溃后也有效)。令牌由 driver 分配
+        # (见 instance_token 参数说明),这里只负责落盘。
+        if instance_token:
+            try:
+                stamp = getattr(solver_backend, "stamp_instance", None)
+                if callable(stamp):
+                    stamp(workdir, instance_token)
+            except Exception:
+                log.debug("instance token stamp failed on %s (process reaping degraded)",
+                          code, exc_info=True)
         # pi 会话同步阻塞可达 ~1500s:必须放线程,禁止直接 await
         # provider 失败(0-turn+报错,pi 表象 err=none)重开至多 2 次:
         # provider 瞬断/路由抽风不应把整题让掉;真 bug 会连败烧重试预算后暴露
@@ -477,6 +493,18 @@ async def solve_one(
         log.exception("solve_one error on %s", code)
         return False, accepted
     finally:
+        # 收尾先回收本题脱组的 Pi/工具子孙 —— 下一题启动前必须清干净,否则上一题
+        # 的 nohup 监听器/轮询器会活进下一题(朋友侧在同一位置做这件事,见其
+        # benchmark_driver 的 finally)。按本次访问的随机令牌回收,构造上不会误伤
+        # driver 自身、VPN provider 或另一个 worker 的进程。
+        # 放在 close 之前:让未解出的访问及时腾出本地资源,与平台侧释放同步。
+        try:
+            from .adapter.solver.pi_agent import cleanup_instance_processes
+            reaped = await asyncio.to_thread(cleanup_instance_processes, workdir)
+            if reaped:
+                log.info("reaped %d detached Pi/tool process(es) for %s", reaped, code)
+        except Exception:
+            log.warning("detached process cleanup failed for %s", code, exc_info=True)
         # 单会话结束即释放实例(多 flag 剩题由下一轮重新 start 冷启动)。
         # _accepted_flags = 本会话平台确认正确的明文(FLAG 文件含被拒候选,不能作 accepted)
         _live_set(phase="closing", _extra={"_accepted_flags": list(accepted)})

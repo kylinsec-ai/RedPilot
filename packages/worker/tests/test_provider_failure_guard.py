@@ -57,15 +57,19 @@ def test_pi_agent_surfaces_stop_reason_error(tmp_path, monkeypatch):
     fake = tmp_path / "fakepi.sh"
     fake.write_text(f'#!/bin/sh\necho {_json_quote(_AGENT_END_ERROR_EVENT)}\n')
     fake.chmod(0o755)
-    from ghost_worker.solver.pi_agent import PiAgentBackend
+    from ghost_worker.solver.friend import FriendSolver
     from ghost_worker.config import SolverConfig
 
     workdir = tmp_path / "wd"
     workdir.mkdir()
     monkeypatch.setattr("shutil.which", lambda cmd: str(fake))
-    backend = PiAgentBackend(cmd=str(fake), model="prov/model")
-    cfg = SolverConfig(model="prov/model", session_seconds=30)
-    result = backend.solve("p", str(workdir), cfg)
+    # 朋友的引擎把 fake 当 pi 拉起（cmd 经构造函数透传）。
+    # HOME 逐题隔离、令牌回收、provider 配置落地都在引擎内部，本用例不关心。
+    solver = FriendSolver()
+    solver._backend.cmd = str(fake)
+    solver._backend.model = "deepseek/prov-model"
+    cfg = SolverConfig(model="deepseek/prov-model", session_seconds=30)
+    result = solver.solve("p", str(workdir), cfg, transcript_path=str(tmp_path / "t.jsonl"))
     assert result.turns == 0
     assert "MissingSessionID" in result.error
     assert result.provider_failure
@@ -288,14 +292,17 @@ def test_nonzero_exit_with_only_stderr_is_provider_failure(tmp_path, monkeypatch
     # 只往 stderr 写,stdout 空,退出码 2
     fake.write_text('#!/bin/sh\necho "model not found: prov/nope" >&2\nexit 2\n')
     fake.chmod(0o755)
-    from ghost_worker.solver.pi_agent import PiAgentBackend
+    from ghost_worker.solver.friend import FriendSolver
     from ghost_worker.config import SolverConfig
 
     workdir = tmp_path / "wd"
     workdir.mkdir()
     monkeypatch.setattr("shutil.which", lambda cmd: str(fake))
-    backend = PiAgentBackend(cmd=str(fake), model="prov/nope")
-    result = backend.solve("p", str(workdir), SolverConfig(model="prov/nope", session_seconds=30))
+    solver = FriendSolver()
+    solver._backend.cmd = str(fake)
+    solver._backend.model = "deepseek/prov-nope"
+    result = solver.solve("p", str(workdir), SolverConfig(model="deepseek/prov-nope",
+                                                         session_seconds=30))
 
     assert result.turns == 0
     assert result.error, "非零退出未留下 error —— 0-turn 护栏失效"
@@ -304,52 +311,76 @@ def test_nonzero_exit_with_only_stderr_is_provider_failure(tmp_path, monkeypatch
 
 
 # ── lease 丢失时必须真杀 pi 进程 ──
+#
+# ⚠ 这一组用例断言的原实现（框架侧 `solver/pi_agent.py` 的 `_LIVE_SOLVERS`
+#   登记表 + `kill_solver_processes`）已随引擎替换删除。它只能在**本进程内**
+#   杀掉自己登记过的进程组 —— 驱动崩溃后脱组的 `nohup`/`setsid` 子孙它看不到。
+#
+#   朋友引擎改用**逐次访问的随机令牌**：driver 把 token 写进 workdir 的
+#   `_instance.json`，pi 及其全部子孙继承该环境变量，收尾时扫 `/proc/*/environ`
+#   按令牌回收。它不依赖本进程的登记表，因此崩溃后仍有效，且按构造无法误伤
+#   driver / VPN provider / 其他 worker。
+#
+#   **当前缺口**：框架的编排链路还没有写 `_instance.json`，所以令牌拿不到，
+#   按令牌回收在容器里是空操作。下面两条用例因此只断言"按令牌正确采集 PID"
+#   这一半（另一半由 driver 侧接线补齐后才有意义）。
 
-def test_kill_solver_processes_terminates_group(tmp_path):
-    """取消 asyncio 任务杀不掉 to_thread 里的子进程 —— 登记表是唯一能杀它的路径。
+def test_cleanup_token_only_matches_tagged_processes(monkeypatch):
+    """令牌采集必须只认带标记的进程，且令牌格式不合法时一律空手而归。"""
+    import os as _os
+    from ghost_worker.adapter.solver import pi_agent as eng
 
-    不杀:pi 继续烧 LLM 时长、继续写同一 workdir,而 job 已回 pending 可能被再次
-    领取 → 同一 workdir 两个并发会话互相踩。
+    assert eng._tagged_processes("") == []
+    assert eng._tagged_processes("not-a-32-hex-token") == []
+    assert eng._tagged_processes("A" * 32) == []   # 大写不算（正则要求小写十六进制）
+
+    # 伪造一个带标记的进程条目：_tagged_processes 只读 /proc/<pid>/environ
+    token = "a" * 32
+    marker = (eng._INSTANCE_TOKEN_ENV + "=" + token).encode("ascii")
+    fake_pid = str(_os.getpid() + 999999)
+
+    real_listdir, real_open = _os.listdir, open
+
+    def fake_listdir(path):
+        if path == "/proc":
+            return [fake_pid]
+        return real_listdir(path)
+
+    class _Ctx:
+        def __enter__(self):
+            import io
+            return io.BytesIO(b"PATH=/bin\0" + marker + b"\0")
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_open(path, *a, **kw):
+        if path == f"/proc/{fake_pid}/environ":
+            return _Ctx()
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(eng.os, "listdir", fake_listdir)
+    monkeypatch.setattr("builtins.open", fake_open)
+    assert eng._tagged_processes(token) == [int(fake_pid)]
+
+
+def test_cleanup_instance_processes_is_noop_without_token(tmp_path):
+    """workdir 里没有（或令牌非法）`_instance.json` 时，回收必须安全空转。
+
+    这是当前框架运行期的真实状态（编排链路尚未写该文件）——所以它同时是一条
+    回归护栏：接线之前，`cleanup_instance_processes` 不得误杀任何东西。
     """
-    import subprocess, sys
-    from ghost_worker.solver.pi_agent import _LIVE_SOLVERS, kill_solver_processes
+    from ghost_worker.adapter.solver.pi_agent import (
+        _instance_cleanup_token, cleanup_instance_processes)
 
-    workdir = str(tmp_path / "wd")
-    (tmp_path / "wd").mkdir()
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"],
-                            start_new_session=True)
-    _LIVE_SOLVERS[workdir] = proc
-    try:
-        assert kill_solver_processes(workdir, grace=5.0) is True
-        assert proc.poll() is not None, "进程未被杀掉"
-        assert workdir not in _LIVE_SOLVERS, "登记未清理"
-        # 幂等:再杀一次安全返回 False
-        assert kill_solver_processes(workdir) is False
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+    assert _instance_cleanup_token(str(workdir)) == ""
+    assert cleanup_instance_processes(str(workdir), grace_seconds=0.1) == 0
 
-
-def test_kill_solver_processes_unknown_workdir_is_noop(tmp_path):
-    from ghost_worker.solver.pi_agent import kill_solver_processes
-
-    assert kill_solver_processes(str(tmp_path / "never")) is False
-
-
-def test_unregister_only_removes_own_entry(tmp_path):
-    """新会话登记后,旧会话的收尾不得误删它(否则取消时杀不到进程)。"""
-    from ghost_worker.solver.pi_agent import _LIVE_SOLVERS, _unregister_solver
-
-    workdir = str(tmp_path / "wd")
-    old, new = object(), object()
-    _LIVE_SOLVERS[workdir] = new
-    try:
-        _unregister_solver(workdir, old)          # 旧会话收尾
-        assert _LIVE_SOLVERS.get(workdir) is new, "误删了新会话的登记"
-        _unregister_solver(workdir, new)
-        assert workdir not in _LIVE_SOLVERS
-    finally:
-        _LIVE_SOLVERS.pop(workdir, None)
+    (workdir / "_instance.json").write_text('{"trace_scope": "NOPE"}', encoding="utf-8")
+    assert _instance_cleanup_token(str(workdir)) == ""
+    assert cleanup_instance_processes(str(workdir), grace_seconds=0.1) == 0
 
 
 # ── assignment 模式的 provider 熔断 ──

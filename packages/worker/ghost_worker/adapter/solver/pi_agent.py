@@ -28,12 +28,15 @@ from typing import Callable, Optional
 
 from .base import SolveResult, SolverBackend, extract_flags, extract_handoff
 
+from ghost_contracts.paths import HEARTBEAT_PATH  # 心跳路径单源(contracts)
+
 log = logging.getLogger("adapter.solver.pi")
 
 DEFAULT_PROVIDER = "deepseek"
 
-# 心跳文件：docker healthcheck 据此判断 driver 是否存活
-HEARTBEAT_PATH = "/tmp/driver_heartbeat"
+# 心跳文件：docker healthcheck 据此判断 driver 是否存活。
+# 路径单源在 contracts.paths（框架 driver 与 compose healthcheck 都对齐它）；
+# 这里保留同名模块常量只为兼容既有引用（tests 直接 import 它），值从单源取。
 
 # The driver writes a fresh random trace scope into each active workdir's
 # _instance.json.  Pi and every tool it launches inherit this tag, allowing us
@@ -853,6 +856,7 @@ class PiAgentBackend(SolverBackend):
         transcript_path: Optional[str] = None,
         max_retries: int = 2,
         stop_check: Optional[Callable] = None,
+        on_event: Optional[Callable] = None,
     ) -> SolveResult:
         result = SolveResult()
         t0 = time.monotonic()
@@ -922,6 +926,15 @@ class PiAgentBackend(SolverBackend):
                                 # 不收工具输出——避免把 cat MEMORY.md 回显的旧块当本场结论）
         thinking_buf = ""  # 思考流（忽略，不进入 observed_output）
 
+        def _emit(kind: str, payload: dict | None = None) -> None:
+            """流式观测出口（可选）。只读，异常吞掉不影响求解。"""
+            if not on_event:
+                return
+            try:
+                on_event(kind, payload or {})
+            except Exception as e:
+                log.warning("on_event callback error: %s", e)
+
         deadline = t0 + max(30, int(getattr(solver_cfg, "session_seconds", 0) or 0))
         for attempt in range(max_retries + 1):
             if time.monotonic() >= deadline:
@@ -981,6 +994,7 @@ class PiAgentBackend(SolverBackend):
                     import os as _os
                     read_fd = proc.stdout.fileno()
                     line_buf = ""
+                    junk_tail = ""   # 非 JSON 行（stderr 已被并进 stdout）
                     session_timed_out = False
                     session_stopped = False   # stop_check 命中主动收尾
                     # ── 子 Agent 静默看门狗（兜底） ──
@@ -1033,6 +1047,8 @@ class PiAgentBackend(SolverBackend):
                                 session_timed_out = True
                                 result.termination_reason = "timeout"
                                 result.error = result.error or "session_timeout"
+                                _emit("system", {"phase": "timeout",
+                                                 "detail": "session deadline reached"})
                                 break
                             if time.monotonic() > stall_deadline:
                                 log.warning("pi session stalled %ds (no output) — killing and retrying",
@@ -1101,6 +1117,9 @@ class PiAgentBackend(SolverBackend):
                             try:
                                 event = json.loads(line)
                             except json.JSONDecodeError:
+                                # stderr 并进了 stdout，所以非 JSON 行几乎全是
+                                # 诊断文本。留个尾巴：非零退出时它是唯一的线索。
+                                junk_tail = (junk_tail + " " + line)[-400:]
                                 continue
 
                             event_type = event.get("type", "")
@@ -1108,9 +1127,13 @@ class PiAgentBackend(SolverBackend):
                             # ── 工具调用 ──
                             if event_type == "tool_execution_start":
                                 turns += 1
+                                _emit("tool_start", {"tool": event.get("toolName", ""),
+                                                     "args": event.get("args") or {}})
                                 if backend.max_turns > 0 and turns > backend.max_turns:
                                     log.warning("pi session reached max_turns=%d", backend.max_turns)
                                     result.error = "max_turns_reached"
+                                    _emit("system", {"phase": "stalled",
+                                                     "detail": f"max_turns={backend.max_turns}"})
                                     result.termination_reason = "max_turns"
                                     _stop_process_tree(proc)
                                     session_timed_out = True
@@ -1170,6 +1193,9 @@ class PiAgentBackend(SolverBackend):
                                             on_fact(tool_name, tool_args, out)
                                         except Exception as e:
                                             log.warning("on_fact callback error: %s", e)
+                                    _emit("tool_progress",
+                                          {"preview": out[-400:] if out else ""})
+                                    _emit("turn_done", {})
                                     # INFRA_BLOCKED 接地（B12）：marker 由 agent
                                     # 自己输出（写文件/回显 MEMORY.md 旧结论都会
                                     # 带上），单凭它判定"内网不可达"会把 agent
@@ -1206,6 +1232,8 @@ class PiAgentBackend(SolverBackend):
                                                 _halu_sentinel.fingerprint(_hv), len(_hv),
                                                 _halu_sentinel.authored.get(_hv, 0))
                                             result.error = "hallucination_abort"
+                                            _emit("system", {"phase": "stalled",
+                                                             "detail": "hallucination_abort"})
                                             _stop_process_tree(proc)
                                             result.termination_reason = "stopped"
                                             session_timed_out = True
@@ -1232,8 +1260,10 @@ class PiAgentBackend(SolverBackend):
                                 delta = msg.get("delta", "")
                                 if mtype == "text_delta" and delta:
                                     text_buf += delta
+                                    _emit("text", {"preview": text_buf[-400:]})
                                 elif mtype == "thinking_delta" and delta:
                                     thinking_buf += delta
+                                    _emit("thinking", {"length": len(thinking_buf)})
 
                             # ── 终态 ──
                             elif event_type in ("agent_end", "turn_end", "message_end"):
@@ -1247,7 +1277,16 @@ class PiAgentBackend(SolverBackend):
                                 # stopReason="error" + errorMessage，不匹配下方 error 事件分支，
                                 # 导致 result.error 一直为 None → 框架 API 熔断不触发 → 空转开关靶场。
                                 # 这里捕获终态里的 stopReason/errorMessage。
-                                _stop = event.get("message", {}) or {}
+                                #
+                                # 朋友 driver 里 message["stopReason"] 是标量（本函数原本只试了那条
+                                # 形状）；但 pi 的 agent_end 事件用的是 messages 数组。两种形状都认，
+                                # 否则 agent_end 这一路（pi 真实的收尾事件）永远读不出错误，
+                                # 0-turn 护栏对"假 pi 只发 agent_end"这类故障是失效的。
+                                _msgs = event.get("messages")
+                                if isinstance(_msgs, list) and _msgs:
+                                    _stop = _msgs[-1]
+                                else:
+                                    _stop = event.get("message", {}) or {}
                                 if isinstance(_stop, dict) and _stop.get("stopReason") == "error":
                                     em = _stop.get("errorMessage") or _stop.get("error") or ""
                                     if not result.error and em:
@@ -1288,6 +1327,20 @@ class PiAgentBackend(SolverBackend):
                     pending_partials.clear()
 
                     proc.wait(timeout=30)
+                    # 非零退出且没留下任何错误 —— 0-turn 护栏的最后一道。
+                    # 典型形态：模型名写错 / 缺凭据 / 参数错误 → pi 立刻非零退出，
+                    # stdout 一行 JSON 都没有（turns==0）。这时 stderr 是唯一的
+                    # 线索，而本引擎把 stderr 并进了 stdout（stderr=STDOUT），
+                    # 非 JSON 的行在解析处被跳过 → 什么都不剩。
+                    #
+                    # 不在这里兜住，编排层会把它当成"正常跑完但没解出来"
+                    # （2026-09-08 那次静默烧题的另一种形态）。诊断文本很关键：
+                    # "pi exited 2" 与 "model not found: prov/nope" 对排障不是一个量级。
+                    if not result.error and proc.returncode:
+                        detail = " ".join(junk_tail.split()) or "(no output)"
+                        result.error = f"pi exited {proc.returncode}: {detail}"
+                        _emit("error", {"error": result.error})
+                        result.termination_reason = "error"
                     if not result.termination_reason:
                         result.termination_reason = "completed"
 

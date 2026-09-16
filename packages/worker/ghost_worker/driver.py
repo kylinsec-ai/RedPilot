@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 import sys
 import threading
 import time
@@ -42,7 +43,7 @@ from .relay import maybe_start_relay
 from .roster import RosterPoller
 from .settings import WorkerSettings
 from .solver import create_solver, touch_heartbeat
-from .solver.pi_agent import kill_solver_processes
+from .adapter.solver.pi_agent import cleanup_instance_processes
 from .orchestration import LiveReporter, ProviderFailure, _prioritize, solve_one
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -121,6 +122,7 @@ async def _solve_assignment(
                 relay=relay,
                 workdir_root=settings.workdir,
                 flag_format=settings.flag_format,
+                instance_token=secrets.token_hex(16),
             ))
             lease_gone = asyncio.create_task(lease_lost.wait())
             done, _pending = await asyncio.wait(
@@ -135,7 +137,8 @@ async def _solve_assignment(
                 # 不显式杀,它会在后台继续烧 LLM 时长、继续写同一个 workdir,而 job 已回
                 # pending 可能被再次领取 —— 同一 workdir 两个会话互相踩。
                 killed = await asyncio.to_thread(
-                    kill_solver_processes, os.path.join(settings.workdir, safe_code(code)))
+                    cleanup_instance_processes,
+                    os.path.join(settings.workdir, safe_code(code)))
                 if killed:
                     log.warning("killed in-flight pi process group for %s after lease loss", code)
                 try:
