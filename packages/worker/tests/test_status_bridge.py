@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
+import time
 import unittest
 
 from ghost_worker.live import LiveBus, LiveState
@@ -260,6 +262,51 @@ class ConcurrencyTests(unittest.TestCase):
             t.join()
         self.assertEqual(errs, [])
         json.dumps(live.snapshot())   # 序列化得动 = 没有半写状态
+
+
+class HeartbeatProbeTests(unittest.TestCase):
+    """挂死探针的判据：只看"别人有没有推进心跳"，不看自己写了什么。
+
+    这一条写错过一次（探针与补心跳在同一个循环里，先写再查 → 判死的分支
+    永远不可达）。所以断言按"探针自己写不写"来分组，而不是按时间。
+    """
+
+    def test_probe_does_not_penalize_its_own_beat(self):
+        """补心跳（装配层的职责）不得让探针以为"编排层还活着"。"""
+        import ghost_worker.driver as drv
+        from ghost_contracts.paths import HEARTBEAT_PATH
+
+        probe = drv.HeartbeatProbe(stale_after=0.05)
+        with open(HEARTBEAT_PATH, "a"):
+            os.utime(HEARTBEAT_PATH, None)
+        self.assertFalse(probe.observe())        # 建立基线
+        time.sleep(0.08)
+        self.assertFalse(probe.observe())        # 发现停滞（记起点）
+        time.sleep(0.08)
+        self.assertTrue(probe.observe())         # 仍无编排层写入 → 判死
+
+    def test_probe_resets_when_orchestrator_advances_heartbeat(self):
+        import ghost_worker.driver as drv
+        from ghost_contracts.paths import HEARTBEAT_PATH
+
+        probe = drv.HeartbeatProbe(stale_after=0.05)
+        with open(HEARTBEAT_PATH, "a"):
+            os.utime(HEARTBEAT_PATH, None)
+        probe.observe()
+        time.sleep(0.08)
+        probe.observe()
+        time.sleep(0.08)
+        with open(HEARTBEAT_PATH, "a"):          # 编排层又跳了一次
+            os.utime(HEARTBEAT_PATH, None)
+        self.assertFalse(probe.observe())
+
+    def test_probe_survives_missing_heartbeat_file(self):
+        """文件不存在（启动早期）不该判死 —— 那时编排层还没开始跑。"""
+        import ghost_worker.driver as drv
+        probe = drv.HeartbeatProbe(stale_after=0.01)
+        self.assertFalse(probe.observe())
+        time.sleep(0.03)
+        self.assertFalse(probe.observe())
 
 
 if __name__ == "__main__":

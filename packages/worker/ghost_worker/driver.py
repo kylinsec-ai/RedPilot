@@ -28,7 +28,7 @@ import threading
 import time
 
 from ghost.obs.localserver import serve_forever_in_thread as _serve_local
-from ghost_contracts.paths import LIVE_DIR
+from ghost_contracts.paths import HEARTBEAT_PATH, LIVE_DIR
 
 from . import orchestrator
 from .config import SolverConfig
@@ -47,35 +47,63 @@ log = logging.getLogger("ghost_worker.driver")
 
 # ── 装配 ────────────────────────────────────────────────────
 
+class HeartbeatProbe:
+    """挂死探针 —— 独立于心跳线程判"编排层还活着吗"。
+
+    判据只有一条：**心跳文件 mtime 是否在前进**。编排层在 ~9 个阻塞点上调
+    `_beat()`（`_start_with_retry` / 自动派发每轮 / 多会话循环 / idle keepalive /
+    monitor 循环），所以它前进 ⇔ 主循环确实在转。
+
+    ⚠️ 这个判据成立的前提是：**本类自己不写心跳**。所以补心跳是独立的一步
+    （`HeartbeatProbe.beat`），探针只观察。此前把两者放在同一个循环里，结果是
+    探索针每次先 `touch_heartbeat()` 再检查 —— 它把自己的心跳当成编排层的心跳，
+    `os._exit(4)` 分支永远不可达（一个自欺的看门狗）。
+
+    另一个刻意的取舍：**这个探针只杀进程，不代写心跳**。代写会让 compose 的
+    healthcheck（读同一个文件）把挂死的编排层判成健康 —— 那就把"进程死了要重启"
+    换成了"永远不重启"。宁可让编排层自己 exit 4。
+
+    改探针前先想清楚这两条：不写心跳，不代写。
+    """
+
+    def __init__(self, stale_after: float = 180.0) -> None:
+        self._stale_after = stale_after   # 默认 6 个 30s 周期都没前进 = 挂了
+        self._last_seen = 0.0
+        self._stale_since = 0.0
+
+    def observe(self) -> bool:
+        """看一次心跳。返回 True = 已判定挂死（调用方负责退出）。"""
+        try:
+            mtime = os.path.getmtime(HEARTBEAT_PATH)
+        except OSError:
+            mtime = 0.0
+        if mtime > self._last_seen:
+            self._last_seen = mtime
+            self._stale_since = 0.0
+            return False
+        if not self._stale_since:
+            self._stale_since = time.time()
+            return False
+        return (time.time() - self._stale_since) >= self._stale_after
+
+
 def _heartbeat_loop() -> None:
-    """独立心跳线程: 30s 刷心跳文件(compose healthcheck 依据);
-    同时探测事件循环活性 —— 纯文件心跳只证明进程存活,asyncio loop 同步卡死
-    (死锁/无超时阻塞)时 pi 线程仍会 touch_heartbeat,文件恒新,健康检查永绿。
-    探针:call_soon_threadsafe 的应答若连续 5 次(≈150s)未在 1s 内回来 →
-    loop 已卡死 → os._exit(4) 由容器 restart 策略拉起(与 VPN 看门狗同款语义)。"""
-    ack = threading.Event()
-    missed = 0
+    """两个独立职责，刻意放在同一个线程里但**互不干扰**：
+
+    1. 低频补心跳 —— 编排层在长阻塞（一整套多会话 visit 可能有十分钟不 `_beat`）
+       期间的心跳兜底。注意它**不参与**下面的判定（见 HeartbeatProbe 的说明）。
+    2. 挂死探测 —— 用探针自己看到的 mtime 判，绝不被自己的补心跳带偏。
+    """
+    probe = HeartbeatProbe()
     while True:
         time.sleep(30)
         try:
-            touch_heartbeat()
+            touch_heartbeat()          # 职责 1：补心跳（探针不看这次写入）
         except Exception:
             pass
-        loop = _LOOP
-        if loop is None:
-            continue  # amain 尚未进入(启动期),文件心跳已足够
-        ack.clear()
-        try:
-            loop.call_soon_threadsafe(ack.set)
-        except RuntimeError:
-            continue  # loop 已关闭(正常退出路径)
-        if ack.wait(timeout=1.0):
-            missed = 0
-            continue
-        missed += 1
-        if missed >= 5:
-            log.critical("event loop unresponsive for ~%ds — exiting 4 for container restart",
-                         missed * 30)
+        if probe.observe():            # 职责 2：只看"上次观察之后有没有别的写入者"
+            log.critical("heartbeat stale for >=%.0fs — 编排层已挂死，"
+                         "exit 4 由容器 restart 策略拉起", probe._stale_after)
             os._exit(4)
 
 
@@ -87,9 +115,9 @@ def main() -> None:
     关于"要不要解这道题"的逻辑，否则又会出现两套口径。
     """
     settings = WorkerSettings.from_env()
-    # 凭据校验交给 orchestrator.main()：朋友的语义是"缺 BENCHMARK_* → exit 2"，
-    # 而 exit 2 会被 compose 的 restart:on-failure 拉起（无限重启）。
-    # 这里先拦一道，把配置错收敛成 exit 0（"明示后停止"），与 entrypoint 一致。
+    # 凭据校验：**先于** orchestrator.main()，因为它的语义是"缺 BENCHMARK_* →
+    # exit 2"，而 exit 2 会被 compose 的 restart:on-failure 拉起（无限重启）。
+    # 这里收敛成 exit 0（"明示后停止"），与 entrypoint 那一层一致。
     if not settings.benchmark_base_url or not settings.benchmark_token:
         log.error("BENCHMARK_BASE_URL / BENCHMARK_TOKEN must be set — 容器停止，"
                   "补齐后重新 docker compose up -d")
