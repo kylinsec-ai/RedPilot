@@ -153,18 +153,56 @@ def set_status_bridge(bridge) -> None:
     global _STATUS_BRIDGE
     _STATUS_BRIDGE = bridge if bridge is not None else _NULL_BRIDGE
 
+
+def _resolve_wid(wid_raw: str, count: int) -> int:
+    """`ADAPTER_WORKER_ID` → 本 worker 的**规则序号**；无效时从 HOSTNAME 尾号推导。
+
+    只在一处取模（`% count` 仅当 `count > 1`），调用方共用 —— 此前
+    `_worker_id()` 与 `_status_path()` 各推一份，两者对"同一个 worker 是谁"给出
+    不同答案（见 `_worker_id` 的说明）。
+    """
+    if wid_raw.strip() != "":
+        try:
+            wid = int(wid_raw)
+            # 只有真的在做分片时才取模。count <= 1 时取模会把 ID=1 变成 0 ——
+            # 那个 0 会被 `_status_path` 当成 monitor 序号写进文件名，而状态文件
+            # 的序数是**面向运维的**（人按 ADAPTER_WORKER_ID 找文件），不该等于
+            # 一个只有分片算法才关心的桶号。
+            return wid % count if count > 1 else wid
+        except ValueError:
+            pass
+    host = os.environ.get("HOSTNAME", "")
+    m = re.search(r"-(\d+)$", host)
+    if m:
+        wid = int(m.group(1)) - 1
+        return wid % count if count > 1 else wid
+    return 0
+
+
+def _worker_id() -> int:
+    """当前 worker 的**规则序号**（分片桶 / mutex 比较 / 观测 / 状态文件共用）。
+
+    与 `_worker_shard` 同源：从 `ADAPTER_WORKER_ID` 读，缺失时退回 HOSTNAME 尾号。
+    `count <= 1` 时不取模（见 `_resolve_wid`）。
+    """
+    return _resolve_wid(os.environ.get("ADAPTER_WORKER_ID", ""),
+                        int(os.environ.get("ADAPTER_WORKER_COUNT", "1") or "1"))
+
 # 周期复活冷却基准在 stoploss 持久化状态里（revive() 打 last_revive_wall 戳）——
 # 进程内存表重启即清零会让"刚 drop 的题"重启后立刻复活白拿新预算。
 
 
 def _status_path() -> str:
+    """状态文件路径。序号走 `_worker_id()`（同一解析器）—— 不再自己推一份。
+
+    自己推一份的后果（实测）：单体形态 `ADAPTER_WORKER_ID=1` / COUNT 未设时，
+    `_worker_id()` 取模得 0，而这里写 `worker-1.json`。于是一个进程里
+    "我是谁"有两个答案：状态文件在 worker-1.json、而 mutex 认领/观测上报/热重载
+    标记全用 0；重启还会读回自己写的 `claim_ts` 按 `wid=0` 判胜负。运维照着
+    ADAPTER_WORKER_ID 找文件也会找错。
+    """
     workdir = os.getenv("ADAPTER_WORKDIR", "/work")
-    wid = os.getenv("ADAPTER_WORKER_ID", "")
-    if not wid:
-        host = os.getenv("HOSTNAME", "")
-        m = re.search(r"-(\d+)$", host)
-        wid = str(int(m.group(1)) - 1) if m else "0"
-    return os.path.join(workdir, "status", f"worker-{wid}.json")
+    return os.path.join(workdir, "status", f"worker-{_worker_id()}.json")
 
 
 def _task_epoch_state_path(workdir: str | None = None) -> str:
@@ -2207,21 +2245,7 @@ def _worker_shard(challenges: list) -> list:
     if count <= 1:
         return challenges
 
-    wid_raw = os.environ.get("ADAPTER_WORKER_ID", "")
-    wid = -1
-    if wid_raw.strip() != "":
-        try:
-            wid = int(wid_raw) % count
-        except ValueError:
-            wid = -1
-    if wid < 0:
-        host = os.environ.get("HOSTNAME", "")
-        m = re.search(r"-(\d+)$", host)
-        if m:
-            wid = (int(m.group(1)) - 1) % count
-    if wid < 0:
-        wid = 0
-
+    wid = _resolve_wid(os.environ.get("ADAPTER_WORKER_ID", ""), count)
     shard = [c for i, c in enumerate(challenges) if i % count == wid]
     log.info("worker %d/%d: %d challenges assigned", wid, count, len(shard))
     return shard
@@ -2293,24 +2317,6 @@ def _capability_sharding_enabled() -> bool:
 
 # ── 优先任务队列（网页「Agent 解此题」派单给舰队）──────────
 
-def _worker_id() -> int:
-    """当前 worker 序号（与 _worker_shard 推导一致）。"""
-    count = int(os.environ.get("ADAPTER_WORKER_COUNT", "1") or "1")
-    wid_raw = os.environ.get("ADAPTER_WORKER_ID", "")
-    wid = -1
-    if wid_raw.strip() != "":
-        try:
-            wid = int(wid_raw) % count
-        except ValueError:
-            wid = -1
-    if wid < 0:
-        host = os.environ.get("HOSTNAME", "")
-        m = re.search(r"-(\d+)$", host)
-        if m:
-            wid = (int(m.group(1)) - 1) % count
-    if wid < 0:
-        wid = 0
-    return wid
 
 
 
