@@ -8,10 +8,13 @@
 
 - `SolveResult`：框架读的那个结果形状。**注意它与朋友
   `ghost_worker.adapter.solver.SolveResult` 不是同一个类** —— 朋友版没有
-  `provider_failure` 判据，而"0-turn + 报错"是识别 LLM 上游故障的唯一信号
+  `provider_failure` 判据，而"0-turn + 报错"是识别"引擎压根没跑起来"的唯一信号
   （2026-09-08 事故：pi 对 provider 400 只发 stopReason=error，漏读 → err=none
   → 编排层当成"正常跑完没解出来" → 280 run/0 flag/63 题静默烧库）。
-  `provider_failure` 因此是**框架侧必须自己持有**的判据，不能丢。
+  它与编排侧的 `_is_api_fault`（认报错文本里的余额/认证 token）是**互补**关系，
+  不是重复：前者认"没跑起来"，后者认"跑到一半账号挂了"。分工写在
+  `orchestrator._is_api_fault` 的 docstring 里 —— 合并会丢一半语义，
+  所以这个类里的属性看着像冗余也**不能删**。
 - `touch_heartbeat()`：compose healthcheck 读的那个心跳文件（路径单源在
   `ghost_contracts.paths`）。
 
@@ -58,16 +61,13 @@ class SolveResult:
 
     @property
     def provider_failure(self) -> bool:
-        """0-turn 且带报错 = LLM 上游故障，不是"这题没解出来"。
+        """0-turn 且带报错 = 引擎压根没跑起来，不是"这题没解出来"。
 
-        这是 `solve_one` 判 provider 故障的**唯一**判据，也是熔断与"结束本 visit
-        的会话循环"的共同入口。见模块头的事故说明：判否 = 静默烧题。
+        判否 = 把一次没发生的求解当成"正常跑完没解出来"，静默烧题（见模块头的事故）。
+        注意它**只管"没跑"**：跑到一半的账号级故障（余额/认证）由编排侧的
+        `orchestrator._is_api_fault` 认，那个认的是报错文本而非 turns。两条判据互补。
         """
         return self.turns == 0 and bool(self.error)
-
-
-# 兼容别名：朋友侧的调用点使用 CCResult（= SolveResult 的另一名字）。
-CCResult = SolveResult
 
 
 def touch_heartbeat() -> None:

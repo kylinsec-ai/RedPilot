@@ -64,18 +64,13 @@ docker compose up -d worker        # 只起这一个；另在 http://127.0.0.1:8
 
 ## 退出码契约
 
-与 compose 的 `restart: on-failure` 配套，**改退出码前先改这里和 `docker-compose.yaml` 的注释**：
+worker 容器与 compose 的 `restart: on-failure` 靠一组退出码配套（`0` 正常终止 / `86`
+协作式热重载 / `4` VPN 层 / `3` 被孤立的解题 worker）。**完整表在
+[`packages/worker/README.md`](packages/worker/README.md)** —— 那是唯一权威，这里不抄一份。
 
-| 码 | 含义 | 后果 |
-|---|---|---|
-| `0` | 任务终态 / **配置错误** | 明示后停止，**不重启** |
-| `86` | 协作式热重载（`touch work/.reload.wid<N>`） | 会话边界收尾后自行退出 → 换新码拉起 |
-| `4` | VPN 层瞬断 / 编排挂死 | 拉起重试 |
-| 其余非零 | 意外崩溃 | `on-failure` 拉起 |
-
-⚠️ 运维坑：**配置错误绝不能非零退出**。`on-failure` 会重启一切非零退出，用 exit 1 表达
-「环境变量没填」= 无限重启闷循环，真因被日志淹没。这也是 `driver.py` 与 `entrypoint.sh`
-在配置校验失败时都走 exit 0 的原因。
+⚠️ 但有一条运维铁律值得在这里说：**配置错误绝不能非零退出**。`on-failure` 会重启一切
+非零退出，用 exit 1 表达「环境变量没填」= 无限重启闷循环，真因被日志淹没。这也是
+`driver.py` 与 `entrypoint.sh` 在配置校验失败时都走 exit 0 的原因。
 
 ## 凭据
 
@@ -95,8 +90,8 @@ docker compose up -d worker        # 只起这一个；另在 http://127.0.0.1:8
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q              # 全仓 346
-.venv/bin/python -m pytest -q packages/    # 三包 171
+.venv/bin/python -m pytest -q              # 全仓 352
+.venv/bin/python -m pytest -q packages/    # 三包 177
 .venv/bin/python -m pytest -q tests/       # 竞技场与策略层回归 175
 ```
 

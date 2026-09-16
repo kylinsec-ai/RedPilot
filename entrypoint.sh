@@ -111,7 +111,10 @@ fi
 
 # ── 验证平台连通性（tsec-run 冒烟:官方 SDK CLI,只读 list;非致命,仅告警）──
 echo "[adapter] testing platform API connectivity via tsec-run..."
-if TSEC_BASE_URL="${BENCHMARK_BASE_URL}" TSEC_TOKEN="${BENCHMARK_TOKEN}" tsec-run > /tmp/tsec-run.log 2>&1; then
+# timeout 兜底：这条检查**不是**启动门禁（平台不可达时编排层自己会重试与退避），
+# 但它是同步阻塞的 —— 平台无响应时 SDK 自己的超时可能很久，而编排层马上就
+# 会做同一件事（list_challenges）。卡在这里只会推迟真正该开始的那一步。
+if timeout 20 env TSEC_BASE_URL="${BENCHMARK_BASE_URL}" TSEC_TOKEN="${BENCHMARK_TOKEN}" tsec-run > /tmp/tsec-run.log 2>&1; then
   echo "[adapter] platform API reachable"
   head -5 /tmp/tsec-run.log
 else

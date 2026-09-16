@@ -40,7 +40,7 @@ docker compose up -d worker
 
 ```
 ghost_worker/
-├── driver.py         装配层：配置校验 + 心跳 + 观测面接线 + 注入观测桥
+├── driver.py         装配层：配置校验 + 观测面接线 + 注入观测桥（不起线程）
 ├── orchestrator.py   主循环（竞技场）：list → 派发 → 多会话 → 提交 → 收尾
 ├── supervisor.py     他管层：卡死判定 → 只允许「请求对方热重载」
 ├── observability.py  观测桥：编排状态 → LiveState/LiveBus（唯一的新逻辑，有单测）
@@ -65,9 +65,19 @@ assignment claim 链路）已随竞技场上位退位删除。
     relay 推到平台，本地 :8080 态势台也读它。
   两者由 `observability.StatusBridge` 单向同步；两套字段名不同是刻意的（各有各的
   消费方），映射只在一个地方。
-- **退出码**：`0` 任务终态/配置错（明示后停止，不重启）、`86` 协作式热重载
-  （`touch /work/.reload.wid<N>` → 会话边界收尾后自行退出 → compose 换新码）、
-  `4` VPN 层瞬断 / 事件循环卡死。compose 的 `restart: on-failure` 与这套契约对齐。
+- **退出码**（本表是唯一权威，别处只许指向它）：
+  | 码 | 含义 | 后果 |
+  |---|---|---|
+  | `0` | 任务终态 / **配置错误** | 明示后停止，**不重启** |
+  | `86` | 协作式热重载（`touch /work/.reload.wid<N>`） | 会话边界收尾后自行退出 → 换新码拉起 |
+  | `4` | VPN 层瞬断（entrypoint 的 openvpn / tun0 预检失败） | 拉起重试 |
+  | `3` | worker-2/3 被孤立（共享 netns 的提供者没了） | 退出重建 netns |
+  | 其余非零 | 意外崩溃 | `on-failure` 拉起 |
+
+  与 compose 的 `restart: on-failure` 配套。⚠️ 配置错误**绝不能非零退出** ——
+  `on-failure` 会重启一切非零退出，用 exit 1 表达"环境变量没填" = 无限重启闷循环。
+  这也是 `driver.py` 与 `entrypoint.sh` 在配置校验失败时都走 exit 0 的原因。
+  （挂死探测已删除：它原本在装配层，而那里看不到编排层的心跳 —— 详见 driver.py 顶部。）
 - **进程回收靠令牌不靠登记表**：逐次访问生成随机 token 写进 `<workdir>/_instance.json`，
   pi 及其全部子孙继承该环境变量，收尾时扫 `/proc/*/environ` 回收。它不依赖本进程的
   登记表，所以**驱动崩溃后仍然有效**，且按构造无法误伤 driver / VPN provider / 另一个

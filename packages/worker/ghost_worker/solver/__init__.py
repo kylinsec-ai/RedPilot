@@ -13,6 +13,6 @@
 已整体退位）。
 """
 
-from .base import CCResult, SolveResult, touch_heartbeat
+from .base import SolveResult, touch_heartbeat
 
-__all__ = ["SolveResult", "CCResult", "touch_heartbeat"]
+__all__ = ["SolveResult", "touch_heartbeat"]

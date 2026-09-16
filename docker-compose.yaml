@@ -74,16 +74,21 @@ x-worker-env: &worker-env
   ADAPTER_SOLVER_MODEL: ${SOLVER_MODEL:-}
   ADAPTER_SKILLS_DIR: ${ADAPTER_SKILLS_DIR:-}
   SOLVER_SESSION_SECONDS: ${SOLVER_SESSION_SECONDS:-1500}
-  SOLVER_TIMEOUT_MS: '300000'
   SOLVER_GATEWAY: ${SOLVER_GATEWAY:-0}
   PI_STALL_TIMEOUT: '900'
   PI_BASH_TIMEOUT_SECONDS: ${PI_BASH_TIMEOUT_SECONDS:-600}
   PI_BASH_MAX_FILE_MB: ${PI_BASH_MAX_FILE_MB:-4096}
   ADAPTER_PI_EXTENSIONS: ${ADAPTER_PI_EXTENSIONS:-/app/adapter/pi_ext/bash_guard.js}
+  # 空闲隧道别被 60s 的 ping-restart 判死（实测 4h 内 47 次重启、在线率 ≈1/6）。
+  # entrypoint.sh 的默认就是 600，写进这个共用块是为了让三个 worker 服务
+  # 走同一个值 —— 只给 worker-1 设会让"哪个值生效"取决于起的是哪个服务。
+  ADAPTER_VPN_PING_RESTART: ${ADAPTER_VPN_PING_RESTART:-600}
   # ── 运行 ──
   ADAPTER_WORKDIR: /work
   ADAPTER_FLAG_FORMAT: ${ADAPTER_FLAG_FORMAT:-flag{...}}
   ADAPTER_WORKER_COUNT: '3'
+  # 能力标签：解题目 worker 同质，不按角色分工 —— 一个变量喂全部
+  ADAPTER_CAPABILITIES: ${ADAPTER_CAPABILITIES:-web,cloud,pwn,reverse,forensics,crypto,pentest,evasion,misc}
   ADAPTER_MAX_CONCURRENCY: ${ADAPTER_MAX_CONCURRENCY:-3}
   ADAPTER_WORKER_CONCURRENCY: ${ADAPTER_WORKER_CONCURRENCY:-1}
   ADAPTER_OFFLINE_MODE: ${ADAPTER_OFFLINE_MODE:-1}
@@ -133,11 +138,10 @@ x-worker-env: &worker-env
 # ── 三个 worker 共用的引擎调优（restart / shm / init）──
 x-worker-runtime: &worker-runtime
   image: ghost-adapter:latest
-  # restart 语义与编排层退出码契约对齐（见 ghost_worker/orchestrator.py 的 main）：
-  #   exit 0  任务终态 / 配置错（明示后停止）= 正常终止，不重启；
-  #   exit 86 协作式热重载（touch work/.reload.widN，收尾后自行退出）= 拉起换新码；
-  #   exit 4  VPN 层瞬断 / 事件循环卡死 = 拉起重试；
-  #   其余非零 = 意外崩溃，on-failure 拉起。
+  # restart 语义与 worker 的退出码契约对齐 —— **完整表在
+  # packages/worker/README.md**，这里只说本文件关心的一半：
+  #   exit 0  任务终态 / 配置错（明示后停止）= 正常终止，**不重启**；
+  #   非零    86 热重载 / 4 VPN 层 / 3 netns 被孤立 / 其他崩溃 = 拉起重试。
   #   注意：on-failure 会重启一切非零退出 —— 配置错误绝不能用 1/2 退出
   #   （unless-stopped 还会对 exit 0 无限重启，旧容器 25h 内 677 次循环的真因）。
   restart: on-failure
@@ -147,6 +151,33 @@ x-worker-runtime: &worker-runtime
   # Docker 提供的 init 回收孤儿孙进程：driver 作为 PID 1 时，长 Pi 会话会
   # 积累 defunct（实测）。
   init: true
+
+# ── 解题 worker（worker-2/3）共用的那一层：netns 复用 ──
+# 抽出来不只是省行数：network_mode / ports / depends_on 这套组合就是本文件最
+# 核心的取舍（复用 worker-1 的隧道），写两遍就会有人只改一处。
+# 解题 worker 的环境：在 x-worker-env 之上只多两处 ——
+#   ADAPTER_VPN_CONFIG 空 = 共享 worker-1 的隧道，自己不起 VPN；
+#   STATUS_PORT 0 = 关掉本地态势台（network_mode: service:worker-1 下容器端口
+#   发布不可用，绑在 8081 也只有共享 netns 里可见，宿主看不到 —— 留着是陷阱）。
+#   观测不受影响：数据仍经 relay 进 obs 平台 :8000。
+x-worker-solver-env: &worker-solver-env
+  <<: *worker-env
+  ADAPTER_VPN_CONFIG: ''
+  STATUS_PORT: '0'
+
+x-worker-solver: &worker-solver
+  <<: *worker-runtime
+  build: *worker-build
+  network_mode: service:worker-1
+  healthcheck: *worker-healthcheck
+  volumes: *worker-volumes
+  ports: []
+  depends_on:
+    server:
+      condition: service_healthy
+    worker-1:
+      condition: service_healthy
+
 
 services:
   # ── 统一服务器：控制面 + 观测平台 ──
@@ -214,66 +245,31 @@ services:
       ADAPTER_WORKER_ID: '0'
       WORKER_ID: worker-monitor
       ADAPTER_VPN_CONFIG: /vpn/client.ovpn
-      # 空闲隧道别被 60s 的 ping-restart 判死（朋友实测：4h 内 47 次重启、
-      # 间隔精确 360s、在线率 ≈1/6）。entrypoint 里 600 是默认值，这里显式化。
-      ADAPTER_VPN_PING_RESTART: ${ADAPTER_VPN_PING_RESTART:-600}
     volumes: *worker-volumes
     depends_on:
       server:
         condition: service_healthy
 
   # ── worker-2 / worker-3：解题 worker（复用 worker-1 的 netns）──
-  # 能力集合完全一致（不按角色分工）：任何技能类题两个 worker 都能解；
-  # 无法分类的题按 unique_code 哈希均匀分流（见 orchestrator._unknown_bucket）。
+  # 能力集合**刻意一致**（不按角色分工）：任何技能类题两个 worker 都能解，
+  # 所以共用同一个 ADAPTER_CAPABILITIES（默认值见 x-worker-env）。无法分类的题
+  # 按 unique_code 哈希均匀分流（见 orchestrator._unknown_bucket）。
+  # 差异只有三处：container_name / ADAPTER_WORKER_ID / WORKER_ID。
   worker-2:
-    <<: *worker-runtime
-    build: *worker-build
+    <<: *worker-solver
     container_name: ghost-worker-2
-    network_mode: service:worker-1
-    healthcheck: *worker-healthcheck
     environment:
-      <<: *worker-env
+      <<: *worker-solver-env
       ADAPTER_WORKER_ID: '1'
       WORKER_ID: worker-1
-      ADAPTER_CAPABILITIES: ${ADAPTER_CAPABILITIES_W2:-web,cloud,pwn,reverse,forensics,crypto,pentest,evasion,misc}
-      # 共享 worker-1 的隧道，自己不起 VPN
-      ADAPTER_VPN_CONFIG: ''
-      # 本地态势台关掉：network_mode: service:worker-1 下容器端口发布不可用，
-      # 绑在 8081 也只有共享 netns 里可见（宿主看不到），留着是个陷阱。
-      # 观测不受影响 —— 数据仍经 relay 进 obs 平台 :8000。
-      STATUS_PORT: '0'
-    ports:
-      # network_mode: service:worker-1 时 ports 不可用 —— 发布由 worker-1 承担。
-      # 宿主看 worker-2 的态势台请走服务端 obs（:8000）或 docker exec。
-      []
-    volumes: *worker-volumes
-    depends_on:
-      server:
-        condition: service_healthy
-      worker-1:
-        condition: service_healthy
 
   worker-3:
-    <<: *worker-runtime
-    build: *worker-build
+    <<: *worker-solver
     container_name: ghost-worker-3
-    network_mode: service:worker-1
-    healthcheck: *worker-healthcheck
     environment:
-      <<: *worker-env
+      <<: *worker-solver-env
       ADAPTER_WORKER_ID: '2'
       WORKER_ID: worker-2
-      ADAPTER_CAPABILITIES: ${ADAPTER_CAPABILITIES_W3:-web,cloud,pwn,reverse,forensics,crypto,pentest,evasion,misc}
-      ADAPTER_VPN_CONFIG: ''
-      # 同 worker-2：共享 netns 下端口发布不可用，态势台关掉，观测走 relay
-      STATUS_PORT: '0'
-    ports: []
-    volumes: *worker-volumes
-    depends_on:
-      server:
-        condition: service_healthy
-      worker-1:
-        condition: service_healthy
 
   # ── 单体 worker：不带舰队拓扑的单机/调试形态 ──
   # `docker compose up -d worker` 起这一个容器（自己持 VPN 自己解题，与改造前行为一致）。

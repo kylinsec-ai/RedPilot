@@ -4,9 +4,9 @@ httpx>=0.27,<1
 playwright==1.55.0
 pytest-playwright==0.8.0
 
-# 裸 pytest 就能收全部用例(346 个),无需手工传目录 —— pytest.ini 已把
+# 裸 pytest 就能收全部用例(352 个),无需手工传目录 —— pytest.ini 已把
 # packages/ 与 tests/ 收进 testpaths,并把三包与仓库根加进 pythonpath:
 #     .venv/bin/pytest
-# 单跑某一路时才需要点名(实测 171 / 175):
+# 单跑某一路时才需要点名(实测 177 / 175):
 #     .venv/bin/pytest packages/        # 三包
 #     .venv/bin/pytest tests/           # 竞技场与策略层回归

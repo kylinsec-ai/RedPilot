@@ -6,7 +6,7 @@ Ghost worker 装配层 — 进程装配 + 观测面接线，主循环交给 orch
 
     driver.main()                       ← 本模块：装配
       ├── WorkerSettings/SolverConfig   校验配置（错就 exit 0，明示后停止）
-      ├── 心跳线程 + LiveState/LiveBus  观测面（下一段）
+      ├── LiveState/LiveBus             观测面状态与广播
       ├── StatusBridge 注入 orchestrator ← 把编排状态翻成 live 快照
       ├── ObsRelay / RosterPoller / :8080 态势台
       └── orchestrator.main()            ← 竞技场主循环（list→派发→多会话→提交）
@@ -24,11 +24,9 @@ from __future__ import annotations
 import logging
 import os
 import sys
-import threading
-import time
 
 from ghost.obs.localserver import serve_forever_in_thread as _serve_local
-from ghost_contracts.paths import HEARTBEAT_PATH, LIVE_DIR
+from ghost_contracts.paths import LIVE_DIR
 
 from . import orchestrator
 from .config import SolverConfig
@@ -42,70 +40,18 @@ from .solver import touch_heartbeat
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("ghost_worker.driver")
 
-# 退出码契约见 orchestrator.main() 的注释（0/2/86/4）。本模块不自行退出。
+# 退出码契约：本模块只产出 0（配置错误，明示后停止）与 86/4（编排层自己的退出路径）。
+# 完整表见 packages/worker/README.md —— 那里是唯一权威，不要在别处再抄一份。
+#
+# 为什么本模块不自己写心跳、也不自己探测挂死：
+# 编排层已经有一条独立心跳线程（`orchestrator.main()` 里的 `name="heartbeat"`，
+# 每 30s `_beat()`），而 `_beat()` 除刷心跳文件外还**调 `_update_status()`** ——
+# 那正是观测面的数据源。装配层再起第二条心跳线程的物理后果是：探针永远看不到
+# 停滞（自己的写就发生在读之前），而那个"挂死就 exit 4"的分支从构造上不可达。
+# 心跳是编排层的职责，本层不重复实现它。
 
 
 # ── 装配 ────────────────────────────────────────────────────
-
-class HeartbeatProbe:
-    """挂死探针 —— 独立于心跳线程判"编排层还活着吗"。
-
-    判据只有一条：**心跳文件 mtime 是否在前进**。编排层在 ~9 个阻塞点上调
-    `_beat()`（`_start_with_retry` / 自动派发每轮 / 多会话循环 / idle keepalive /
-    monitor 循环），所以它前进 ⇔ 主循环确实在转。
-
-    ⚠️ 这个判据成立的前提是：**本类自己不写心跳**。所以补心跳是独立的一步
-    （`HeartbeatProbe.beat`），探针只观察。此前把两者放在同一个循环里，结果是
-    探索针每次先 `touch_heartbeat()` 再检查 —— 它把自己的心跳当成编排层的心跳，
-    `os._exit(4)` 分支永远不可达（一个自欺的看门狗）。
-
-    另一个刻意的取舍：**这个探针只杀进程，不代写心跳**。代写会让 compose 的
-    healthcheck（读同一个文件）把挂死的编排层判成健康 —— 那就把"进程死了要重启"
-    换成了"永远不重启"。宁可让编排层自己 exit 4。
-
-    改探针前先想清楚这两条：不写心跳，不代写。
-    """
-
-    def __init__(self, stale_after: float = 180.0) -> None:
-        self._stale_after = stale_after   # 默认 6 个 30s 周期都没前进 = 挂了
-        self._last_seen = 0.0
-        self._stale_since = 0.0
-
-    def observe(self) -> bool:
-        """看一次心跳。返回 True = 已判定挂死（调用方负责退出）。"""
-        try:
-            mtime = os.path.getmtime(HEARTBEAT_PATH)
-        except OSError:
-            mtime = 0.0
-        if mtime > self._last_seen:
-            self._last_seen = mtime
-            self._stale_since = 0.0
-            return False
-        if not self._stale_since:
-            self._stale_since = time.time()
-            return False
-        return (time.time() - self._stale_since) >= self._stale_after
-
-
-def _heartbeat_loop() -> None:
-    """两个独立职责，刻意放在同一个线程里但**互不干扰**：
-
-    1. 低频补心跳 —— 编排层在长阻塞（一整套多会话 visit 可能有十分钟不 `_beat`）
-       期间的心跳兜底。注意它**不参与**下面的判定（见 HeartbeatProbe 的说明）。
-    2. 挂死探测 —— 用探针自己看到的 mtime 判，绝不被自己的补心跳带偏。
-    """
-    probe = HeartbeatProbe()
-    while True:
-        time.sleep(30)
-        try:
-            touch_heartbeat()          # 职责 1：补心跳（探针不看这次写入）
-        except Exception:
-            pass
-        if probe.observe():            # 职责 2：只看"上次观察之后有没有别的写入者"
-            log.critical("heartbeat stale for >=%.0fs — 编排层已挂死，"
-                         "exit 4 由容器 restart 策略拉起", probe._stale_after)
-            os._exit(4)
-
 
 def main() -> None:
     """装配进程并进入竞技场主循环（`orchestrator.main()`，本函数不返回）。
@@ -165,6 +111,7 @@ def main() -> None:
     # 编排侧用 ADAPTER_WORKER_ID（序号，写 status/worker-N.json）。两者指同一个
     # worker，装配层在这里做一次一致性告警 —— 漂移会让 :8080 面板与 status
     # 文件显示成两个 worker，而两边都不报错。
+    live.update(model=cfg.model)
     _warn_if_worker_id_drift(settings)
     orchestrator.set_status_bridge(
         StatusBridge(live, bus, relay=relay, worker_id=settings.worker_id))
@@ -178,13 +125,11 @@ def main() -> None:
     except Exception:
         log.exception("local status server failed to start (solving continues)")
 
-    threading.Thread(target=_heartbeat_loop, daemon=True, name="heartbeat").start()
-
     log.info("ghost-worker starting: role=%s wid=%s model=%s base=%s",
              settings.adapter_role or "solver", settings.adapter_worker_id,
              cfg.model, settings.benchmark_base_url)
     # 主循环接管（不返回）：热重载走 os._exit(86)，任务终态走 sys.exit(0)。
-    # relay 的收尾由 orchestrator 在退出路径上 flush（见其 `_drain_observability`）。
+    # 心跳线程由编排层自己起（见模块头说明）。
     orchestrator.main()
 
 
@@ -194,13 +139,21 @@ def _warn_if_worker_id_drift(settings: WorkerSettings) -> None:
     两者**不需要**逐字相同（一个是展示名 "worker-1"、一个是序号 1），但尾部
     数字必须一致 —— 否则 :8080 上看到的是 worker-2 在解题，而 status 文件里
     写的是 worker-1，两边都不报错（这是静默故障那一族）。
+
+    序号由 `WorkerSettings` 一次解析（`worker_id_seq`），本函数只比较，不重复
+    解析 —— 用它自己的正则会与 settings 里那份悄悄分叉。
+
+    ⚠️ 这个检查**够不着**真正的漂移：编排层 `_worker_id()` 还会再做一次
+    `% ADAPTER_WORKER_COUNT`，取模后的序号可能与这里比较的两个都不同
+    （单体形态 WORKER_ID=worker-1 / ADAPTER_WORKER_ID=1 / COUNT 缺省 1 →
+    取模得 0，status 落进 worker-0.json）。那属于编排层的口径问题，见
+    orchestrator._worker_id；本函数只能保证"进编排层之前"两个名字是同一个人。
     """
-    import re as _re
-    m = _re.search(r"(\d+)\s*$", settings.worker_id or "")
-    if m and int(m.group(1)) != settings.adapter_worker_id:
+    seq = settings.worker_id_seq
+    if seq is not None and seq != settings.adapter_worker_id:
         log.warning("worker id drift: WORKER_ID=%r (→%s) 与 ADAPTER_WORKER_ID=%s 不一致 — "
                     "态势台与 status/*.json 会显示成两个 worker",
-                    settings.worker_id, m.group(1), settings.adapter_worker_id)
+                    settings.worker_id, seq, settings.adapter_worker_id)
 
 
 if __name__ == "__main__":

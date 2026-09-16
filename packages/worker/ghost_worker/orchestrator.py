@@ -99,6 +99,13 @@ _STATUS: dict = {
     "last_beat": time.time(),
     "current_code": "",
     "solving_active": False,
+    # phase 是**给观测面的**（ghost_contracts.vocabulary.PHASES 的词表）。
+    # 它存在是因为下面那两个布尔表达不出 relay 的 run 状态机需要的区别
+    # ——「这一场刚开始」vs「这一场在推进」vs「多场之间的间隙」，而那三种
+    # 都要开/收不同的 run。竞技场自己不用这个字段。见 observability.py 头部。
+    # 不写它时由 StatusBridge 从两个布尔兜底推导（口径略粗：会话开始与
+    # 会话推进都归为 solving）。
+    "phase": "idle",
     "current_difficulty": "",
     "current_round": 0,
     "sessions": 0,
@@ -111,6 +118,11 @@ _STATUS: dict = {
     "challenges_solved": 0,
     "last_event": "",
     "last_log": "",
+    # 结构化的失败文案（result.error / termination_reason），由观测面读取。
+    # 与 last_log 不同：那是给人看的多语言日志行，这是能直接进面板红点的原因。
+    # 由每一次新的认领（phase="starting"）清空，不随会话结束自动清 —— 会话
+    # 之间的间隙里，面板上留着上一场的失败原因是有用的。
+    "error": "",
 }
 _STATUS_LOCK = threading.Lock()
 
@@ -118,7 +130,7 @@ _STATUS_LOCK = threading.Lock()
 # 装配层（ghost_worker.driver）注入一个 StatusBridge，把上面这份状态转译成
 # LiveState/LiveBus，喂给 relay(→obs 平台) 与本地态势台(:8080)。
 # 默认是 _NullBridge（全空操作）：直调本模块（仓库根 9 个测试、`--once` 排查）
-# 时行为与搬迁前逐字一致。接口约定：push / tool_start / tool_output /
+# 时行为与搬迁前逐字一致。接口约定：push / tool_call /
 # flags_submitted，实现方自己吞掉所有异常。
 
 
@@ -128,8 +140,7 @@ class _NullBridge:
     __slots__ = ()
 
     def push(self, status) -> None: ...
-    def tool_start(self, tool, args) -> None: ...
-    def tool_output(self, out) -> None: ...
+    def tool_call(self, tool, args, output) -> None: ...
     def flags_submitted(self, flags) -> None: ...
 
 
@@ -604,7 +615,10 @@ def _update_status(**kw) -> None:
     # 让 relay(→obs 平台) 与本地态势台(:8080) 看到实时进度。
     # **刻意放在落盘之后**：status/worker-N.json 是 supervisor 与只读控制台的
     # 数据源，它不能被观测桥的任何异常拖住。
-    _STATUS_BRIDGE.push(_STATUS)
+    # 传副本：_STATUS 是活的模块全局，而 push 是异步消费方（relay 自己的线程
+    # 读信封），传引用等于把锁外的可变状态交出去。副本约 16 个标量，代价可忽略。
+    with _STATUS_LOCK:
+        _STATUS_BRIDGE.push(dict(_STATUS))
 
 
 def _adaptive_session_limits(ch: Challenge, solver: SolverConfig, session_idx: int,
@@ -3539,6 +3553,13 @@ def _is_api_fault(result) -> bool:
     记进 stoploss，402 风暴里每题连输 3 场就被打成 stuck:dry_sessions=3 永久
     停掉（2026-09-11 实测 round 0 整轮阵亡，且全是**假止损**——额度恢复后
     这些题会被静默跳过）。判据与 solve_one 返回体的 api_error 字段同源。
+
+    ⚠️ 与 `engine_solver.SolveResult.provider_failure` 的分工（两者互补，都要）：
+      - `provider_failure`（引擎侧）：0-turn + **任何**报错 = 引擎压根没跑起来
+        （provider 400 / 鉴权失败 / 会话起不来）。它认的是"没跑"，不认内容。
+      - 这里（编排侧）：**看报错文本**认账号级故障（余额/认证），turns 不限
+        —— 跑了几轮之后余额耗尽同样要暂停整轮，而不是把题打成 stuck。
+    合并成一条会丢一半语义：只留一边，另一方那一族失败就退化成假止损。
     """
     return bool(result is not None and getattr(result, "error", None)
                 and any(t in str(result.error) for t in _API_FAULT_TOKENS))
@@ -4355,6 +4376,10 @@ def _eager_submit_loop(
                     log.info("  \u26a1 [EAGER] FLAG CORRECT on %s: %s (+%d pts, total %d)",
                              code, fc[:30], sr.awarded, sr.cumulative_score)
                     accepted_flags.append(fc)
+                    # 观测面需要**明文**（不是计数）：Runs 历史里"本 run 真正入账的
+                    # flag"只有这条通道带得过去，收尾帧的 `flags_accepted` 是另一条。
+                    # 带外送到 relay（`send_accepted_flags`），不落 LiveState 快照。
+                    _STATUS_BRIDGE.flags_submitted([fc])
                     _update_status(
                         flags_submitted=max(
                             len(accepted_flags),
@@ -4533,9 +4558,13 @@ def _solve_one_unlocked(
     # 放在互斥检查之后：mutex-bail / 止损放弃的访问不再留下 current_code 残留认领，
     # 避免空闲 worker 的空认领毒化另一 worker 的派发互斥（活锁根因之一）。
     _my_claim_ts = time.time()
+    # phase="starting" 只为观测（relay 的 run 状态机在这里开新 run），会话真正起跑
+    # 时由 session start 那一处改写为 "solving"。见 observability.py 头部。
+    # error 在这里清空：新的一题从零开始，不背上一题的失败文案。
     _update_status(current_code=code, current_difficulty=ch.difficulty or "",
                    current_round=round_idx + 1, last_event=f"visit {code}",
-                   solving_active=True, claim_ts=_my_claim_ts)
+                   solving_active=True, claim_ts=_my_claim_ts, phase="starting",
+                   error="")
     # B19：认领后复核 —— 互斥检查与认领之间隔着一次平台 list_challenges 预检
     # （可达秒级），两 worker 可同时通过检查再同时认领（实测 22:39:34 wid1/wid2
     # 相差 16ms 双双认领同一题，并发写同一 workdir/.pi-home、重复烧 token）。
@@ -4546,7 +4575,8 @@ def _solve_one_unlocked(
     if _conf is not None and _conf < (_my_claim_ts, _worker_id()):
         log.info("  %s 认领竞争落败（另一 worker 同时认领且更早）— 释放认领并放弃", code)
         _update_status(current_code="", current_difficulty="",
-                       solving_active=False, last_event=f"claim lost {code}")
+                       solving_active=False, last_event=f"claim lost {code}",
+                       phase="idle")
         return {"solved": False, "outcome": "active_elsewhere"}
 
     # B22：开靶场前先判「这一访是否还够跑一个最小会话」。
@@ -4567,14 +4597,16 @@ def _solve_one_unlocked(
     if (_global_remain < _MIN_SESS_SECS):
         log.info("  skip visit %s: dispatch budget has only %ds remaining", code, _global_remain)
         _update_status(current_code="", current_difficulty="",
-                       solving_active=False, last_event=f"global budget skip {code}")
+                       solving_active=False, last_event=f"global budget skip {code}",
+                       phase="idle")
         return {"solved": False, "outcome": "aborted",
                 "reason": "dispatch_budget_exhausted"}
     if not _is_prio and (_pre_stop or min(visit_seconds, _pre_remain) < _MIN_SESS_SECS):
         log.info("  skip visit %s before start: %s（剩余预算 %ds < 最小会话 %ds）",
                  code, _pre_reason or "budget", _pre_remain, _MIN_SESS_SECS)
         _update_status(current_code="", current_difficulty="",
-                       solving_active=False, last_event=f"skip {code}")
+                       solving_active=False, last_event=f"skip {code}",
+                       phase="idle")
         # 必须返回 "dropped"：调度器只认 solved/dropped/should_stop，
         # 而此处 stoploss.start() 尚未调用、should_stop() 看不到本次访问，
         # 返回其它值会让该题既不算解决也不算放弃 → 下一轮再次被挑中 → 空转。
@@ -4587,7 +4619,7 @@ def _solve_one_unlocked(
         client, code, stop_event=stop_event, rate_wait=lambda: None,
         retries=start_retries, deadline=dispatch_deadline)
     if started is None:
-        _update_status(solving_active=False, current_code="")
+        _update_status(solving_active=False, current_code="", phase="idle")
         return {"solved": False, "outcome": outcome or "start_failed"}
 
     # From this point on the platform owns an active challenge instance.  Keep
@@ -4667,7 +4699,7 @@ def _solve_one_unlocked(
             pass
         _update_status(solving_active=False, current_code="", session_active=False,
                        session_started_at=0.0, last_activity=time.time(),
-                       last_event=f"setup failed {code}")
+                       last_event=f"setup failed {code}", phase="idle")
         return {"solved": False, "outcome": "start_failed",
                 "error": str(setup_error)[:200], "turns": 0,
                 "api_error": _is_api_fault(setup_error)}
@@ -5098,8 +5130,7 @@ def _solve_one_unlocked(
                 _update_status(last_activity=time.time())
                 # 观测桥：status 只有会话粒度，工具粒度在这里补（面板要"此刻在跑
                 # 什么"）。桥未注入时是 _NullBridge，空操作。
-                _STATUS_BRIDGE.tool_start(tool, args)
-                _STATUS_BRIDGE.tool_output(output)
+                _STATUS_BRIDGE.tool_call(tool, args, output)
 
             # 转录路径以本次 live instance 的随机 scope 隔离。round/session
             # 是证据顺序的唯一来源；mtime 可因重启/复制而变化，不参与判定。
@@ -5158,9 +5189,13 @@ def _solve_one_unlocked(
             # 值锚定「本轮从哪个文件、哪个偏移开始读」，没有它 run 只有生命周期没有
             # 内容（一条 transcript 行都进不了 obs）。竞技场自己不用这个字段
             # —— 它按 trace_scope 直接算路径。
+            # phase="solving" 同样只为观测：status 里原有的两个布尔（solving_active /
+            # session_active）表达不出"这一场刚开始"与"这一场在推进"的区别，而
+            # relay 的 run 状态机靠这个区别开新 run（observability.py 头部有述）。
             _update_status(session_active=True, session_started_at=time.time(),
                            last_activity=time.time(),
                            last_event=f"session start {code}#{session_idx}",
+                           phase="solving",
                            transcript_path=tpath)
 
             try:
@@ -5255,6 +5290,13 @@ def _solve_one_unlocked(
                                   if t == "bash" and str((a or {}).get("command", "")).strip()
                               }),
                               "repeat_count": _last_session_repeats})
+
+            # 本场的失败文案进 status（**观测用**）：竞技场的 status 只有一个
+            # `last_log` 给运维看，而失败原因在这里是结构化的 `result.error`。
+            # 不在这里捎带的话，观测桥只能去 last_log 里嗅探关键词来猜 —— 那是
+            # 猜一个它本来就能读到的东西。清空由下一次认领的 starting 帧负责。
+            if result.error or result.termination_reason:
+                _update_status(error=str(result.error or result.termination_reason)[:200])
 
             # ── flag 候选清洗（提前到 INFRA_BLOCKED 判定之前，B12）──────
             # 外壳归一化（FLAG{}→flag{}、去体外污染，只改外壳不改 body）+
@@ -5403,6 +5445,7 @@ def _solve_one_unlocked(
                                  code, flag_candidate[:30],
                                  submit_result.awarded, submit_result.cumulative_score)
                         accepted_flags.append(flag_candidate)
+                        _STATUS_BRIDGE.flags_submitted([flag_candidate])
                         _update_status(
                             flags_submitted=max(
                                 len(accepted_flags),
@@ -5568,6 +5611,7 @@ def _solve_one_unlocked(
                                          code, flag_candidate[:30], submit_result.awarded,
                                          submit_result.cumulative_score)
                                 accepted_flags.append(flag_candidate)
+                                _STATUS_BRIDGE.flags_submitted([flag_candidate])
                                 _update_status(flags_submitted=max(
                                                    len(accepted_flags),
                                                    int(getattr(task, "correct_flag_count", 0) or 0),
@@ -5728,7 +5772,7 @@ def _solve_one_unlocked(
                 obs.emit("challenge_solved", layer="driver",
                          payload={"code": code, "flags": len(accepted_flags)})
                 _update_status(challenges_solved=int(_STATUS["challenges_solved"]) + 1,
-                               last_event=f"solved {code}")
+                               last_event=f"solved {code}", phase="done")
                 # 合规加固：题解入账后立即清理本目录明文答案物证（FLAG/SOURCE/MEMORY.md），
                 # 防平台重发同题码时被判定"内置赛题信息/使用外部历史答题记忆"
                 try:
@@ -5781,8 +5825,11 @@ def _solve_one_unlocked(
                     and len(accepted_flags) <= flags_before):
                 if _restart_target_for_fault():
                     session_idx += 1
+                    # 会话间隙：visit 还在跑但没有活跃会话（收尾/复盘/重启靶场）。
+                    # phase="closing" 让 relay 在这里收掉本场 run，下一场再开新的。
                     _update_status(sessions=session_idx, session_active=False,
-                                   session_started_at=0.0, last_activity=time.time())
+                                   session_started_at=0.0, last_activity=time.time(),
+                                   phase="closing")
                     continue
                 stoploss.record_unreachable(code)
                 log.info("  %s 目标服务故障 — 重启未成/额度用尽，退避", code)
@@ -5791,7 +5838,8 @@ def _solve_one_unlocked(
 
             session_idx += 1
             _update_status(sessions=session_idx, session_active=False,
-                           session_started_at=0.0, last_activity=time.time())
+                           session_started_at=0.0, last_activity=time.time(),
+                           phase="closing")
 
     except Exception as e:
         log.exception("solve_one error on %s", code)
@@ -5874,8 +5922,11 @@ def _solve_one_unlocked(
                 log.warning("[compliance] visit-end clean failed for %s", code, exc_info=True)
         # 释放求解认领：完成后清空 current_code/solving_active，
         # 防止本 worker 空闲时留下陈旧认领阻塞另一 worker 接管（活锁根因）。
+        # phase="closing"：非解出的收尾（止损放弃/预算耗尽/故障）走这里，
+        # relay 需要它来收掉本场 run —— 没有它 run 会一直开着等下次换题。
         _update_status(solving_active=False, current_code="", session_active=False,
-                       session_started_at=0.0, last_activity=time.time())
+                       session_started_at=0.0, last_activity=time.time(),
+                       phase="closing")
         # 上下文隔离：清空本题的共享黑板缓存，防止内存残留跨题污染
         # （同一容器后续解题时不应看到上一题 blackboard / 状态）
         try:

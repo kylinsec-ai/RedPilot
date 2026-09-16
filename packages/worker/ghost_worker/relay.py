@@ -268,8 +268,9 @@ class ObsRelay:
 
         relay 是观测面唯一的知识来源(竞技场主循环不走控制面的 claim/complete),
         所以 run 的收尾就由这里负责:排干全部事件后 POST run_close。
-        曾经的 assignment 分支(绑定 attempt_id 时把生命周期让给 canonical
-        outbox)随那条链路一起退位 —— 现在没有第二方在写 run 终态。
+        这里曾有一条"绑定了 attempt_id 就把生命周期让给 canonical outbox"的早退
+        —— 随 assignment 链路一起删了:现在没有第二方在写 run 终态,run 的字段里
+        也不再出现 assignment 的三元组(job/attempt/evaluation)。
         """
         run["closed"] = True
         try:
@@ -277,10 +278,6 @@ class ObsRelay:
                 self._tail_once(run, force=True)
         except Exception:
             log.debug("obs close drain failed", exc_info=True)
-        if run.get("attempt_id"):
-            log.info("obs run close skipped (canonical owns lifecycle): %s code=%s%s",
-                     run["run_id"], run["code"], f" note={note}" if note else "")
-            return
         error = str(frame.get("error") or "")
         accepted = int(frame.get("accepted") or 0)
         flags_found = int(frame.get("flags_found") or 0)
@@ -301,10 +298,7 @@ class ObsRelay:
         self._fifo.put({
             "t": "close", "run": run,
             "body": {"run_id": run["run_id"], "worker_id": run.get("worker_id"),
-                      "evaluation_id": run.get("evaluation_id"),
-                      "job_id": run.get("job_id"),
-                      "attempt_id": run.get("attempt_id"),
-                      "status": status, "error": error[:_ERR_MAX] or None,
+                     "status": status, "error": error[:_ERR_MAX] or None,
                      "turns": int(frame.get("turns") or 0) or None,
                      "flags_found": flags_found or None,
                      "flags_accepted": flags or None,
@@ -409,9 +403,6 @@ class ObsRelay:
                                               "worker_id": msg["run"].get("worker_id"),
                                               "challenge_code": msg["run"]["code"],
                                               "model": msg["run"].get("model") or "",
-                                              "evaluation_id": msg["run"].get("evaluation_id"),
-                                              "job_id": msg["run"].get("job_id"),
-                                              "attempt_id": msg["run"].get("attempt_id"),
                                               "events": msg["rows"]}, headers=headers)
                     elif msg["t"] == "live":
                         # 帧已在 put_live 剥好信封/带外键 —— 原样 POST(勿二次剥)。

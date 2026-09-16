@@ -15,9 +15,9 @@ from dataclasses import dataclass
 log = logging.getLogger("ghost_worker.settings")
 
 
-def _parse_status_port(raw: str | None = None) -> int:
+def _parse_status_port() -> int:
     """STATUS_PORT 安全解析:import 期绝不抛;空串=禁用(0),垃圾值回退 8080 并告警"""
-    raw = raw if raw is not None else os.getenv("STATUS_PORT", "8080")
+    raw = os.getenv("STATUS_PORT", "8080")
     text = (raw or "").strip()
     if not text:
         return 0
@@ -60,24 +60,30 @@ class WorkerSettings:
     # adapter_worker_id 是朋友 status/worker-N.json 与能力分片用的序号
     # （ADAPTER_WORKER_ID）。装配层保证两者指向同一个 worker。
     adapter_worker_id: int = 1
+    # 从 WORKER_ID 尾部解析出的序号（"worker-3" → 3），**没有则为 None**。
+    # 存在的唯一理由：装配层要拿它和 adapter_worker_id 比一致性，而那个正则
+    # 只该有一个解析点（此前 driver 又抄了一遍同样的正则）。
+    worker_id_seq: int | None = None
 
     @classmethod
     def from_env(cls) -> "WorkerSettings":
         # ADAPTER_WORKER_ID 缺失时从 WORKER_ID 的尾部数字兜底（"worker-3" → 3），
         # 再不行回 1。朋友的 `_worker_id()` 有一模一样的兜底（HOSTNAME 正则），
         # 这里先解析出来是为了让 relay 的 worker_id 与编排侧序号能对齐校验。
+        worker_id = os.getenv("WORKER_ID", "worker-1").strip() or "worker-1"
+        m = re.search(r"(\d+)\s*$", worker_id)
+        seq = int(m.group(1)) if m else None
         try:
             adapter_wid = int(os.getenv("ADAPTER_WORKER_ID", "") or "")
         except ValueError:
             adapter_wid = -1
         if adapter_wid < 0:
-            m = re.search(r"(\d+)\s*$", os.getenv("WORKER_ID", "").strip())
-            adapter_wid = int(m.group(1)) if m else 1
+            adapter_wid = seq if seq is not None else 1
         return cls(
             benchmark_base_url=os.getenv("BENCHMARK_BASE_URL", "").strip(),
             benchmark_token=os.getenv("BENCHMARK_TOKEN", "").strip(),
             workdir=os.getenv("ADAPTER_WORKDIR", "/work").strip() or "/work",
-            worker_id=(os.getenv("WORKER_ID", "worker-1").strip() or "worker-1"),
+            worker_id=worker_id,
             status_port=_parse_status_port(),
             status_bind=_status_bind(),
             observability_url=os.getenv("OBSERVABILITY_URL", "").strip().rstrip("/"),
@@ -85,4 +91,5 @@ class WorkerSettings:
             flag_format=os.getenv("ADAPTER_FLAG_FORMAT", "flag{...}") or "flag{...}",
             adapter_role=(os.getenv("ADAPTER_ROLE", "").strip().lower()),
             adapter_worker_id=adapter_wid,
+            worker_id_seq=seq,
         )
