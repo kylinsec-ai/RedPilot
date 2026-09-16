@@ -1,0 +1,267 @@
+services:
+  worker-1:
+    build: &id001
+      context: .
+      dockerfile: Dockerfile
+    cap_add:
+    - NET_ADMIN
+    - NET_RAW
+    container_name: tsecbench-worker-1
+    devices:
+    - /dev/net/tun:/dev/net/tun
+    environment:
+      ADAPTER_ROLE: monitor
+      ADAPTER_MAX_CONCURRENCY: ${ADAPTER_MAX_CONCURRENCY:-3}
+      ADAPTER_PLATFORM: ${ADAPTER_PLATFORM:-tsecbench-http}
+      ADAPTER_PROVIDER: ${ADAPTER_PROVIDER:-deepseek}
+      ADAPTER_ROUND_TIMEBOXES: ${ADAPTER_ROUND_TIMEBOXES:-480,820,1500,2000}
+      ADAPTER_SKILLS_DIR: ${ADAPTER_SKILLS_DIR:-}
+      ADAPTER_SOLVER_MODEL: ${ADAPTER_SOLVER_MODEL:-}
+      ADAPTER_OFFLINE_MODE: ${ADAPTER_OFFLINE_MODE:-1}
+      ADAPTER_TOTAL_SECONDS: ${ADAPTER_TOTAL_SECONDS:-21300}
+      ADAPTER_TURN_TIMEOUT_SECONDS: '60'
+      ADAPTER_USE_HINTS: ${ADAPTER_USE_HINTS:-0}
+      ADAPTER_VPN_CONFIG: /vpn/client.ovpn
+      # entrypoint.sh consumes this value when it owns the VPN tunnel.  Make
+      # the compose contract explicit instead of silently relying on its
+      # shell fallback.
+      ADAPTER_VPN_PING_RESTART: ${ADAPTER_VPN_PING_RESTART:-600}
+      ADAPTER_WORKDIR: /work
+      ADAPTER_WORKER_CONCURRENCY: ${ADAPTER_WORKER_CONCURRENCY:-1}
+      ADAPTER_WORKER_COUNT: '3'
+      ADAPTER_WORKER_ID: '0'
+      BENCHMARK_BASE_URL: ${BENCHMARK_BASE_URL}
+      BENCHMARK_TOKEN: ${BENCHMARK_TOKEN}
+      DEEPSEEK_API_KEY: ${SOLVER_API_KEY}
+      PI_STALL_TIMEOUT: '900'
+      PLATFORM_SPEC_FILE: ${PLATFORM_SPEC_FILE:-}
+      SOLVER_API_KEY: ${SOLVER_API_KEY}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      SOLVER_GATEWAY: ${SOLVER_GATEWAY:-0}
+      SOLVER_TIMEOUT_MS: '300000'
+      SOLVER_SESSION_SECONDS: ${SOLVER_SESSION_SECONDS:-1500}
+      ADAPTER_PI_THINKING: ${ADAPTER_PI_THINKING:-}
+    healthcheck: &id002
+      interval: 60s
+      retries: 3
+      start_period: 300s
+      test:
+      - CMD-SHELL
+      - test -f /tmp/driver_heartbeat && [ $(( $(date +%s) - $(stat -c %Y /tmp/driver_heartbeat)
+        )) -lt ${WATCHDOG_MAX_IDLE_SECONDS:-300} ]
+      timeout: 10s
+    image: tsecbench-adapter:latest
+    # Docker-provided init reaps orphaned tool grandchildren while the driver
+    # remains PID 1; without it long Pi sessions accumulated defunct processes.
+    init: true
+    restart: on-failure
+    shm_size: 2gb
+    stdin_open: true
+    tty: true
+    volumes: &id003
+    - ./work:/work
+    - ./vpn:/vpn:ro
+    - ./drivers:/app/drivers:ro
+    - ./adapter:/app/adapter:ro
+    - ./skills:/app/skills:ro
+  worker-2:
+    build: *id001
+    container_name: tsecbench-worker-2
+    depends_on:
+      worker-1:
+        condition: service_healthy
+    environment:
+      # 日志时间戳对齐宿主时区（容器默认 UTC 差 8h，监控核对日志必踩坑；
+      # 仅 w2/w3——worker-1 永不重建，改了也不生效，保持原样）
+      TZ: Asia/Shanghai
+      # 两个解题目 worker 能力完全一致（web,cloud,pwn,reverse,forensics,
+      # crypto,pentest,evasion,misc），不按角色区分——任何技能类题两个 worker 都能解。
+      # 无法分类(unknown)的题按 unique_code 哈希均匀分流到各解题目 worker。
+      # ADAPTER_EXTRA_CAPABILITIES 保留空默认（兼容：若宿主显式设置仍会并入）。
+      ADAPTER_CAPABILITIES: ${ADAPTER_CAPABILITIES_W2:-web,cloud,pwn,reverse,forensics,crypto,pentest,evasion,misc}
+      ADAPTER_EXTRA_CAPABILITIES: ${ADAPTER_EXTRA_CAPABILITIES_W2:-}
+      # 全自动派发循环参数：轮询间隔 / 挂掉题重试冷却 / 每题最大自动重试次数
+      ADAPTER_AUTO_POLL: ${ADAPTER_AUTO_POLL:-60}
+      ADAPTER_DROP_RETRY: ${ADAPTER_DROP_RETRY:-600}
+      ADAPTER_AUTO_MAX_RETRY: ${ADAPTER_AUTO_MAX_RETRY:-3}
+      ADAPTER_API_BACKOFF: ${ADAPTER_API_BACKOFF:-600}
+      # [B61] 观察者会额外占用一次 LLM 调用与最长 45 秒；它只提供复盘，不是
+      # 求解主链。默认关闭，明确设置为 1 才启用。
+      ADAPTER_HEIMDALL: ${ADAPTER_HEIMDALL:-0}
+      ADAPTER_HEIMDALL_TIMEOUT: ${ADAPTER_HEIMDALL_TIMEOUT:-45}
+      # 按题目难度缩短 easy/medium 的单场会话；设为 0 可回退旧固定预算。
+      ADAPTER_ADAPTIVE_SESSION: ${ADAPTER_ADAPTIVE_SESSION:-1}
+      # 子 Agent 仅在 hard/多 flag 题按 prompt 策略有限调度；设为 0 完全关闭。
+      ADAPTER_SUBAGENT: ${ADAPTER_SUBAGENT:-1}
+      # ── [B63] 时间盒策略（2026-09-11 定稿：简单 20 / 中等 30 / 困难 90 分钟）──
+      # ★一律**字面值**，不用 ${VAR:-default}：实测启动时 .env 会被导出进进程
+      #   环境，而进程环境优先于 compose 默认值 —— 写 ${} 会被 .env 同名键静默
+      #   盖掉（证据：ADAPTER_USE_HINTS 现场=1，而 compose 默认=0）。
+      #   字面值让容器配置与「谁启动的」无关，可复现。
+      ADAPTER_TIMEBOX_EASY: '1200'
+      ADAPTER_TIMEBOX_MEDIUM: '1800'
+      ADAPTER_TIMEBOX_HARD: '5400'
+      # 首轮扫描：下限抬到「简单题时间盒」。原下限 480s 把所有题的首访压成
+      # 8 分钟（用户实测抱怨「那么短就关闭了」），困难题更永远拿不到 90 分钟。
+      # sweep 给足，让下限说话，而不是让除式说话。
+      ADAPTER_FIRSTPASS_FLOOR: '1200'
+      ADAPTER_FIRSTPASS_SWEEP: '24000'
+      # 单题**终身**预算（stoploss 跨访问累计）＝困难题 90 分钟的总量。
+      # ★默认 4000s 会在第 66 分钟掐掉困难题 —— 只改时间盒不改这里，90 分钟是假的。
+      ADAPTER_PER_CHALLENGE_SECONDS: '5400'
+      # 单 flag 题连续 3 场没有平台确认 flag 即轮换；多 flag 已有进展时不触发
+      ADAPTER_ZERO_FLAG_CUTOFF: '3'
+      # 与 .env.example 一一对应：保留显式调优入口，不让模板中的止损/
+      # keepalive/质疑参数在 Compose 部署时被静默忽略。
+      ADAPTER_MAX_SESSIONS: ${ADAPTER_MAX_SESSIONS:-8}
+      ADAPTER_DRY_FACTS_CUTOFF: ${ADAPTER_DRY_FACTS_CUTOFF:-3}
+      ADAPTER_KEEPALIVE_MAX: ${ADAPTER_KEEPALIVE_MAX:-2}
+      SKEPTIC_VOTES: ${SKEPTIC_VOTES:-1}
+      # 多段内网题保留同一 Pi 会话更久：避免刚拿到第一条 flag 就被通用 60 工具
+      # 调用上限打断。仍受本题时间盒、止损与平台全量确认约束。
+      ADAPTER_MULTIFLAG_MAX_TURNS: '120'
+      # 多段题先做一次平台提示复核，再给提示后的完整探索窗口。
+      ADAPTER_MULTIFLAG_HINT_REVIEW: '1'
+      ADAPTER_MULTIFLAG_POST_HINT_DRY_SESSIONS: '3'
+      # 找到并写入 FLAG 后的投递轮询间隔；默认 3 秒，允许由 .env 调整。
+      ADAPTER_EAGER_SUBMIT_INTERVAL: ${ADAPTER_EAGER_SUBMIT_INTERVAL:-3}
+      # 解出收尾后延迟关靶场，避开与平台入账的竞态（用户：过 30 秒再关）
+      ADAPTER_CLOSE_GRACE_SECONDS: '30'
+      ADAPTER_MAX_CONCURRENCY: ${ADAPTER_MAX_CONCURRENCY:-3}
+      ADAPTER_PLATFORM: ${ADAPTER_PLATFORM:-tsecbench-http}
+      ADAPTER_PROVIDER: ${ADAPTER_PROVIDER:-deepseek}
+      ADAPTER_ROUND_TIMEBOXES: ${ADAPTER_ROUND_TIMEBOXES:-480,820,1500,2000}
+      ADAPTER_SKILLS_DIR: ${ADAPTER_SKILLS_DIR:-}
+      ADAPTER_SOLVER_MODEL: ${ADAPTER_SOLVER_MODEL:-}
+      ADAPTER_OFFLINE_MODE: ${ADAPTER_OFFLINE_MODE:-1}
+      ADAPTER_TOTAL_SECONDS: ${ADAPTER_TOTAL_SECONDS:-21300}
+      ADAPTER_TURN_TIMEOUT_SECONDS: '60'
+      ADAPTER_USE_HINTS: ${ADAPTER_USE_HINTS:-0}
+      ADAPTER_VPN_CONFIG: ''
+      ADAPTER_WORKDIR: /work
+      ADAPTER_WORKER_CONCURRENCY: ${ADAPTER_WORKER_CONCURRENCY:-1}
+      ADAPTER_WORKER_COUNT: '3'
+      ADAPTER_WORKER_ID: '1'
+      BENCHMARK_BASE_URL: ${BENCHMARK_BASE_URL}
+      BENCHMARK_TOKEN: ${BENCHMARK_TOKEN}
+      DEEPSEEK_API_KEY: ${SOLVER_API_KEY}
+      PI_STALL_TIMEOUT: '900'
+      # bash-guard 扩展: pi bash 工具强制 timeout/ulimit + 自引用写拦截 (P0 防盘爆)
+      PI_BASH_TIMEOUT_SECONDS: ${PI_BASH_TIMEOUT_SECONDS:-600}
+      PI_BASH_MAX_FILE_MB: ${PI_BASH_MAX_FILE_MB:-4096}
+      ADAPTER_PI_EXTENSIONS: ${ADAPTER_PI_EXTENSIONS:-/app/adapter/pi_ext/bash_guard.js}
+      PLATFORM_SPEC_FILE: ${PLATFORM_SPEC_FILE:-}
+      SOLVER_API_KEY: ${SOLVER_API_KEY}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      SOLVER_GATEWAY: ${SOLVER_GATEWAY:-0}
+      SOLVER_TIMEOUT_MS: '300000'
+      SOLVER_SESSION_SECONDS: ${SOLVER_SESSION_SECONDS:-1500}
+      ADAPTER_PI_THINKING: ${ADAPTER_PI_THINKING:-}
+    healthcheck: *id002
+    image: tsecbench-adapter:latest
+    init: true
+    network_mode: service:worker-1
+    restart: on-failure
+    shm_size: 2gb
+    stdin_open: true
+    tty: true
+    volumes: *id003
+  worker-3:
+    build: *id001
+    container_name: tsecbench-worker-3
+    depends_on:
+      worker-1:
+        condition: service_healthy
+    environment:
+      # 日志时间戳对齐宿主时区（容器默认 UTC 差 8h，监控核对日志必踩坑；
+      # 仅 w2/w3——worker-1 永不重建，改了也不生效，保持原样）
+      TZ: Asia/Shanghai
+      # 与 worker-2 能力一致（web,cloud,pwn,reverse,forensics,crypto,pentest,evasion,misc）
+      # 两个解题目 worker 同质不分工；unknown 题按 unique_code 哈希分流。
+      ADAPTER_CAPABILITIES: ${ADAPTER_CAPABILITIES_W3:-web,cloud,pwn,reverse,forensics,crypto,pentest,evasion,misc}
+      # [B61] 观察者会额外占用一次 LLM 调用与最长 45 秒；它只提供复盘，不是
+      # 求解主链。默认关闭，明确设置为 1 才启用。
+      ADAPTER_HEIMDALL: ${ADAPTER_HEIMDALL:-0}
+      ADAPTER_HEIMDALL_TIMEOUT: ${ADAPTER_HEIMDALL_TIMEOUT:-45}
+      ADAPTER_ADAPTIVE_SESSION: ${ADAPTER_ADAPTIVE_SESSION:-1}
+      ADAPTER_SUBAGENT: ${ADAPTER_SUBAGENT:-1}
+      # ── [B63] 时间盒策略（2026-09-11 定稿：简单 20 / 中等 30 / 困难 90 分钟）──
+      # ★一律**字面值**，不用 ${VAR:-default}：实测启动时 .env 会被导出进进程
+      #   环境，而进程环境优先于 compose 默认值 —— 写 ${} 会被 .env 同名键静默
+      #   盖掉（证据：ADAPTER_USE_HINTS 现场=1，而 compose 默认=0）。
+      #   字面值让容器配置与「谁启动的」无关，可复现。
+      ADAPTER_TIMEBOX_EASY: '1200'
+      ADAPTER_TIMEBOX_MEDIUM: '1800'
+      ADAPTER_TIMEBOX_HARD: '5400'
+      # 首轮扫描：下限抬到「简单题时间盒」。原下限 480s 把所有题的首访压成
+      # 8 分钟（用户实测抱怨「那么短就关闭了」），困难题更永远拿不到 90 分钟。
+      # sweep 给足，让下限说话，而不是让除式说话。
+      ADAPTER_FIRSTPASS_FLOOR: '1200'
+      ADAPTER_FIRSTPASS_SWEEP: '24000'
+      # 单题**终身**预算（stoploss 跨访问累计）＝困难题 90 分钟的总量。
+      # ★默认 4000s 会在第 66 分钟掐掉困难题 —— 只改时间盒不改这里，90 分钟是假的。
+      ADAPTER_PER_CHALLENGE_SECONDS: '5400'
+      # 单 flag 题连续 3 场没有平台确认 flag 即轮换；多 flag 已有进展时不触发
+      ADAPTER_ZERO_FLAG_CUTOFF: '3'
+      # 同 worker-2：这些模板参数必须实际透传，才能在不改镜像的情况下调优。
+      ADAPTER_MAX_SESSIONS: ${ADAPTER_MAX_SESSIONS:-8}
+      ADAPTER_DRY_FACTS_CUTOFF: ${ADAPTER_DRY_FACTS_CUTOFF:-3}
+      ADAPTER_KEEPALIVE_MAX: ${ADAPTER_KEEPALIVE_MAX:-2}
+      SKEPTIC_VOTES: ${SKEPTIC_VOTES:-1}
+      # 多段内网题保留同一 Pi 会话更久：避免刚拿到第一条 flag 就被通用 60 工具
+      # 调用上限打断。仍受本题时间盒、止损与平台全量确认约束。
+      ADAPTER_MULTIFLAG_MAX_TURNS: '120'
+      # 多段题先做一次平台提示复核，再给提示后的完整探索窗口。
+      ADAPTER_MULTIFLAG_HINT_REVIEW: '1'
+      ADAPTER_MULTIFLAG_POST_HINT_DRY_SESSIONS: '3'
+      # 找到并写入 FLAG 后的投递轮询间隔；默认 3 秒，允许由 .env 调整。
+      ADAPTER_EAGER_SUBMIT_INTERVAL: ${ADAPTER_EAGER_SUBMIT_INTERVAL:-3}
+      # 解出收尾后延迟关靶场，避开与平台入账的竞态（用户：过 30 秒再关）
+      ADAPTER_CLOSE_GRACE_SECONDS: '30'
+      ADAPTER_MAX_CONCURRENCY: ${ADAPTER_MAX_CONCURRENCY:-3}
+      ADAPTER_PLATFORM: ${ADAPTER_PLATFORM:-tsecbench-http}
+      ADAPTER_PROVIDER: ${ADAPTER_PROVIDER:-deepseek}
+      ADAPTER_ROUND_TIMEBOXES: ${ADAPTER_ROUND_TIMEBOXES:-480,820,1500,2000}
+      ADAPTER_SKILLS_DIR: ${ADAPTER_SKILLS_DIR:-}
+      ADAPTER_SOLVER_MODEL: ${ADAPTER_SOLVER_MODEL:-}
+      ADAPTER_OFFLINE_MODE: ${ADAPTER_OFFLINE_MODE:-1}
+      ADAPTER_TOTAL_SECONDS: ${ADAPTER_TOTAL_SECONDS:-21300}
+      ADAPTER_TURN_TIMEOUT_SECONDS: '60'
+      ADAPTER_USE_HINTS: ${ADAPTER_USE_HINTS:-0}
+      # Keep the capability extension contract symmetric with worker-2.
+      ADAPTER_EXTRA_CAPABILITIES: ${ADAPTER_EXTRA_CAPABILITIES_W3:-}
+      ADAPTER_VPN_CONFIG: ''
+      ADAPTER_WORKDIR: /work
+      ADAPTER_WORKER_CONCURRENCY: ${ADAPTER_WORKER_CONCURRENCY:-1}
+      ADAPTER_WORKER_COUNT: '3'
+      ADAPTER_WORKER_ID: '2'
+      BENCHMARK_BASE_URL: ${BENCHMARK_BASE_URL}
+      BENCHMARK_TOKEN: ${BENCHMARK_TOKEN}
+      DEEPSEEK_API_KEY: ${SOLVER_API_KEY}
+      PI_STALL_TIMEOUT: '900'
+      # bash-guard 扩展: pi bash 工具强制 timeout/ulimit + 自引用写拦截 (P0 防盘爆)
+      PI_BASH_TIMEOUT_SECONDS: ${PI_BASH_TIMEOUT_SECONDS:-600}
+      PI_BASH_MAX_FILE_MB: ${PI_BASH_MAX_FILE_MB:-4096}
+      ADAPTER_PI_EXTENSIONS: ${ADAPTER_PI_EXTENSIONS:-/app/adapter/pi_ext/bash_guard.js}
+      PLATFORM_SPEC_FILE: ${PLATFORM_SPEC_FILE:-}
+      SOLVER_API_KEY: ${SOLVER_API_KEY}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      SOLVER_GATEWAY: ${SOLVER_GATEWAY:-0}
+      SOLVER_TIMEOUT_MS: '300000'
+      SOLVER_SESSION_SECONDS: ${SOLVER_SESSION_SECONDS:-1500}
+      ADAPTER_PI_THINKING: ${ADAPTER_PI_THINKING:-}
+    healthcheck: *id002
+    image: tsecbench-adapter:latest
+    init: true
+    network_mode: service:worker-1
+    restart: on-failure
+    shm_size: 2gb
+    stdin_open: true
+    tty: true
+    volumes: *id003

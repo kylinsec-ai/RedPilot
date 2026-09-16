@@ -24,7 +24,11 @@ log = logging.getLogger("ghost_worker.solver")
 
 @dataclass
 class SolveResult:
-    """Agent 会话执行结果（各后端统一输出）"""
+    """Agent 会话执行结果（各后端统一输出）。
+
+    字段是框架与朋友两侧的**并集**：框架侧原有 7 个（编排层直接消费），
+    朋友侧多 5 个（续接块 / 终态原因 / 目标故障）。
+    """
     flags: list[str] = field(default_factory=list)
     tool_outputs: list = field(default_factory=list)
     observed_output: str = ""
@@ -32,6 +36,14 @@ class SolveResult:
     turns: int = 0
     duration_s: float = 0.0
     infra_blocked: bool = False
+
+    # ── 朋友侧字段（B14/B16）。编排层目前不消费，但保留在结果里：
+    #    过渡期排查需要看得到"这局是被 stall 掐的还是跑完了"。
+    final_answer: str = ""
+    final_text: str = ""
+    handoff: str = ""              # B14 续接块（已达成原语/已证死路/下一步）
+    termination_reason: str = ""   # completed/timeout/stalled/stopped/max_turns/error
+    target_fault: bool = False     # B16 目标端口通但服务持续 5xx
 
     @property
     def has_flags(self) -> bool:

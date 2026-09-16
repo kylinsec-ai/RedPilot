@@ -1,15 +1,53 @@
+# ══════════════════════════════════════════════════════════════
+# 构建上下文裁剪（合并后：server(Dockerfile.ghost) + worker(Dockerfile) + 舰队）
+#
+# ⚠️ 两个 Dockerfile 真正需要的输入不同，下面每条都注明了在排除谁的什么：
+#    Dockerfile.base   —— kali 基础层，基本不读仓库内容
+#    Dockerfile.ghost  —— 读 packages/{contracts,ghost} + web/ + main.py
+#    Dockerfile        —— 读 packages/{contracts,ghost,worker} + skills/ + tools/ + web/
+#    不要把 packages/ 或 web/ 排除掉。
+# ══════════════════════════════════════════════════════════════
+
+# ── 运行期产物：含各题 FLAG / MEMORY / SOURCE / _events.jsonl / _transcripts
+#    既非构建输入，也不该随上下文上传（题号与靶标情报不进产物的口径）
+work/
+_transcripts/
+pi/
+
+# ── root 属主的运行数据：普通用户读不了，会让构建在"检查上下文"阶段直接失败
+#    （error checking context: no permission to read from .../data/vpn/openvpn.log）
+data/
+vpn/
+
+# ── 非构建输入的大目录（.git/.venv/前端源码 合计 50M+），纯拖慢构建
 .git/
 .venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.remember/
-work/
-data/
-pi/
-*.log
-.env
+legacy/
+tsecbench/
+tests/
 frontend/node_modules/
+frontend/src/
+
+# ── 分叉归档：58MB，且内含活凭据
+1.zip
+*.zip
+TsecBench-main/
+
+# ── 凭据与环境文件：绝不进构建上下文
+.agent.env
+.agent.env.*
+.env
+.env.*
+
+# ── Claude / 编辑器工作树
 .claude/
-packages/**/__pycache__/
+.remember/
+
+# ── 杂项
+__pycache__/
+**/__pycache__/
+*.py[cod]
 *.egg-info/
+.pytest_cache/
+*.log
+*.tmp

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TSecBench · 靶场控制台</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Fragment+Mono:ital@0;1&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <!-- ===== 左侧边栏 ===== -->
+    <aside class="rail" id="rail">
+      <div class="rail-head">
+        <div class="wordmark">
+          <span class="wordmark-mark" aria-hidden="true"></span>
+          <span class="wordmark-text">TSecBench</span>
+        </div>
+        <p class="wordmark-sub">靶场控制台</p>
+      </div>
+
+      <nav class="rail-nav" aria-label="主导航">
+        <a class="nav-item is-active" href="#tasks" data-nav="tasks">
+          <span class="nav-ico" aria-hidden="true">▦</span>任务
+        </a>
+        <a class="nav-item" href="#score" data-nav="score">
+          <span class="nav-ico" aria-hidden="true">◳</span>得分
+        </a>
+      </nav>
+
+      <div class="rail-foot" id="rangeStatus" aria-live="polite">
+        <p class="foot-eyebrow">RANGE STATUS</p>
+        <dl class="stats">
+          <div class="stat">
+            <dt>当前得分</dt>
+            <dd class="stat-num" id="statScore">—</dd>
+          </div>
+          <div class="stat">
+            <dt>已完成</dt>
+            <dd class="stat-num" id="statDone">—</dd>
+          </div>
+          <div class="stat">
+            <dt>活跃实例</dt>
+            <dd class="stat-num" id="statLive">—</dd>
+          </div>
+        </dl>
+        <button class="ghost-btn rail-refresh" id="refreshBtn" type="button">刷新</button>
+      </div>
+    </aside>
+
+    <!-- ===== 主区域 ===== -->
+    <main class="stage">
+      <!-- 未连接 -->
+      <section class="gate" id="gate" hidden>
+        <div class="gate-card">
+          <div class="gate-glyph" aria-hidden="true">●</div>
+          <h1 class="gate-title">连接跑分任务</h1>
+          <p class="gate-text">输入平台下发的 <code class="mono">BENCHMARK_TOKEN</code>，加载该任务下的全部题目与作答进度。令牌仅保存在当前浏览器会话。</p>
+          <form class="gate-form" id="gateForm">
+            <input class="token-input mono" id="tokenInput" type="text" inputmode="text"
+                   autocomplete="off" spellcheck="false"
+                   placeholder="BENCHMARK_TOKEN" aria-label="任务令牌" />
+            <button class="primary-btn" type="submit">进入控制台</button>
+          </form>
+          <p class="gate-err mono" id="gateErr" hidden></p>
+        </div>
+      </section>
+
+      <!-- 已连接 -->
+      <section class="dash" id="dash" hidden>
+        <header class="dash-head">
+          <div>
+            <p class="dash-eyebrow" id="dashEyebrow">TASK</p>
+            <h1 class="dash-title" id="dashTitle">任务面板</h1>
+          </div>
+          <div class="dash-meta">
+            <button class="ghost-btn" id="disconnectBtn" type="button">断开连接</button>
+          </div>
+        </header>
+
+        <div class="toolbar">
+          <p class="toolbar-count" id="toolbarCount"></p>
+          <div class="seg" id="filterSeg" role="group" aria-label="筛选">
+            <button class="seg-btn is-active" data-filter="all" type="button">全部</button>
+            <button class="seg-btn" data-filter="live" type="button">运行中</button>
+            <button class="seg-btn" data-filter="open" type="button">未完成</button>
+          </div>
+        </div>
+
+        <div class="cards" id="cards"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 轻提示 -->
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <!-- 提交 flag 弹层 -->
+  <div class="modal-backdrop" id="modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-head">
+        <h2 class="modal-title" id="modalTitle">提交 flag</h2>
+        <button class="icon-btn" id="modalClose" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="modal-sub mono" id="modalCode"></p>
+      <form class="modal-form" id="submitForm">
+        <textarea class="flag-input mono" id="flagInput" rows="2" spellcheck="false"
+                  placeholder="flag{...}" aria-label="flag 值" required></textarea>
+        <div class="modal-actions">
+          <button class="ghost-btn" id="modalCancel" type="button">取消</button>
+          <button class="primary-btn" type="submit">提交</button>
+        </div>
+      </form>
+      <div class="submit-result" id="submitResult" hidden></div>
+    </div>
+  </div>
+
+  <!-- 提示弹层 -->
+  <div class="modal-backdrop" id="hintModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="hintTitle">
+      <div class="modal-head">
+        <h2 class="modal-title" id="hintTitle">提示</h2>
+        <button class="icon-btn" id="hintClose" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="modal-sub">查看提示后提交 flag 将按比例扣减该题得分。</p>
+      <pre class="hint-body mono" id="hintBody"></pre>
+    </div>
+  </div>
+
+  <script>window.TSECBENCH = __TSECBENCH_CONFIG__;</script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

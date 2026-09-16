@@ -40,6 +40,11 @@ class AgentTask:
     # 分值
     score: int = 0
 
+    # 平台声明的本地材料元数据(文件名/字典)。**只用于来源边界判定,绝不下载**:
+    # 有声明附件的题才允许"本地静态产物算证据"(见 adapter/verify.py 的
+    # flag_evidence_policy)。朋友侧同名同义字段,合并后取并集。
+    files: list = field(default_factory=list)
+
     def target_str(self) -> str:
         """格式化目标地址为可读字符串"""
         return ", ".join(self.targets) if self.targets else "(no network target; local files only)"

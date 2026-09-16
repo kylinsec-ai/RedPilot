@@ -1,39 +1,56 @@
+# ── 敏感配置（绝不提交）──
 .env
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
+.agent.env
+.agent.env.*
+*.env.local
+*Zone.Identifier
+
+# ── 运行产物 / 数据（含各题 FLAG、实录、VPN 状态）──
 work/
 data/
 pi/
-.playwright-mcp/
+vpn/
+*.ovpn
+*.log
+backend.log
+frontend.log
+fastapi.log
+watchdog.log
+supervisor_report.txt
+django_console.sqlite3
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal
-*.log
-# VPN / credentials — never commit live configs
-*.ovpn
-*Zone.Identifier
-vpn/
 
-# 朋友发来的分叉快照归档 (1.zip)。内含**活凭据与完整转录**,绝不入库:
-#   .env          BENCHMARK_TOKEN / SOLVER_API_KEY
-#   .agent.env    ANTHROPIC_AUTH_TOKEN
-#   vpn/*.ovpn    VPN 配置
-#   data/*.sqlite3 + fastapi.log(23MB) + 两份 5.7MB 完整 Agent 转录
-# 需要内容时走 tools/ 下的提取脚本,fetch 进 git 的是**源码集合**而非归档本身。
+# ── 分叉归档与跨分支残留 —— 含活凭据，绝不入库 ──
+# 1.zip 内含: .env(BENCHMARK_TOKEN/SOLVER_API_KEY)、.agent.env(ANTHROPIC_AUTH_TOKEN)、
+# vpn/*.ovpn、data/*.sqlite3 + 23MB fastapi.log + 两份 5.7MB 完整 Agent 转录。
 1.zip
 *.zip
 TsecBench-main/
 
-# 跨分支残留:Go 版 `make build` 的产物落在 bin/,但 main 是 Python 分支。
-# go 分支的 .gitignore 也有同一条(那边是它的正常产物目录)。
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# ── Node ──
+node_modules/
+frontend/node_modules/
+dist/
+
+# ── 系统 / 编辑器 ──
+.DS_Store
+*.swp
+.playwright-mcp/
+
+# ── 工作树 / 构建产物 ──
+# bin/: Go 版 `make build` 的产物落在 bin/，但本分支是 Python 分支。
+.claude/worktrees/
 bin/
 
-# Claude worktrees
-.claude/worktrees/
-
-# 历史事故:ghost/control/ 下曾出现整棵 monorepo 的递归自拷贝,被 setuptools
-# 命名空间发现收进 wheel 并污染 pytest 收集。此路径永不合法,兜底忽略。
+# 历史事故: ghost/control/ 下曾出现整棵 monorepo 的递归自拷贝，被 setuptools
+# 命名空间发现收进 wheel 并污染 pytest 收集。此路径永不合法，兜底忽略。
 packages/ghost/ghost/control/packages/
-frontend/node_modules/

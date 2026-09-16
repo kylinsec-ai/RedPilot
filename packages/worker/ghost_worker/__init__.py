@@ -17,7 +17,7 @@ from .taskprompt import build_task_prompt, write_context_md
 from .flags import extract_flags, is_valid_flag
 from .transcripts import compress_transcript
 from .live import LiveBus, LiveState, head_text, summarize_args, tail_text
-from .solver import SolveResult, SolverBackend, PiAgentBackend, create_solver, touch_heartbeat
+from .solver import SolveResult, SolverBackend, create_solver, touch_heartbeat
 from .settings import WorkerSettings
 from .orchestration import solve_one, build_task
 from .relay import ObsRelay, maybe_start_relay
@@ -34,7 +34,7 @@ __all__ = [
     # 实时状态
     "LiveBus", "LiveState", "head_text", "summarize_args", "tail_text",
     # 求解器
-    "SolveResult", "SolverBackend", "PiAgentBackend", "create_solver", "touch_heartbeat",
+    "SolveResult", "SolverBackend", "create_solver", "touch_heartbeat",
     # 编排与中继
     "solve_one", "ObsRelay", "maybe_start_relay",
 ]

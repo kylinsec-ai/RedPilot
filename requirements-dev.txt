@@ -1,0 +1,14 @@
+-r requirements.txt
+pytest>=8,<10
+httpx>=0.27,<1
+playwright==1.55.0
+pytest-playwright==0.8.0
+
+# 朋友的策略层与舰队源码在开发时直接 import。pytest.ini 已把 tests/ 收进 testpaths
+# 并把仓库根加进 pythonpath，所以裸 pytest 就能收全部用例（334 个）：
+#     .venv/bin/pytest
+# 单跑某一路时才需要点名：
+#     .venv/bin/pytest packages/        # 三包（159 个）
+#     .venv/bin/pytest tests/           # 朋友侧（175 个）
+# （此前必须 `python -m pytest tests/ packages/` —— 靠 cwd 进 sys.path 才 import 得到
+#  adapter/drivers；pythonpath=. 之后这个隐含前提已消除。）

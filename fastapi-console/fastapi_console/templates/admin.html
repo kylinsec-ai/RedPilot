@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}管理后台{% endblock %}
+{% block kicker %}ADMIN / DATA{% endblock %}
+{% block page_title %}管理后台{% endblock %}
+
+{% block content %}
+<div class="settings-view">
+  <section class="dashboard-hero">
+    <div class="hero-copy">
+      <p class="eyebrow mono">ADMIN / CHALLENGE DATA</p>
+      <h1>管理后台</h1>
+      <p class="hero-subtitle">题目数据总览（远端模式只读）。本地模式可删除题目（级联删除提交记录）。</p>
+    </div>
+    <div class="hero-actions">
+      <button class="quiet" onclick="location.reload()">↻ 刷新</button>
+    </div>
+  </section>
+
+  <div class="dashboard-rule" aria-hidden="true"></div>
+
+  <div class="panel">
+    <table>
+      <thead>
+        <tr>
+          <th>题目</th><th>难度</th><th>分数</th><th>进度</th><th>状态</th><th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in challenges %}
+        <tr>
+          <td class="mono">{{ c.unique_code }}</td>
+          <td>{{ c.difficulty }}</td>
+          <td class="mono">{{ c.total_score }}</td>
+          <td class="mono">{{ c.correct_flag_count }}/{{ c.flag_count }}</td>
+          <td>{{ c.container_status }}</td>
+          <td>
+            {% if c.container_status == 'available' %}
+            <button class="small" onclick="closeOne('{{ c.unique_code }}')">关闭</button>
+            {% endif %}
+            <button class="small" style="border-color:rgba(208,67,58,.5);color:#d0433a" onclick="delOne('{{ c.unique_code }}')">删除</button>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="dim">暂无数据（远端模式下只读展示）</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="connection-result" id="result" style="display:none" role="status">
+    <span id="result-text"></span>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+function showMsg(text, ok) {
+  const el = document.getElementById('result');
+  el.style.display = 'flex';
+  el.className = 'connection-result ' + (ok ? 'result-success' : 'result-error');
+  document.getElementById('result-text').textContent = text;
+}
+async function post(url, payload) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+  });
+  return res.json();
+}
+async function closeOne(code) {
+  const r = await post('/api/v1/challenges/close?unique_code=' + encodeURIComponent(code));
+  showMsg(r.closed ? '已关闭 ' + code : '关闭失败: ' + JSON.stringify(r), r.closed);
+  setTimeout(() => location.reload(), 800);
+}
+async function delOne(code) {
+  if (!confirm('确认删除题目 ' + code + '？将级联删除其提交记录。')) return;
+  const r = await post('/api/v1/admin/delete-challenge', { unique_code: code });
+  showMsg(r.ok ? r.message : '删除失败: ' + (r.message || JSON.stringify(r)), r.ok);
+  if (r.ok) setTimeout(() => location.reload(), 800);
+}
+{% endblock %}
