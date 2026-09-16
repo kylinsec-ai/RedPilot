@@ -11,10 +11,10 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from adapter.platform.base import Challenge
-from adapter.platform.generic_openapi import GenericOpenAPIBackend
-from adapter.platform.tsecbench_http import TSecBenchHTTPBackend
-from adapter.platform.tsecbench_sdk import TSecBenchSDKBackend
+from ghost_worker.adapter.platform.base import Challenge
+from ghost_worker.adapter.platform.generic_openapi import GenericOpenAPIBackend
+from ghost_worker.adapter.platform.tsecbench_http import TSecBenchHTTPBackend
+from ghost_worker.adapter.platform.tsecbench_sdk import TSecBenchSDKBackend
 from drivers.benchmark_driver import build_task
 
 

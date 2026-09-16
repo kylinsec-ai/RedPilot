@@ -16,7 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from adapter.stoploss import StopLoss
+from ghost_worker.adapter.stoploss import StopLoss
 
 
 class HintRequestHelperTests(unittest.TestCase):
@@ -227,7 +227,7 @@ class ContinuationCheckpointTests(unittest.TestCase):
             self.assertIn("[REDACTED-FLAG]", Path(workdir, "MEMORY.md").read_text())
 
     def test_live_blackboard_scrub_survives_a_later_fact_save(self):
-        from adapter.blackboard import Blackboard, Fact
+        from ghost_worker.adapter.blackboard import Blackboard, Fact
         from drivers import benchmark_driver as driver
 
         with tempfile.TemporaryDirectory() as workdir:

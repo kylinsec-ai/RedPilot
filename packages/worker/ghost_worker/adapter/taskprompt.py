@@ -18,8 +18,8 @@ import logging
 import os
 from typing import Optional
 
-from adapter.task import AgentTask
-from adapter.verify import (flag_evidence_policy,
+from .task import AgentTask
+from .verify import (flag_evidence_policy,
                             skill_agent_enabled as _skill_agent_on,
                             subagent_enabled as _subagent_on)
 
@@ -32,7 +32,7 @@ _skill_store = None
 def _get_skill_store():
     global _skill_store
     if _skill_store is None:
-        from adapter.skill_loader import SkillStore
+        from .skill_loader import SkillStore
         _skill_store = SkillStore()
     return _skill_store
 
@@ -553,7 +553,7 @@ def build_task_prompt(
     # **取证**（在输出里看到，证据成立）与**交付**（echo 进 FLAG，必须做）。
     _halu_n = 0
     try:
-        from adapter import hallucination as _hm
+        from . import hallucination as _hm
         _halu_n = int(_hm.state(task.workdir).get("fabrications", 0) or 0)
     except Exception:
         _halu_n = 0

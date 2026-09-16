@@ -25,14 +25,14 @@ from ._sdk import (
     VpnCheckError,
 )
 
-# ── 策略层：朋友线合并进来的证据守门(adapter/ 是顶层包,见 Dockerfile 4b) ──
+# ── 策略层：朋友线合并进来的证据守门(现为 ghost_worker.adapter 子包) ──
 # 缺包时降级为"平台 submit 即唯一闸门"(合并前的行为),绝不因策略层缺失而让
 # 求解挂掉。这条 fail-open 只针对"模块不存在",不针对判定结果。
 # ⚠ 曾经在这里多写了一个不存在的 `is_valid_flag`(它在 adapter/solver/base.py,
 #   不在 verify.py),ImportError 被下面的 except 吞掉 → 整层静默失效。降级
 #   必须是**响亮**的:留一条 warning,否则这类事故与"闸门通过了"无法区分。
 try:  # pragma: no cover - 环境相关
-    from adapter.verify import Verifier, flag_confidence, flag_evidence_policy
+    from .adapter.verify import Verifier, flag_confidence, flag_evidence_policy
 except Exception as _policy_import_err:  # pragma: no cover
     Verifier = flag_confidence = flag_evidence_policy = None  # type: ignore[assignment]
     logging.getLogger("ghost_worker.orchestration").warning(
@@ -69,9 +69,14 @@ GROUNDED_SUBMIT_CONF = 0.50
 
 # 题目分类单源：朋友 driver 的 _infer_category —— 只喂 flag_evidence_policy
 # （决定"本地静态产物能否算证据"这道边界），不参与调度分流。**懒加载**：
-# import drivers.benchmark_driver 会连带拉进 150+ 个模块、把 /app 塞进 sys.path，
+# import drivers.benchmark_driver 会连带拉进 150+ 个模块、把仓库根塞进 sys.path，
 # 而它只是"平台没给 category"时的兜底推断。懒加载保留响亮降级：第一次失败打
 # warning —— 与上面的策略层 import 同一条性质，静默失效曾让整层闸门消失而无人察觉。
+#
+# ⚠ drivers/ 不在 worker 包里（它是朋友自己的竞技场主循环，6,975 行、自带一个与
+#   ghost_worker.driver 竞争的 main()，只被根目录测试引用）。所以这条导入在**镜像里
+#   永远不会成功** —— 它是静态检查用的 import。真正在容器里跑的时候，category 只能
+#   来自平台；平台不给就是 remote-only（安全的那一侧）。
 _INFER_CATEGORY = None      # None=未加载; False=加载失败(不再重试)
 
 

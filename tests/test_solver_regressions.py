@@ -15,15 +15,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from adapter.solver.base import extract_flags
-from adapter.solver.pi_agent import _merge_partial_output, _slim_line, _stop_process_tree
-from adapter.config import SolverConfig
-from adapter.stoploss import StopLoss
-from adapter.blackboard import Blackboard, Fact, goals_for_category
-from adapter.task import AgentTask
-from adapter.taskprompt import _subagent_scheduling_policy
-from adapter.verify import Claim, Verifier, flag_submission_key
-from adapter import observability as obs
+from ghost_worker.adapter.solver.base import extract_flags
+from ghost_worker.adapter.solver.pi_agent import _merge_partial_output, _slim_line, _stop_process_tree
+from ghost_worker.adapter.config import SolverConfig
+from ghost_worker.adapter.stoploss import StopLoss
+from ghost_worker.adapter.blackboard import Blackboard, Fact, goals_for_category
+from ghost_worker.adapter.task import AgentTask
+from ghost_worker.adapter.taskprompt import _subagent_scheduling_policy
+from ghost_worker.adapter.verify import Claim, Verifier, flag_submission_key
+from ghost_worker.adapter import observability as obs
 from drivers import benchmark_driver as driver
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fastapi-console"))
@@ -340,7 +340,7 @@ class FlagSubmissionRegressionTests(unittest.TestCase):
                  patch.object(driver, "_hallu", None), \
                  patch.object(driver, "flag_confidence", return_value=Claim(
                      flag=candidate, grounded=True, confidence=0.95)), \
-                 patch("adapter.solver.pi_agent.cleanup_instance_processes", return_value=0):
+                 patch("ghost_worker.adapter.solver.pi_agent.cleanup_instance_processes", return_value=0):
                 result = driver._solve_one_unlocked(
                     client, challenge, 120, 0, solver=solver,
                     ctrl=SimpleNamespace(workdir=workdir), verifier=Verifier(),

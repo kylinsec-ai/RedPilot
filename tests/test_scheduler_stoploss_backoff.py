@@ -11,7 +11,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from adapter.stoploss import StopLoss
+from ghost_worker.adapter.stoploss import StopLoss
 from drivers import benchmark_driver as driver
 
 

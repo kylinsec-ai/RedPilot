@@ -50,7 +50,7 @@ def _derive_body_class() -> tuple:
     verify 改了结构导致派生失败时，**测试要响**，而运行时只是降级。
     """
     try:
-        from adapter.verify import _FLAG_BODY_RX as _rx
+        from .verify import _FLAG_BODY_RX as _rx
         m = re.match(r"^\^(\[[^\]]+\])\{\d+,\d+\}\$$", _rx.pattern)
         if m:
             return m.group(1), True

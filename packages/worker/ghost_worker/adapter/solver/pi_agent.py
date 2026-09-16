@@ -632,7 +632,7 @@ def _install_subagents(pi_home: str) -> bool:
     全程幂等；任何异常一律吞掉返回 False —— 子 Agent 是加分项，
     装不上绝不能拖垮解题主路径。
     """
-    from adapter.verify import subagent_enabled
+    from ..verify import subagent_enabled
     if not subagent_enabled():
         return False
     try:
@@ -710,7 +710,7 @@ def _install_skills(pi_home: str) -> int:
     幂等；任何异常一律吞掉——技能装不上只退回纯框架注入，
     绝不能拖垮解题主路径。
     """
-    from adapter.verify import skill_agent_enabled
+    from ..verify import skill_agent_enabled
     if not skill_agent_enabled():
         return 0
     try:
@@ -907,7 +907,7 @@ class PiAgentBackend(SolverBackend):
         # 中途唯一的观测点是每条工具调用的命令参数与输出 —— 由哨兵实时比对。
         _halu_sentinel = None
         try:
-            from adapter import hallucination as _hm
+            from .. import hallucination as _hm
             if _hm.abort_enabled():
                 _halu_sentinel = _hm.LiveSentinel()
         except Exception:

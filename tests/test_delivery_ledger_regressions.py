@@ -7,7 +7,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from adapter import hallucination
+from ghost_worker.adapter import hallucination
 from drivers import benchmark_driver as driver
 
 
@@ -58,7 +58,7 @@ class DeliveryLedgerRegressionTests(unittest.TestCase):
                              f"{later_stage}\n")
 
     def test_blackboard_input_excludes_unconfirmed_candidate_but_keeps_facts(self):
-        from adapter.blackboard import Blackboard
+        from ghost_worker.adapter.blackboard import Blackboard
 
         candidate = "flag{NoFalseProgress_9281}"
         with tempfile.TemporaryDirectory() as workdir:
@@ -75,7 +75,7 @@ class DeliveryLedgerRegressionTests(unittest.TestCase):
                 encoding="utf-8"))
 
     def test_blackboard_never_persists_a_flag_candidate_directly(self):
-        from adapter.blackboard import Blackboard
+        from ghost_worker.adapter.blackboard import Blackboard
 
         candidate = "flag{DirectCandidate_9281}"
         with tempfile.TemporaryDirectory() as workdir:

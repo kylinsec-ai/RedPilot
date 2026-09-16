@@ -447,8 +447,8 @@ def render_heimdall_payload(code: str) -> dict:
                 "reason": "观察者还没有为这道题出过图"}
 
     try:
-        from adapter.heimdall import load_state, render, _KEEP_PER_KIND
-        from adapter.compliance import flag_plaintext_rx, scrub_text, count_redactions
+        from ghost_worker.adapter.heimdall import load_state, render, _KEEP_PER_KIND
+        from ghost_worker.adapter.compliance import flag_plaintext_rx, scrub_text, count_redactions
     except Exception as exc:                                    # noqa: BLE001
         return {"available": False, "code": code, "reason": f"观察者模块不可用：{exc}"}
 

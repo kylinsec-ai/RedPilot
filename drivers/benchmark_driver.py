@@ -32,10 +32,10 @@ from contextlib import contextmanager
 # 确保 adapter 包可导入
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from adapter.config import SolverConfig, ControllerConfig, build_verifier_config
-from adapter.progress import ChallengeProgress, extract_progress_from_result
-from adapter.task import AgentTask
-from adapter.verify import (Verifier, flag_confidence, flag_submission_key,
+from ghost_worker.adapter.config import SolverConfig, ControllerConfig, build_verifier_config
+from ghost_worker.adapter.progress import ChallengeProgress, extract_progress_from_result
+from ghost_worker.adapter.task import AgentTask
+from ghost_worker.adapter.verify import (Verifier, flag_confidence, flag_submission_key,
                             subagent_enabled,
                             flag_line_candidate, flag_evidence_policy,
                             is_task_remote_command, is_remote_provenance,
@@ -49,19 +49,19 @@ from adapter.verify import (Verifier, flag_confidence, flag_submission_key,
                             authored_paths_from_call,
                             collect_script_bodies,
                             FlagEvidencePolicy)
-from adapter.solver import create_solver, extract_flags, extract_handoff, SolveResult
-from adapter.blackboard import Blackboard, goals_for_category
+from ghost_worker.adapter.solver import create_solver, extract_flags, extract_handoff, SolveResult
+from ghost_worker.adapter.blackboard import Blackboard, goals_for_category
 try:                                   # [B54] 监控缺失绝不能拖垮解题路径
-    from adapter import hallucination as _hallu
+    from ghost_worker.adapter import hallucination as _hallu
 except Exception:                      # pragma: no cover
     _hallu = None
-from adapter.stoploss import StopLoss
-from adapter.scheduler import run_fleet
-from adapter.taskprompt import build_task_prompt, write_context_md, write_memory
-from adapter.platform_client import (PlatformClient, RateLimitedClient, Challenge,
+from ghost_worker.adapter.stoploss import StopLoss
+from ghost_worker.adapter.scheduler import run_fleet
+from ghost_worker.adapter.taskprompt import build_task_prompt, write_context_md, write_memory
+from ghost_worker.adapter.platform_client import (PlatformClient, RateLimitedClient, Challenge,
                                      SubmitResult, InvalidState, DuplicateSubmit,
                                      ChallengeNotFound, ResourceUnavailable, VpnCheckError)
-from adapter import observability as obs
+from ghost_worker.adapter import observability as obs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("adapter.driver")
@@ -2978,7 +2978,7 @@ def _flag_plaintext_rx(workdir: str):
 
     本函数保留原签名与逐字不变的行为，调用点 `_scrub_flag_plaintext` 无需改动。
     """
-    from adapter.compliance import flag_plaintext_rx
+    from ghost_worker.adapter.compliance import flag_plaintext_rx
     return flag_plaintext_rx(workdir)
 
 
@@ -3562,7 +3562,7 @@ def _heimdall_init(llm) -> None:
         log.warning("[B61] 观察者已请求启用，但判断 Agent 的 LLM 通道不可用 — 跳过")
         return
     try:
-        from adapter.heimdall import Heimdall
+        from ghost_worker.adapter.heimdall import Heimdall
         _HEIMDALL = Heimdall(
             llm, timeout=float(os.environ.get("ADAPTER_HEIMDALL_TIMEOUT", "45") or "45"))
         log.info("[B61] 观察者 Agent 已启用: timeout=%.0fs 首个观察场次=%d",
@@ -3581,7 +3581,7 @@ def _heimdall_map_for(workdir: str) -> str:
     if _HEIMDALL is None:
         return ""
     try:
-        from adapter.heimdall import load_state, render
+        from ghost_worker.adapter.heimdall import load_state, render
         return render(load_state(workdir))
     except Exception:
         return ""
@@ -3596,7 +3596,7 @@ def _heimdall_observe(workdir: str, tpath: str, session_idx: int) -> None:
     if _HEIMDALL is None:
         return
     try:
-        from adapter.heimdall import review
+        from ghost_worker.adapter.heimdall import review
         review(_HEIMDALL, workdir, tpath, session_idx)
     except Exception as e:
         log.warning("[B61] 观察者异常（已忽略，不影响解题）：%s", e)
@@ -5759,7 +5759,7 @@ def _solve_one_unlocked(
         # worker.  Do it before the close/grace sequence so an unsolved visit
         # releases both platform and local resources promptly.
         try:
-            from adapter.solver.pi_agent import cleanup_instance_processes
+            from ghost_worker.adapter.solver.pi_agent import cleanup_instance_processes
             _orphan_count = cleanup_instance_processes(workdir)
             if _orphan_count:
                 log.info("  [cleanup] reaped %d detached Pi/tool process(es) for %s",
@@ -6688,7 +6688,7 @@ def main():
     llm = None
     if verifier_cfg.is_usable():
         try:
-            from adapter.llm import LLMClient
+            from ghost_worker.adapter.llm import LLMClient
             llm = LLMClient(verifier_cfg)
         except Exception as e:
             log.warning("verifier LLM unavailable (%s); degrading to grounding-only", e)

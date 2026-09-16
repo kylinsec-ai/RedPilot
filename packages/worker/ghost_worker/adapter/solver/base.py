@@ -19,7 +19,7 @@ from typing import Callable, Optional
 
 # [B55b] FLAG 文件候选口径的唯一来源 —— 与 driver 侧 _read_flag_file 共用，
 # 别再各写一套（B55 的根因就是两层口径漂移）。verify.py 是叶子模块，无循环依赖。
-from adapter.verify import flag_line_candidate
+from ..verify import flag_line_candidate
 
 log = logging.getLogger("adapter.solver")
 

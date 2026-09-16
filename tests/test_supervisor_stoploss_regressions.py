@@ -8,7 +8,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from adapter.stoploss import StopLoss
+from ghost_worker.adapter.stoploss import StopLoss
 from drivers import w1_supervisor as supervisor
 
 

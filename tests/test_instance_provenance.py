@@ -9,7 +9,7 @@ import time
 import unittest
 from pathlib import Path
 
-from adapter.verify import Verifier, flag_confidence, flag_evidence_policy
+from ghost_worker.adapter.verify import Verifier, flag_confidence, flag_evidence_policy
 from drivers import benchmark_driver as driver
 
 

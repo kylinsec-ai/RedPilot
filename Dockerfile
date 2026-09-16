@@ -86,24 +86,28 @@ RUN pip3 install --break-system-packages --no-build-isolation --no-cache-dir \
         -e /opt/packages/contracts -e /opt/packages/ghost -e /opt/packages/worker
 
 # ── 4b. 策略层源码(朋友线合并结果) ──
-# adapter/ 是**顶层包**(`import adapter.verify`)，不会被上面的 editable 安装收进来
-# (packages/worker 的 [tool.setuptools.packages.find] include = ["ghost_worker*"])，
-# 所以必须显式落到 /app 并让 /app 在 sys.path 上 —— WORKDIR /app 已保证这一点。
-# 朋友的测试(setup 里 sys.path.insert(parents[1]))与 driver 的 `from adapter...`
-# 都依赖这个位置；改动前先跑 `.venv/bin/pytest` 确认基线不塌（pytest.ini 的
-# pythonpath=. 已把仓库根加进来，不再依赖 cwd/python -m 的隐含前提）。
+# 策略层已搬进包内：packages/worker/ghost_worker/adapter/ —— 上面第 4 步的
+# editable 安装(include = ["ghost_worker*"])会自动收进去，**不再需要单独 COPY**。
+# 这一块曾经是 `COPY adapter /app/adapter` + 依赖 `WORKDIR /app` 进 sys.path；
+# 搬进包后那条路径依赖消失，镜像里只有一个安装来源。
 #
-# 不要把顶层 tsecbench/ 也 COPY 进来：它被 .dockerignore 排除，COPY 会直接构建
-# 失败(CopyIgnoredFile)，而且 worker 运行期无人 import 它 —— 它的使用者
-# (fastapi-console/、根目录两个测试)都不在镜像里。
-COPY adapter /app/adapter
-COPY drivers /app/drivers
+# ADAPTER_PI_EXTENSIONS 的默认值仍指向 /app/adapter/pi_ext/bash_guard.js。
+# **故意保持 /app 这个位置不变**：ADAPTER_WORKDIR=/work 与入口脚本都在 /app，
+# 换路径会同时改动运行契约与 .dockerignore 语义，收益只是省一处 COPY。
+# 改这一条时注意：bash 自引用重定向护栏(awk x >> x 撑爆磁盘那类)靠它生效。
 
 # ── 5. 复制题面工具与运行资产 ──
 COPY tools /opt/tools
 COPY skills /root/.pi/agent/skills
 COPY web /app/web
 COPY entrypoint.sh /app/entrypoint.sh
+# pi 的 bash 护栏扩展 + 子 agent 角色定义。两处都按**包内路径**复制，与
+# ADAPTER_PI_EXTENSIONS / _AGENT_ROLES_DIR 的默认值一致 —— 它们默认锚在
+# /app/... 是因为 ADAPTER_WORKDIR=/work 与入口脚本都住在 /app，与策略层源码
+# 在哪儿无关。改名/移动时这三处要一起改，否则护栏与角色软链会静默落空。
+# (pi_agents/*.md 的角色模型由 _inject_role_model 在运行期注入，不是死文件。)
+COPY packages/worker/ghost_worker/adapter/pi_ext /app/adapter/pi_ext
+COPY packages/worker/ghost_worker/adapter/pi_agents /app/adapter/pi_agents
 RUN chmod +x /app/entrypoint.sh /opt/tools/*.py
 
 # ── 6. 自检 ──

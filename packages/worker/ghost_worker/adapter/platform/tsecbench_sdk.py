@@ -24,6 +24,17 @@ try:
 except ImportError:
     _SDK_AVAILABLE = False
 
+# 平台侧自测服务器 tsecbench/（顶层包，仓库根）——**故意不静态导入**：
+# adapter/ 现在是 ghost_worker 的子包，而 tsecbench/ 仍在仓库根（fastapi-console、
+# 根目录两个测试才是它的使用者，两者都不进镜像）。静态导入会在 worker 镜像里
+# ModuleNotFoundError。需要时用 importlib 按仓库根解析，失败即 None。
+def _local_tsecbench():
+    import importlib
+    try:
+        return importlib.import_module("tsecbench")
+    except Exception:
+        return None
+
 
 def sdk_available() -> bool:
     """官方 SDK 是否已安装"""

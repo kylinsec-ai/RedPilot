@@ -10,9 +10,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from adapter.blackboard import Blackboard
-from adapter.stoploss import StopLoss
-from adapter.verify import flag_evidence_policy
+from ghost_worker.adapter.blackboard import Blackboard
+from ghost_worker.adapter.stoploss import StopLoss
+from ghost_worker.adapter.verify import flag_evidence_policy
 from drivers import benchmark_driver as driver
 
 

@@ -10,9 +10,9 @@ from __future__ import annotations
 import base64
 import unittest
 
-from adapter.task import AgentTask
-from adapter.taskprompt import build_task_prompt
-from adapter.verify import (
+from ghost_worker.adapter.task import AgentTask
+from ghost_worker.adapter.taskprompt import build_task_prompt
+from ghost_worker.adapter.verify import (
     Verifier,
     flag_confidence,
     flag_evidence_policy,
