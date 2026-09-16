@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 from ghost_worker.adapter.verify import Verifier, flag_confidence, flag_evidence_policy
-from drivers import benchmark_driver as driver
+from ghost_worker import orchestrator as driver
 
 
 _FLAG = "flag{SessionProof_7742}"

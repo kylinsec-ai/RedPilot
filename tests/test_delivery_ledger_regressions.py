@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from ghost_worker.adapter import hallucination
-from drivers import benchmark_driver as driver
+from ghost_worker import orchestrator as driver
 
 
 class DeliveryLedgerRegressionTests(unittest.TestCase):

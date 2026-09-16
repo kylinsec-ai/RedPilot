@@ -15,7 +15,7 @@ from ghost_worker.adapter.platform.base import Challenge
 from ghost_worker.adapter.platform.generic_openapi import GenericOpenAPIBackend
 from ghost_worker.adapter.platform.tsecbench_http import TSecBenchHTTPBackend
 from ghost_worker.adapter.platform.tsecbench_sdk import TSecBenchSDKBackend
-from drivers.benchmark_driver import build_task
+from ghost_worker.orchestrator import build_task
 
 
 class _Response:

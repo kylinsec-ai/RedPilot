@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 
 log = logging.getLogger("ghost_worker.settings")
@@ -56,6 +57,14 @@ class WorkerSettings:
     observability_url: str = ""
     observability_token: str = ""
     flag_format: str = "flag{...}"   # 只渲染进任务 prompt(提取正则硬编码 flag{...})
+    # ── 舰队/编排（朋友的竞技场主循环认 ADAPTER_* 命名，见 orchestrator.py）──
+    # role="monitor" = worker-1：只维持 VPN + 状态汇总 + 他管，不参与做题。
+    adapter_role: str = ""
+    # 编排侧的 worker 序号（0=monitor）。**与上面的 worker_id 是两套命名**：
+    # worker_id 是框架观测面的展示名（relay/LiveState 用 WORKER_ID），
+    # adapter_worker_id 是朋友 status/worker-N.json 与能力分片用的序号
+    # （ADAPTER_WORKER_ID）。装配层保证两者指向同一个 worker。
+    adapter_worker_id: int = 1
 
     @classmethod
     def from_env(cls) -> "WorkerSettings":
@@ -71,6 +80,16 @@ class WorkerSettings:
             log.warning("bad ASSIGNMENT_LEASE_SECONDS, falling back to 300")
             lease_seconds = 300
         lease_seconds = min(max(lease_seconds, 30), 3600)
+        # ADAPTER_WORKER_ID 缺失时从 WORKER_ID 的尾部数字兜底（"worker-3" → 3），
+        # 再不行回 1。朋友的 `_worker_id()` 有一模一样的兜底（HOSTNAME 正则），
+        # 这里先解析出来是为了让 relay 的 worker_id 与编排侧序号能对齐校验。
+        try:
+            adapter_wid = int(os.getenv("ADAPTER_WORKER_ID", "") or "")
+        except ValueError:
+            adapter_wid = -1
+        if adapter_wid < 0:
+            m = re.search(r"(\d+)\s*$", os.getenv("WORKER_ID", "").strip())
+            adapter_wid = int(m.group(1)) if m else 1
         return cls(
             benchmark_base_url=os.getenv("BENCHMARK_BASE_URL", "").strip(),
             benchmark_token=os.getenv("BENCHMARK_TOKEN", "").strip(),
@@ -85,4 +104,6 @@ class WorkerSettings:
             observability_url=os.getenv("OBSERVABILITY_URL", "").strip().rstrip("/"),
             observability_token=os.getenv("OBSERVABILITY_TOKEN", "").strip(),
             flag_format=os.getenv("ADAPTER_FLAG_FORMAT", "flag{...}") or "flag{...}",
+            adapter_role=(os.getenv("ADAPTER_ROLE", "").strip().lower()),
+            adapter_worker_id=adapter_wid,
         )

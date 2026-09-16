@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""
-TsecBench 基准测试驱动器
-
-主驱动：调度、长会话重访、声明式提交。
+"""求解主循环 — 调度、长会话重访、声明式提交（竞技场主循环）。
 
 流程:
 1. 从答题 API 拉取题目列表，按难度和分值排序
@@ -11,6 +8,14 @@ TsecBench 基准测试驱动器
 4. 子会话确证 flag 后写入 FLAG 文件
 5. 控制器读取 FLAG 文件，经验证后提交
 6. 未解出的题目挂起，后续轮次以递增时间盒重访
+
+本模块原是仓库根的 `drivers/benchmark_driver.py`（不在任何包里、靠 cwd 进
+sys.path，且不在 worker 镜像内），现搬进 `ghost_worker` 成为包内模块：
+
+- 删掉模块顶部的 `sys.path.insert(...)` —— 包内导入不需要它；
+- `ghost_worker.adapter.*` 的绝对导入保持原样，包内成立；
+- **143 个顶层符号名一个都没改**：仓库根 9 个测试（109 用例）按名引用它们，
+  改名会把"搬迁"与"测试改写"耦合成一件事。
 """
 
 from __future__ import annotations
@@ -28,9 +33,6 @@ import threading
 import time
 import zlib
 from contextlib import contextmanager
-
-# 确保 adapter 包可导入
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ghost_worker.adapter.config import SolverConfig, ControllerConfig, build_verifier_config
 from ghost_worker.adapter.progress import ChallengeProgress, extract_progress_from_result
@@ -62,6 +64,10 @@ from ghost_worker.adapter.platform_client import (PlatformClient, RateLimitedCli
                                      SubmitResult, InvalidState, DuplicateSubmit,
                                      ChallengeNotFound, ResourceUnavailable, VpnCheckError)
 from ghost_worker.adapter import observability as obs
+# 心跳路径单源：原先这里写死 "/tmp/driver_heartbeat"，与 contracts.paths 是
+# 两份副本（compose healthcheck 读同一字面量）。两处副本漂移是静默故障类别 ——
+# 框架侧 adapter/solver/pi_agent.py 已经把同样的副本收进单源，这里跟上。
+from ghost_contracts.paths import HEARTBEAT_PATH
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("adapter.driver")
@@ -107,6 +113,19 @@ _STATUS: dict = {
     "last_log": "",
 }
 _STATUS_LOCK = threading.Lock()
+
+# ── 框架观测桥（可选）────────────────────────────────────
+# 装配层（ghost_worker.driver）注入一个 StatusBridge，把上面这份状态转译成
+# LiveState/LiveBus，喂给 relay(→obs 平台) 与本地态势台(:8080)。
+# **默认 None**：直调本模块（仓库根 9 个测试、`--once` 排查）时行为与搬迁前
+# 逐字一致。签名约定：`push(status: dict) -> None`，自己吞掉所有异常。
+_STATUS_BRIDGE = None
+
+
+def set_status_bridge(bridge) -> None:
+    """注入/摘除观测桥（None = 关闭）。装配层在启动时调用一次。"""
+    global _STATUS_BRIDGE
+    _STATUS_BRIDGE = bridge
 
 # 周期复活冷却基准在 stoploss 持久化状态里（revive() 打 last_revive_wall 戳）——
 # 进程内存表重启即清零会让"刚 drop 的题"重启后立刻复活白拿新预算。
@@ -566,6 +585,15 @@ def _update_status(**kw) -> None:
         os.replace(tmp, p)  # 原子替换，防止其他 worker 读到半写 JSON
     except Exception:
         pass
+    # 框架观测桥（可选，装配层注入）：把同一份状态再喂给 LiveState/LiveBus，
+    # 让 relay(→obs 平台) 与本地态势台(:8080) 看到实时进度。未注入时空操作。
+    # **刻意放在落盘之后**：status/worker-N.json 是 supervisor 与只读控制台的
+    # 数据源，它不能被观测桥的任何异常拖住。
+    if _STATUS_BRIDGE is not None:
+        try:
+            _STATUS_BRIDGE.push(_STATUS)
+        except Exception:
+            pass
 
 
 def _adaptive_session_limits(ch: Challenge, solver: SolverConfig, session_idx: int,
@@ -2128,7 +2156,6 @@ def _close_with_retry(client, code: str, *, retries: int = 3):
 
 # ── 单题求解 ──────────────────────────────────────────────
 
-HEARTBEAT_PATH = "/tmp/driver_heartbeat"
 _BOOT_STAMP = f"{time.strftime('%m%d%H%M%S')}_{os.getpid()}"   # 启动戳+PID，避免同秒重启碰撞
 
 
@@ -2851,11 +2878,11 @@ def _monitor_loop(*, raw_client=None, watch_dir: str = "", stop_event=None):
     #     touch <workdir>/.reload.wid{N}   （协作式热重载）
     # worker-1 容器内没有 docker socket 也没有 docker 二进制，物理上不可能
     # 重启任何容器 —— 危险能力从架构上根除，而不是靠纪律。
-    # 完整设计说明见 drivers/w1_supervisor.py 顶部注释；改之前先读它。
+    # 完整设计说明见 ghost_worker/supervisor.py 顶部注释；改之前先读它。
     # 模块加载失败只降级（他管停用），绝不拖垮 VPN 维持与状态汇总。
     _sup = None
     try:
-        import w1_supervisor as _sup  # noqa: F401
+        from . import supervisor as _sup  # noqa: F401
         log.info("他管层已加载：卡死判定 → 协作式热重载（绝不重启容器）")
     except Exception as e:
         log.warning("他管层加载失败，本次仅做监控不做督促: %s", e)

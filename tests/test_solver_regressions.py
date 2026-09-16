@@ -24,7 +24,7 @@ from ghost_worker.adapter.task import AgentTask
 from ghost_worker.adapter.taskprompt import _subagent_scheduling_policy
 from ghost_worker.adapter.verify import Claim, Verifier, flag_submission_key
 from ghost_worker.adapter import observability as obs
-from drivers import benchmark_driver as driver
+from ghost_worker import orchestrator as driver
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fastapi-console"))
 from fastapi_console import agent as console_agent

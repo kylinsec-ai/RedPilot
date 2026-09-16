@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ghost_worker.adapter.stoploss import StopLoss
-from drivers import benchmark_driver as driver
+from ghost_worker import orchestrator as driver
 
 
 class SchedulerStopLossBackoffTests(unittest.TestCase):
