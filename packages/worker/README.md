@@ -1,0 +1,86 @@
+# ghost-worker
+
+安全基准测试的**求解 worker**：一个常驻容器，连上靶场 VPN，领题目、驱动 Pi Agent
+解题、把 flag 提交回平台，同时把全过程实时推到观测平台。
+
+本包的主循环是**竞技场**（`ghost_worker.orchestrator`，约 7,000 行）：多轮时间盒、
+多会话重访、多维止损、eager 即时提交、能力分片、跨场续接、舰队监督与协作式热重载。
+求解引擎是**朋友的 Pi Agent 实现**（`ghost_worker/adapter/solver/pi_agent.py`）：
+四个看门狗（stall / 会话 deadline / stop_check / 子 Agent 静默死锁）、令牌式进程树
+回收（驱动崩溃后脱组的 `nohup`/`setsid` 子孙也收得回）、subagent 与 skills 安装器、
+逐题 `.pi-home` 隔离、provider 配置落地。
+
+## 跑起来
+
+```bash
+cp .env.example .env      # 填 BENCHMARK_TOKEN / BENCHMARK_BASE_URL / DEEPSEEK_API_KEY
+docker compose up -d      # server + 单体 worker（自己持 VPN 自己解题）
+```
+
+三容器舰队（worker-1 持 VPN，worker-2/3 复用它的 netns）：
+
+```bash
+docker compose --profile fleet up -d
+```
+
+| 服务 | 角色 | VPN |
+|---|---|---|
+| `worker-1` | 只维持 VPN + 状态汇总 + 他管，**不做题** | 持有 tun（`cap_add NET_ADMIN` + `/dev/net/tun`） |
+| `worker-2` / `worker-3` | 解题 | `network_mode: service:worker-1`，复用 worker-1 的隧道 |
+
+一个靶场 VPN 只应有一条隧道；三个容器各起一条会互相抢路由。代价是 worker-1 必须
+常驻 —— 它一停另两个就断网（由 netns 看门狗兜底：worker-2/3 检测到被孤立会退出重启）。
+
+## 结构
+
+```
+ghost_worker/
+├── driver.py         装配层：配置校验 + 心跳 + 观测面接线 + 注入观测桥
+├── orchestrator.py   主循环（竞技场）：list → 派发 → 多会话 → 提交 → 收尾
+├── supervisor.py     他管层：卡死判定 → 只允许「请求对方热重载」
+├── observability.py  观测桥：编排状态 → LiveState/LiveBus（唯一的新逻辑，有单测）
+├── relay.py          观测中继：run 生命周期/事件行/live/roster → 平台 /api/internal/*
+├── roster.py         题目总览轮询（60s，落 work/.live/roster.json）
+├── live/             实时状态（原子 JSON）与事件总线（SSE）
+├── settings.py       进程配置的单一 getenv 收编点
+├── solver/           引擎契约（SolveResult / touch_heartbeat）
+└── adapter/          策略层：证据闸门、止损、黑板、heimdall、Pi 引擎、平台适配
+```
+
+引擎在 `adapter/solver/`，策略在 `adapter/`，编排在 `orchestrator.py`。**没有第二套
+编排**：框架自己那套（`orchestration.solve_one` / `solver/friend.py` 桥接 /
+assignment claim 链路）已随竞技场上位退位删除。
+
+## 关键约定
+
+- **状态有两个落点，都在 `/work`**：
+  - `status/worker-<N>.json` —— 编排层的进度（`solving_active` / `sessions` /
+    `flags_submitted` …）。`supervisor.py` 与只读控制台读它。
+  - `.live/<worker_id>.json` —— 观测面快照（`phase` / `current_tool` / `turns` …）。
+    relay 推到平台，本地 :8080 态势台也读它。
+  两者由 `observability.StatusBridge` 单向同步；两套字段名不同是刻意的（各有各的
+  消费方），映射只在一个地方。
+- **退出码**：`0` 任务终态/配置错（明示后停止，不重启）、`86` 协作式热重载
+  （`touch /work/.reload.wid<N>` → 会话边界收尾后自行退出 → compose 换新码）、
+  `4` VPN 层瞬断 / 事件循环卡死。compose 的 `restart: on-failure` 与这套契约对齐。
+- **进程回收靠令牌不靠登记表**：逐次访问生成随机 token 写进 `<workdir>/_instance.json`，
+  pi 及其全部子孙继承该环境变量，收尾时扫 `/proc/*/environ` 回收。它不依赖本进程的
+  登记表，所以**驱动崩溃后仍然有效**，且按构造无法误伤 driver / VPN provider / 另一个
+  worker 的进程。
+- **flag 提交有两道闸门**：eager 线程在会话进行中就盯着 FLAG 文件即时投递（不必等
+  会话结束），投递前过一道确定性 grounding 门（候选必须逐字出现在本场真实工具输出
+  里；本地静态产物能否算证据由题目分类决定）。平台响应（correct / duplicate）是唯一
+  的最终判据。
+- **时间盒与单题终身预算是联动的**：只抬 `ADAPTER_TIMEBOX_HARD` 不抬
+  `ADAPTER_PER_CHALLENGE_SECONDS`，困难题会在第 66 分钟被止损掐掉。
+
+## 测试
+
+```bash
+pytest -q                    # 全仓
+pytest -q packages/worker    # 本包
+```
+
+`packages/worker/tests/` 覆盖观测桥映射、观测中继、provider 失败护栏、态势台绑定。
+仓库根的 `tests/` 里有 100+ 条竞技场行为的回归用例（止损、task epoch、eager 提交、
+交付账本、多段题推进、supervisor 判据），它们 `import ghost_worker.orchestrator`。
