@@ -26,27 +26,18 @@ from ._sdk import (
 )
 
 # ── 策略层：朋友线合并进来的证据守门(adapter/ 是顶层包,见 Dockerfile 4b) ──
-# 缺包时**静默降级**为"平台 submit 即唯一闸门"(合并前的行为),绝不因策略层
-# 缺失而让求解挂掉。这条 fail-open 只针对"模块不存在",不针对判定结果。
+# 缺包时降级为"平台 submit 即唯一闸门"(合并前的行为),绝不因策略层缺失而让
+# 求解挂掉。这条 fail-open 只针对"模块不存在",不针对判定结果。
 # ⚠ 曾经在这里多写了一个不存在的 `is_valid_flag`(它在 adapter/solver/base.py,
 #   不在 verify.py),ImportError 被下面的 except 吞掉 → 整层静默失效。降级
 #   必须是**响亮**的:留一条 warning,否则这类事故与"闸门通过了"无法区分。
 try:  # pragma: no cover - 环境相关
-    from adapter.verify import Claim, Verifier, flag_confidence, flag_evidence_policy
+    from adapter.verify import Verifier, flag_confidence, flag_evidence_policy
 except Exception as _policy_import_err:  # pragma: no cover
-    Claim = Verifier = flag_confidence = flag_evidence_policy = None  # type: ignore[assignment]
+    Verifier = flag_confidence = flag_evidence_policy = None  # type: ignore[assignment]
     logging.getLogger("ghost_worker.orchestration").warning(
         "策略层 adapter.verify 不可用(%s) — 回退为平台 submit 单闸门;证据校验关闭",
         _policy_import_err)
-
-# 题目分类单源：朋友 driver 的 _infer_category/_KNOWN_CATEGORIES。
-# 只用来喂 flag_evidence_policy（决定"本地静态产物能否算证据"这道边界），
-# 不参与调度分流 —— 这里 import 的是 6,924 行舰队 driver 里的两个纯函数，
-# 不是把 driver 接进来跑。
-try:  # pragma: no cover - 环境相关
-    from drivers.benchmark_driver import _infer_category as _infer_category_of
-except Exception:  # pragma: no cover
-    _infer_category_of = None  # type: ignore[assignment]
 
 from ghost_contracts.paths import safe_code
 from ghost_contracts.text import (
@@ -76,22 +67,57 @@ PROVIDER_FAILURE_RETRIES = 2  # 0-turn+报错(provider 失败)的会话级重开
 # 这些数字是他在真靶场上标定出来的(B47 的 0.50 强提门、B44 的裸 body 不算证据)。
 GROUNDED_SUBMIT_CONF = 0.50
 
+# 题目分类单源：朋友 driver 的 _infer_category —— 只喂 flag_evidence_policy
+# （决定"本地静态产物能否算证据"这道边界），不参与调度分流。**懒加载**：
+# import drivers.benchmark_driver 会连带拉进 150+ 个模块、把 /app 塞进 sys.path，
+# 而它只是"平台没给 category"时的兜底推断。懒加载保留响亮降级：第一次失败打
+# warning —— 与上面的策略层 import 同一条性质，静默失效曾让整层闸门消失而无人察觉。
+_INFER_CATEGORY = None      # None=未加载; False=加载失败(不再重试)
 
-def _verifier() -> "Verifier | None":
-    """构造证据校验器。进程内单例(Verifier 无状态,构造一次即可)。
 
-    llm=None:朋友的 skeptic/followup 两道 LLM 门需要 LLM 客户端,
-    main 侧 worker 目前不持 LLM 依赖 → 只启用确定性 grounding 门。
-    这不是"关掉校验",而是启用其中最硬的一道(逐字出现在真实命令输出里,
-    且该命令自身不含候选 —— 排除 echo 自造)。
+def _load_category_inferrer():
+    """懒加载 driver 的 _infer_category；失败返回 None 并响亮降级一次。"""
+    global _INFER_CATEGORY
+    if _INFER_CATEGORY is None:
+        try:  # pragma: no cover - 环境相关
+            from drivers.benchmark_driver import _infer_category
+            _INFER_CATEGORY = _infer_category
+        except Exception as exc:  # pragma: no cover
+            _INFER_CATEGORY = False
+            log.warning("题目分类推断不可用(%s) — 证据边界退回 remote-only;"
+                        "本地静态产物不再算证据", exc)
+    return _INFER_CATEGORY or None
+
+
+def _evidence_note_for(cand: str, tool_outputs: list, policy, code: str):
+    """确定性 grounding 门 —— 返回提交时要附的注记，`None` 表示拒收。
+
+    候选必须逐字出现在本会话真实工具输出里(`flag_confidence` 已排除
+    echo/cat 自写与裸 body 自包信封的口径,见 adapter/verify.py 头部)。
+    非空注记 = 放行但说明它是"强提"(grounded 且置信度过门)。
+    **fail-open**:策略层缺失 / 判定抛异常 → 返回 "" 交平台判,
+    宁多交一次也不因监控拖挂求解(与 hallucination.py 同一条安全性质)。
     """
-    global _VERIFIER
-    if _VERIFIER is None and Verifier is not None:
-        _VERIFIER = Verifier(llm=None)
-    return _VERIFIER
-
-
-_VERIFIER = None
+    if flag_confidence is None:
+        return ""
+    try:
+        claim = flag_confidence(cand, "", tool_outputs, evidence_policy=policy)
+        if Verifier is not None:
+            # llm=None:朋友的 skeptic/followup 两道 LLM 门需要 LLM 客户端,
+            # worker 不持该依赖 → 只启用其中最硬的一道确定性 grounding 门。
+            # Verifier 无状态(verify 不读任何实例字段),故按需构造即可。
+            claim = Verifier(llm=None).verify(claim)
+    except Exception:
+        log.debug("flag gate unavailable on %s — falling back to platform-only",
+                  code, exc_info=True)
+        return ""
+    if claim.verified:
+        return ""
+    if claim.grounded and claim.confidence >= GROUNDED_SUBMIT_CONF:
+        return f" [force-submit grounded conf={claim.confidence:.2f}]"
+    log.info("flag gate REJECT on %s (%s, conf=%.2f): %s",
+             code, claim.reject_reason or "?", claim.confidence, cand[:40])
+    return None
 
 
 def _evidence_policy_for(task: AgentTask):
@@ -100,15 +126,19 @@ def _evidence_policy_for(task: AgentTask):
     category 走朋友 driver 的 _infer_category —— 平台的 `Challenge` 不带
     category 字段(SDK 0.1.2 只有 10 个字段,实测),所以从描述推断。
     该函数按 `ch.category` / `ch.description` 取值,而 AgentTask 只有
-    objective/category,故用一个最小 adapter 喂进去(不复制它的关键词表,
+    objective/category,故用一个最小只读探针喂进去(不复制它的关键词表,
     否则就是第三次"两处口径漂移")。
     """
     if flag_evidence_policy is None:
         return None
     try:
         category = str(getattr(task, "category", "") or "").strip()
-        if not category and _infer_category_of is not None:
-            category = _infer_category_of(_CategoryProbe(task)) or ""
+        if not category:
+            infer = _load_category_inferrer()
+            if infer is not None:
+                # _infer_category 只读 .category / .description 两个属性,
+                # 探针只需提供这两个(见 _CategoryProbe)。
+                category = infer(_CategoryProbe(task)) or ""
         return flag_evidence_policy(
             category,
             targets=getattr(task, "targets", ()) or (),
@@ -124,7 +154,8 @@ class _CategoryProbe:
     """把 AgentTask 伪装成 driver._infer_category 认的 Challenge（只读两个字段）。
 
     刻意不 import driver 的 Challenge 类：那是平台模型，不是任务模型；
-    这里只需要 `.category` 与 `.description` 两个属性可读。
+    `_infer_category` 只读 `.category` 与 `.description`（见其实现），其余
+    属性一概不碰，所以两字段的只读探针足够 —— __slots__ 把这层契约钉死。
     """
 
     __slots__ = ("category", "description")
@@ -250,7 +281,14 @@ def _prioritize(challenges: list[Challenge]) -> list[Challenge]:
 
 def build_task(ch: Challenge, workdir: str, targets: list, *,
                flag_format: str = "flag{...}") -> AgentTask:
-    """从平台 Challenge 构建 AgentTask"""
+    """从平台 Challenge 构建 AgentTask
+
+    category/files 走 getattr:SDK 的 Challenge 目前只有 10 个字段(无这两个),
+    平台补齐时自动生效 —— 口径与朋友 driver 的 build_task 一致(它同样用
+    `ch.category or _infer_category(ch)` 与 `getattr(ch, "files", [])`)。
+    这两个字段是证据边界(flag_evidence_policy)的输入,漏传会让"平台声明的
+    附件"永远等于空、category 只能靠描述推断。
+    """
     return AgentTask(
         objective=ch.description or "Capture the flag(s) from the target.",
         targets=targets or ch.container_addr or [],
@@ -260,6 +298,8 @@ def build_task(ch: Challenge, workdir: str, targets: list, *,
         difficulty=ch.difficulty or None,
         unique_code=ch.unique_code,
         score=ch.total_score,
+        category=getattr(ch, "category", "") or None,
+        files=list(getattr(ch, "files", []) or []),
     )
 
 
@@ -363,41 +403,28 @@ async def solve_one(
         # 非法候选(含 prompt 占位符 flag{...})直接跳过。
         #
         # ── 证据闸门(朋友线合并) ──────────────────────────────────
-        # 在"平台提交"之前多一道确定性 grounding 门:候选必须逐字出现在本会话
-        # 真实工具输出里(flag_confidence 排除 echo/cat 自写后的那条口径)。
+        # 在"平台提交"之前多一道确定性 grounding 门(实现见 _evidence_note_for)。
         # 原委见 adapter/verify.py 头部:agent 自造的 flag 会进 FLAG 文件,
         # 只靠平台判分会白耗提交机会并污染账簿。
         # evidence_policy 决定**本地静态产物能否算证据**:有平台声明的附件、
         # 或无目标的本地原生题(reverse/crypto/forensics/pwn/misc)才开;
         # Web/内网/云一律 remote-only。没这层,本地文件里抠出来的字符串
         # 会被当成取证证据放行(朋友的 test_local_evidence_policy 锁的就是它)。
-        # **fail-open**:策略层缺失 / 判定抛异常 → 退回"平台即唯一闸门",
-        # 宁多交一次也不因监控拖挂求解(与 hallucination.py 同一条安全性质)。
         _evidence_policy = _evidence_policy_for(task)
+        tool_outputs = list(result.tool_outputs or [])
         if _evidence_policy is not None:
             log.info("flag evidence policy on %s: %s (category=%s)",
                      code, _evidence_policy.mode, _evidence_policy.category)
+        elif flag_evidence_policy is None:
+            log.info("flag evidence gate OFF on %s — 只有平台 submit 一道闸门", code)
         for cand in result.flags:
             if not is_valid_flag(cand):
                 continue
             if cand in submitted.setdefault(code, set()):
                 continue
-            evidence_note = ""
-            if flag_confidence is not None:
-                try:
-                    claim = flag_confidence(cand, "", list(result.tool_outputs or []),
-                                            evidence_policy=_evidence_policy)
-                    if Verifier is not None:
-                        claim = _verifier().verify(claim)
-                    if not claim.verified and claim.grounded and claim.confidence >= GROUNDED_SUBMIT_CONF:
-                        evidence_note = f" [force-submit grounded conf={claim.confidence:.2f}]"
-                    elif not claim.verified:
-                        log.info("flag gate REJECT on %s (%s, conf=%.2f): %s",
-                                 code, claim.reject_reason or "?", claim.confidence, cand[:40])
-                        continue
-                except Exception:
-                    log.debug("flag gate unavailable on %s — falling back to platform-only",
-                              code, exc_info=True)
+            evidence_note = _evidence_note_for(cand, tool_outputs, _evidence_policy, code)
+            if evidence_note is None:
+                continue
             _live_set(phase="submitting")
             try:
                 r = await client.submit_flag(code, cand)

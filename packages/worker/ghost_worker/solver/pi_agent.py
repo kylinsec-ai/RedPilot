@@ -379,6 +379,18 @@ class PiAgentBackend(SolverBackend):
                         elif event_type == "tool_execution_end":
                             tool_name = event.get("toolName", "")
                             tool_args = event.get("args") or {}
+                            # provenance 标记:朋友 verify.py 的 _tool_execution_succeeded()
+                            # (adapter/verify.py:1630) 要求 args[__tsecbench_execution_ok] is True
+                            # 才认这条工具调用"真的成功执行过"。缺了它,download_*/response_*/
+                            # derived_* 一整族 provenance 判定全部 fail-closed —— 也就是证据闸门
+                            # 一直在降级模式下跑,且没有任何日志说这件事。
+                            # 只在 isError 显式 False 时置 True(缺字段一律 fail-closed,与
+                            # verify.py 的注释同一条安全性质:静默的下载器不能因为后续命令恰好
+                            # 读到了同名路径就被当成成功)。复制后写入,不改事件原 dict。
+                            if isinstance(tool_args, dict):
+                                tool_args = dict(tool_args)
+                                tool_args["__tsecbench_execution_ok"] = (
+                                    event.get("isError") is False)
                             out = _join_content(event.get("result", {}).get("content"))
                             # 空输出也算一次 tool 结束:on_fact/INFRA 标记不受 out 非空 gating,
                             # 否则 driver 的 current_tool 永远不清(只 all_output_parts 要求非空,

@@ -758,15 +758,17 @@ _CATEGORY_KEYWORDS = [
     ("forensics", ["取证", "forensic", "流量", "pcap", "内存", "磁盘", "隐写", "stego",
                    "volatility", "tshark", "文件恢复"]),
     # crypto
-    # ⚠ 'des' 与 'hash' 这里原本是裸子串，会命中**普通英文词**：
-    #   'des'  ⊂ "description", "describes", "codes", "modes", "nodes", "includes"
-    #   'hash' ⊂ "hashmap"（无害）但同样是子串口径
-    # 实测 `"some totally unknown description here"` 被判成 crypto —— 而 crypto
-    # 属于 _LOCAL_NATIVE_CATEGORIES，会**打开"本地静态产物算证据"这道门**
-    # （见 adapter/verify.py 的 flag_evidence_policy）。也就是说：一个常见的
-    # 题面词就能把证据边界从 remote-only 放宽成允许本地取证。
-    # 这三个短词改为词边界匹配（长词仍走子串，中文不受影响）。
-    ("crypto", ["rsa", "aes", r"\bdes\b", "加密", "解密", "哈希", r"\bhash\b", "cipher",
+    # ⚠ 'des' 与 'hash' 这类**短英文词**必须写成 `\b...\b`：裸子串会命中普通
+    #   英文词（'des' ⊂ "description"/"codes"/"modes"，'hash' ⊂ "hashmap"），
+    #   而分类结果决定 flag 证据边界（crypto 属 _LOCAL_NATIVE_CATEGORIES，会
+    #   打开"本地静态产物算证据"这道门，见 adapter/verify.py 的
+    #   flag_evidence_policy）。实测 `"some totally unknown description here"`
+    #   曾被判成 crypto —— 一个常见题面词就把边界从 remote-only 放宽了。
+    #   反之**长词一律保持子串**（"forensic" 要能命中 "forensics"、"upload" 要能
+    #   命中 "uploads"），所以是逐词 opt-in，不是全表词边界：整表加边界会丢
+    #   复数/派生形式，实测把 "forensics challenge" 判成 unknown。
+    #   边界语义见 _keyword_hits（不是正则 \b —— 它在 CJK 相邻处不成立）。
+    ("crypto", [r"\bdes\b", "aes", "rsa", "加密", "解密", "哈希", r"\bhash\b", "cipher",
                 "密码学", "crypto", "编码", "base64", "签名"]),
     # pentest
     ("pentest", ["渗透", "内网", "横向", "提权", "跳板", "隧道", "pivot", "lateral",
@@ -780,15 +782,44 @@ _CATEGORY_KEYWORDS = [
 _KNOWN_CATEGORIES = {cat for cat, _kw in _CATEGORY_KEYWORDS} | {"misc", "unknown"}
 
 
-def _keyword_hits(keyword: str, desc: str) -> bool:
-    """关键词命中判定：`\\bxxx\\b` 形式走词边界，其余按子串。
+# 只对显式标注的短词做词边界匹配 —— opt-in 而非全表，理由见 _keyword_hits。
+_ASCII_WORD = re.compile(r"[A-Za-z0-9]")
+_WORD_BOUNDED = re.compile(r"\\b(.+)\\b\Z")
 
-    存在理由见 _CATEGORY_KEYWORDS 里 crypto 一行：'des' 裸子串会命中
-    "description"，而分类结果决定 flag 证据边界（crypto 属
+
+def _boundary_hits(word: str, desc: str) -> bool:
+    """`word` 是否以独立的拉丁词出现（两侧都不是 [A-Za-z0-9]）。
+
+    不用正则 `\\b`：`\\b` 的边界只认 \\w 而 CJK 也属 \\w，于是 "des加密" 会被
+    判成无边界、漏掉真实的 DES 信号。用 str.find 逐次定位（C 速度）而不是
+    编译正则：本函数按题调用、每次都要扫全表（实测 find 1.1µs vs 正则 2.7µs）。
+    """
+    n = len(word)
+    start = 0
+    while (i := desc.find(word, start)) != -1:
+        j = i + n
+        if (i == 0 or not _ASCII_WORD.match(desc[i - 1])) and \
+           (j >= len(desc) or not _ASCII_WORD.match(desc[j])):
+            return True
+        start = i + 1
+    return False
+
+
+def _keyword_hits(keyword: str, desc: str) -> bool:
+    """关键词命中判定：`\\bxxx\\b` 形式走词边界，其余按子串（保持原行为）。
+
+    边界只对**显式标注**的短词启用（opt-in）。不改成"全表词边界"：长词加边界
+    会丢复数/派生形式（"upload" 命中不了 "uploads"、"forensic" 命中不了
+    "forensics"），实测能把 "uploads are allowed" 判成 unknown —— 那是拿
+    分类准确率换整齐划一，而真正被利用的只是几个 ⊂ 普通英文词的短串。
+
+    标注与否的依据见 _CATEGORY_KEYWORDS 里 crypto 一行：'des' ⊂ "description"
+    会命中普通英文词，而分类结果决定 flag 证据边界（crypto 属
     _LOCAL_NATIVE_CATEGORIES，会打开本地取证门）。
     """
-    if keyword.startswith("\\b"):
-        return re.search(keyword, desc) is not None
+    m = _WORD_BOUNDED.match(keyword)
+    if m:
+        return _boundary_hits(m.group(1).lower(), desc)
     return keyword.lower() in desc
 
 
@@ -811,10 +842,7 @@ def _infer_category(ch: Challenge) -> str:
 
     desc = (ch.description or "").lower()
 
-    # 2) 描述关键词优先
-    #    表里少数几个短英文词写成 `\b...\b`（见 _CATEGORY_KEYWORDS 里 crypto 一行的
-    #    注释）：裸子串会把 description/codes/modes 里的 "des" 当成 DES 加密。
-    #    此处只对形如 `\bxxx\b` 的条目走正则，其余仍是子串，行为不变。
+    # 2) 描述关键词优先（命中口径统一在 _keyword_hits：拉丁词看词边界，中文看子串）
     for cat, keywords in _CATEGORY_KEYWORDS:
         if any(_keyword_hits(k, desc) for k in keywords):
             return cat
