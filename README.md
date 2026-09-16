@@ -21,22 +21,27 @@ eager 即时提交、能力分片、跨场续接、舰队监督与协作式热�
 
 ```bash
 cp .env.example .env      # 填 BENCHMARK_TOKEN / BENCHMARK_BASE_URL / DEEPSEEK_API_KEY
-docker compose up -d      # server + 单体 worker（自己持 VPN 自己解题）
+docker compose up -d      # server + 三容器 worker 舰队
 ```
 
-打开 `http://127.0.0.1:8000` 是服务端（观测 SPA + 控制面 API）；单体 worker 另在
-`http://127.0.0.1:8080` 起一个本地态势台（`STATUS_PORT=0` 可关）。
+打开 `http://127.0.0.1:8000` 是服务端（观测 SPA + 控制面 API）。
 
-三容器舰队 —— `worker-1` 只维持 VPN 与状态汇总（`ADAPTER_ROLE=monitor`，不做题），
+舰队形态 —— `worker-1` 只维持 VPN 与状态汇总（`ADAPTER_ROLE=monitor`，不做题），
 `worker-2/3` 用 `network_mode: service:worker-1` 复用它的网络命名空间：
-
-```bash
-docker compose --profile fleet up -d
-```
 
 一个靶场 VPN 只应有一条隧道，三个容器各起一条会互相抢路由 —— 所以 VPN 由 worker-1 独占。
 代价是它必须常驻（它一停另两个就断网，由 netns 看门狗兜底）。舰队拓扑的取舍与排障见
 [`packages/worker/README.md`](packages/worker/README.md)。
+
+**单体形态**（一个容器自己持 VPN 自己解题，与改造前行为一致，方便对照与排障）点它的名字起：
+
+```bash
+docker compose up -d worker        # 只起这一个；另在 http://127.0.0.1:8080 起本地态势台
+```
+
+裸 `up -d` 不带它，是因为 `worker` 服务带了一个 profile。**别用
+`--profile monolith up -d`** —— 那会把舰队三容器一起拉起来；compose 对显式点名的服务
+不看 profile 门槛，所以点名就够了。
 
 ### 两个地址别搞混
 

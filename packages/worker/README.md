@@ -14,19 +14,24 @@
 
 ```bash
 cp .env.example .env      # 填 BENCHMARK_TOKEN / BENCHMARK_BASE_URL / DEEPSEEK_API_KEY
-docker compose up -d      # server + 单体 worker（自己持 VPN 自己解题）
+docker compose up -d      # server + 三容器 worker 舰队
 ```
 
-三容器舰队（worker-1 持 VPN，worker-2/3 复用它的 netns）：
+裸 `up -d` 起的就是舰队（worker-1 持 VPN，worker-2/3 复用它的 netns）。
+**单体形态**（一个容器自己持 VPN 自己解题）点它的名字起：
 
 ```bash
-docker compose --profile fleet up -d
+docker compose up -d worker
 ```
+
+`worker` 带一个 profile 只是为了让裸 `up -d` 不带它；**别用 `--profile monolith up -d`**
+（会把舰队一起拉起来）。compose 对显式点名的服务不看 profile 门槛。
 
 | 服务 | 角色 | VPN |
 |---|---|---|
 | `worker-1` | 只维持 VPN + 状态汇总 + 他管，**不做题** | 持有 tun（`cap_add NET_ADMIN` + `/dev/net/tun`） |
 | `worker-2` / `worker-3` | 解题 | `network_mode: service:worker-1`，复用 worker-1 的隧道 |
+| `worker` | 单体形态：自己持 VPN 自己解题 | 持有 tun（与 worker-1 同配置） |
 
 一个靶场 VPN 只应有一条隧道；三个容器各起一条会互相抢路由。代价是 worker-1 必须
 常驻 —— 它一停另两个就断网（由 netns 看门狗兜底：worker-2/3 检测到被孤立会退出重启）。

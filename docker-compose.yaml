@@ -6,6 +6,15 @@
 # worker-2  = 解题 worker（复用 worker-1 的 netns，自己不起 VPN）
 # worker-3  = 解题 worker（同上）
 #
+# 裸 `docker compose up -d` 起的就是这三容器舰队。单体形态（自己持 VPN 自己解题，
+# 与改造前行为一致，方便对照与排障）点它的名字即可：
+#
+#     docker compose up -d worker
+#
+# `worker` 之所以带一个 profile，只是为了让**裸 up 不带它**（无 profile 的服务
+# 一律随默认启动）。compose 对显式点名的服务不看 profile 门槛，所以点名就能起来。
+# 不要用 `--profile monolith up -d` —— 那样也会把三个舰队容器一起拉起来。
+#
 # 为什么 VPN 由 worker-1 独占：一个靶场 VPN 只应有一条隧道。三个容器各起一条
 # 会互相抢路由；worker-2/3 用 `network_mode: service:worker-1` 直接复用它的
 # 网络命名空间，物理上共用一条隧道。代价是 worker-1 必须常驻 —— 它一停，
@@ -192,7 +201,6 @@ services:
     <<: *worker-runtime
     build: *worker-build
     container_name: ghost-worker-1
-    profiles: ["fleet"]
     healthcheck: *worker-healthcheck
     # VPN：唯一持有 tun 的容器；worker-2/3 复用它的 netns
     cap_add:
@@ -221,7 +229,6 @@ services:
     <<: *worker-runtime
     build: *worker-build
     container_name: ghost-worker-2
-    profiles: ["fleet"]
     network_mode: service:worker-1
     healthcheck: *worker-healthcheck
     environment:
@@ -250,7 +257,6 @@ services:
     <<: *worker-runtime
     build: *worker-build
     container_name: ghost-worker-3
-    profiles: ["fleet"]
     network_mode: service:worker-1
     healthcheck: *worker-healthcheck
     environment:
@@ -270,12 +276,14 @@ services:
         condition: service_healthy
 
   # ── 单体 worker：不带舰队拓扑的单机/调试形态 ──
-  # `docker compose up -d worker` 起这一个容器（默认 profile，与 fleet 互斥）。
-  # 它自己持 VPN 自己解题 —— 与改造前行为一致，方便对照与排障。
+  # `docker compose up -d worker` 起这一个容器（自己持 VPN 自己解题，与改造前行为一致）。
+  # profile 只用来把裸 `up -d` 排除在外（裸 up 起的是舰队）——compose 对显式点名的
+  # 服务不看 profile 门槛，所以点名即可起。别用 `--profile monolith up -d`（连舰队一起拉）。
   worker:
     <<: *worker-runtime
     build: *worker-build
     container_name: ghost-worker
+    profiles: ["monolith"]
     healthcheck: *worker-healthcheck
     cap_add:
       - NET_ADMIN
