@@ -16,7 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from ghost_worker.adapter.stoploss import StopLoss
+from redpilot_worker.adapter.stoploss import StopLoss
 
 
 class HintRequestHelperTests(unittest.TestCase):
@@ -26,7 +26,7 @@ class HintRequestHelperTests(unittest.TestCase):
         # Import lazily so the StopLoss state-machine tests remain runnable in
         # a minimal host environment; the project test image has all driver
         # dependencies installed.
-        from ghost_worker import orchestrator as driver
+        from redpilot_worker import orchestrator as driver
 
         class Client:
             calls = 0
@@ -44,7 +44,7 @@ class HintRequestHelperTests(unittest.TestCase):
         self.assertEqual(len(hint), 4000)
 
     def test_hint_review_switch_is_explicitly_configurable(self):
-        from ghost_worker import orchestrator as driver
+        from redpilot_worker import orchestrator as driver
 
         with patch.dict(os.environ, {"ADAPTER_MULTIFLAG_HINT_REVIEW": "0"}, clear=False):
             self.assertFalse(driver._multiflag_hint_review_enabled())
@@ -53,7 +53,7 @@ class HintRequestHelperTests(unittest.TestCase):
 
     def test_resumed_post_hint_review_does_not_invent_or_refetch_hint_body(self):
         """重启后只承认已做过提示复核，不能伪称拥有或重拉提示正文。"""
-        from ghost_worker import orchestrator as driver
+        from redpilot_worker import orchestrator as driver
 
         note = driver._multiflag_hint_prompt_note(
             hint_reviewed=True,
@@ -70,7 +70,7 @@ class HintRequestHelperTests(unittest.TestCase):
 
     def test_driver_does_not_rearm_an_exhausted_post_hint_window(self):
         """提示后完整复核已耗尽时，入口必须返回切题而不是无限重开窗口。"""
-        from ghost_worker import orchestrator as driver
+        from redpilot_worker import orchestrator as driver
 
         with tempfile.TemporaryDirectory() as workdir:
             stoploss = StopLoss(
@@ -104,7 +104,7 @@ class ContinuationCheckpointTests(unittest.TestCase):
     """跨 Pi 会话只传递控制流元数据，不重复已完成入口阶段。"""
 
     def test_checkpoint_roundtrip_is_epoch_scoped_and_answer_free(self):
-        from ghost_worker import orchestrator as driver
+        from redpilot_worker import orchestrator as driver
 
         with tempfile.TemporaryDirectory() as workdir:
             driver._write_continuation_checkpoint(
@@ -132,7 +132,7 @@ class ContinuationCheckpointTests(unittest.TestCase):
             self.assertEqual(driver._load_continuation_checkpoint(workdir, "epoch-b"), {})
 
     def test_continuation_prompt_explicitly_pivots_after_duplicate_stage(self):
-        from ghost_worker import orchestrator as driver
+        from redpilot_worker import orchestrator as driver
 
         note = driver._continuation_prompt_note(
             {
@@ -154,7 +154,7 @@ class ContinuationCheckpointTests(unittest.TestCase):
         self.assertNotIn("flag{", note)
 
     def test_same_epoch_purge_keeps_checkpoint_but_new_epoch_drops_it(self):
-        from ghost_worker import orchestrator as driver
+        from redpilot_worker import orchestrator as driver
 
         with tempfile.TemporaryDirectory() as workdir:
             Path(workdir, ".task-epoch.json").write_text(
@@ -177,7 +177,7 @@ class ContinuationCheckpointTests(unittest.TestCase):
 
     def test_same_epoch_target_restart_rotates_trace_and_discards_old_evidence(self):
         """A restarted target keeps only answer-free continuation state."""
-        from ghost_worker import orchestrator as driver
+        from redpilot_worker import orchestrator as driver
 
         with tempfile.TemporaryDirectory() as workdir:
             original_scope = "a" * 32
@@ -211,7 +211,7 @@ class ContinuationCheckpointTests(unittest.TestCase):
 
     def test_session_boundary_scrubs_flag_text_from_replay_inputs(self):
         """已确认答案留在转录取证链，但不回灌到下一 Pi prompt。"""
-        from ghost_worker import orchestrator as driver
+        from redpilot_worker import orchestrator as driver
 
         with tempfile.TemporaryDirectory() as workdir:
             # The value is synthetic test data, not a challenge answer.
@@ -227,8 +227,8 @@ class ContinuationCheckpointTests(unittest.TestCase):
             self.assertIn("[REDACTED-FLAG]", Path(workdir, "MEMORY.md").read_text())
 
     def test_live_blackboard_scrub_survives_a_later_fact_save(self):
-        from ghost_worker.adapter.blackboard import Blackboard, Fact
-        from ghost_worker import orchestrator as driver
+        from redpilot_worker.adapter.blackboard import Blackboard, Fact
+        from redpilot_worker import orchestrator as driver
 
         with tempfile.TemporaryDirectory() as workdir:
             marker = "flag{SyntheticStage_5678}"
@@ -243,7 +243,7 @@ class ContinuationCheckpointTests(unittest.TestCase):
             self.assertNotIn(marker, raw)
 
     def test_tried_command_ledger_redacts_and_deduplicates_flag_writes(self):
-        from ghost_worker import orchestrator as driver
+        from redpilot_worker import orchestrator as driver
 
         with tempfile.TemporaryDirectory() as workdir:
             marker = "flag{SyntheticStage_9012}"

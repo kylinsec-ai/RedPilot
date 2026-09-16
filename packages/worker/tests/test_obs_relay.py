@@ -1,7 +1,7 @@
 """obs 中继测试:本地 mock HTTP 服务器按序记录 POST → 直接起真 relay(不经 driver)
 → 断言过滤/定序/状态映射/压缩收缩幂等/平台 down 恢复/未配禁用。
 
-pytest 由仓库根起(packages/worker 在 pythonpath,ghost_worker 可导入)。
+pytest 由仓库根起(packages/worker 在 pythonpath,redpilot_worker 可导入)。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from ghost_worker.live import LiveBus, LiveState
+from redpilot_worker.live import LiveBus, LiveState
 
 
 # ── mock 服务器:按到达序记录 (path, body) ──
@@ -97,7 +97,7 @@ def _frame(phase: str, code: str = "a-05", **extra) -> dict:
 def _relay(tmp_path, url: str, token: str = "tok", workdir: str | None = None):
     live = LiveState(worker_id="worker-1", state_path=None)
     bus = LiveBus()
-    from ghost_worker.relay import ObsRelay
+    from redpilot_worker.relay import ObsRelay
     r = ObsRelay(live, bus, workdir or str(tmp_path), url, token, worker_id="worker-1")
     r.start()
     return live, bus, r
@@ -107,7 +107,7 @@ def _relay_unstarted(tmp_path, url: str, token: str = "tok"):
     """只构造、不 start():单测直接驱动 _sender,不经引擎与节拍线程。"""
     live = LiveState(worker_id="worker-1", state_path=None)
     bus = LiveBus()
-    from ghost_worker.relay import ObsRelay
+    from redpilot_worker.relay import ObsRelay
     return live, bus, ObsRelay(live, bus, str(tmp_path), url, token,
                                worker_id="worker-1")
 
@@ -123,7 +123,7 @@ def _events_of(records: list[dict]) -> list[dict]:
 
 def test_disabled_when_url_unset(monkeypatch):
     monkeypatch.delenv("OBSERVABILITY_URL", raising=False)
-    from ghost_worker.relay import maybe_start_relay
+    from redpilot_worker.relay import maybe_start_relay
     assert maybe_start_relay(None, None) is None
 
 
@@ -324,10 +324,10 @@ def test_platform_down_then_recover(tmp_path):
 def sender_backoff_noop(monkeypatch):
     """把 sender 线程的退避 sleep 变成 no-op。
 
-    只对 obs-sender 线程生效:ghost_worker.relay 里的 `time` 是共享模块,
+    只对 obs-sender 线程生效:redpilot_worker.relay 里的 `time` 是共享模块,
     直接 patch time.sleep 会让本模块 _wait 的 50ms 轮询变成忙等。
     """
-    import ghost_worker.relay as relay_mod
+    import redpilot_worker.relay as relay_mod
     real_sleep = relay_mod.time.sleep
 
     def fake_sleep(seconds):

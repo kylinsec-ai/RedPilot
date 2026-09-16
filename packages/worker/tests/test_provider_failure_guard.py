@@ -5,14 +5,14 @@ stopReason=error 的收尾消息,pi_agent 漏读 → err=none → 编排层当�
 本文件覆盖:pi_agent 读出 stopReason=error(SolveResult.provider_failure)、
 solve_one 会话级重试与 ProviderFailure 上抛、driver 连续熔断 exit 3。
 
-pytest 由仓库根起(packages/worker 在 pythonpath,ghost_worker 可导入)。
+pytest 由仓库根起(packages/worker 在 pythonpath,redpilot_worker 可导入)。
 """
 
 from __future__ import annotations
 
 import json
 
-from ghost_worker.solver.base import SolveResult
+from redpilot_worker.solver.base import SolveResult
 
 
 # ── SolveResult.provider_failure 判定 ──
@@ -35,7 +35,7 @@ def test_turns_with_error_is_not_provider_failure():
 def _adapter_cfg(**changes):
     """按朋友引擎的 from_env 口径造配置（12 字段），只覆写指定项。"""
     import dataclasses
-    from ghost_worker.adapter.config import SolverConfig as _SC
+    from redpilot_worker.adapter.config import SolverConfig as _SC
     return dataclasses.replace(_SC.from_env(), **changes)
 
 
@@ -56,7 +56,7 @@ def test_pi_agent_surfaces_stop_reason_error(tmp_path, monkeypatch):
     fake = tmp_path / "fakepi.sh"
     fake.write_text(f'#!/bin/sh\necho {_json_quote(_AGENT_END_ERROR_EVENT)}\n')
     fake.chmod(0o755)
-    from ghost_worker.adapter.solver import create_solver
+    from redpilot_worker.adapter.solver import create_solver
 
     workdir = tmp_path / "wd"
     workdir.mkdir()
@@ -113,7 +113,7 @@ def test_nonzero_exit_leaves_a_diagnosable_error(tmp_path, monkeypatch):
     属性，朋友引擎的结果模型里没有它 —— 判据由编排层自建（见 orchestrator 的
     `_is_api_fault` 与 stoploss），本用例不越界去断言别人家的属性。
     """
-    from ghost_worker.adapter.solver import create_solver
+    from redpilot_worker.adapter.solver import create_solver
 
     fake = tmp_path / "fakepi.sh"
     # 只往 stderr 写,stdout 空,退出码 2
@@ -151,7 +151,7 @@ def test_nonzero_exit_leaves_a_diagnosable_error(tmp_path, monkeypatch):
 def test_cleanup_token_only_matches_tagged_processes(monkeypatch):
     """令牌采集必须只认带标记的进程，且令牌格式不合法时一律空手而归。"""
     import os as _os
-    from ghost_worker.adapter.solver import pi_agent as eng
+    from redpilot_worker.adapter.solver import pi_agent as eng
 
     assert eng._tagged_processes("") == []
     assert eng._tagged_processes("not-a-32-hex-token") == []
@@ -193,7 +193,7 @@ def test_cleanup_instance_processes_is_noop_without_token(tmp_path):
     这是当前框架运行期的真实状态（编排链路尚未写该文件）——所以它同时是一条
     回归护栏：接线之前，`cleanup_instance_processes` 不得误杀任何东西。
     """
-    from ghost_worker.adapter.solver.pi_agent import (
+    from redpilot_worker.adapter.solver.pi_agent import (
         _instance_cleanup_token, cleanup_instance_processes)
 
     workdir = tmp_path / "wd"
@@ -210,4 +210,4 @@ def test_cleanup_instance_processes_is_noop_without_token(tmp_path):
 #
 # assignment（向控制面 claim job → solve → 回报 attempt）是框架独有的一条链路，
 # 竞技场主循环完全不知道它（它自己 list_challenges + 自派发）。随框架侧编排
-# 退位，assignment.* 及其熔断用例一并删除；见 ghost_worker/driver.py 的头注释。
+# 退位，assignment.* 及其熔断用例一并删除；见 redpilot_worker/driver.py 的头注释。

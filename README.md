@@ -1,47 +1,76 @@
-# Ghost — 安全基准测试平台
+# RedPilot
 
-三包 Python monorepo：一个**求解 worker**（连靶场 VPN，驱动 Pi Agent 解题、提交 flag），
-一个**统一服务端**（控制面 + 观测平台，同一个 FastAPI `:8000`），一份**零依赖契约包**。
+> 面向 **TSecBench** 靶场的自主安全测试 Agent：连上靶场 VPN，自主解题、提交 flag，
+> 并把全过程实时推到观测平台。
+
+RedPilot 是一个三包 Python monorepo。一个**求解 worker**（竞技场编排 + Pi Agent 引擎）、
+一个**统一服务端**（控制面 + 观测平台，同一个 FastAPI `:8000`）、一份**零依赖契约包**。
+
+> 内部包名与对外项目名统一为 **RedPilot**：`redpilot-contracts` / `redpilot` / `redpilot-worker`。
+> 下文出现 `redpilot_*` 都是指这些包。
 
 ```
-packages/contracts   ghost-contracts   零依赖契约：状态快照 schema、词汇表、redact/text/fsio、paths
-packages/ghost       ghost             控制面（challenges/调度/VPN）+ 观测平台（摄取/读端/SSE/SPA）
-packages/worker      ghost-worker      求解 worker：竞技场编排 + Pi Agent 引擎 + 观测中继
+packages/contracts   redpilot-contracts   零依赖契约：状态快照 schema、词汇表、redact/text/fsio、paths
+packages/redpilot       redpilot          控制面（challenges/调度/VPN）+ 观测平台（摄取/读端/SSE/SPA）
+packages/worker      redpilot-worker      求解 worker：竞技场编排 + Pi Agent 引擎 + 观测中继
 ```
 
-**依赖方向是红线**：`contracts ← ghost/worker`，反向一律不许（`packages/contracts/tests/test_purity.py`
-把这条钉住了）。改契约先改 `contracts`，两个消费方各自跟上。
+**依赖方向是红线**：`contracts ← redpilot/worker`，反向一律不许
+（`packages/contracts/tests/test_purity.py` 把这条钉住了）。改契约先改 `contracts`。
 
-worker 的主循环是**竞技场**（`ghost_worker/orchestrator.py`）：多轮时间盒、多会话重访、多维止损、
-eager 即时提交、能力分片、跨场续接、舰队监督与协作式热重载。求解引擎是 Pi Agent
-（`ghost_worker/adapter/solver/pi_agent.py`，json print 模式）。**没有第二套编排** ——
+---
+
+## 架构一览
+
+```
+                          ┌──────────────────────── server (:8000) ────────────────────────┐
+                          │  控制面 control：challenges / 调度 / VPN / 评测               │
+   靶场平台 ◄── REST ──── │  观测平台 obs：摄取 / 读端 / SSE / SPA（独立 SQLite）          │
+  (list/start/submit)     └───────────────▲──────────────────────────▲───────────────────┘
+                                          │ telemetry(写端 token)     │ 读端 token（含明文 flag）
+                          ┌───────────────┴──────────────────────────┴───────────────────┐
+                          │  worker 舰队（共享 /work 卷）                                  │
+                          │  worker-1  持 VPN(tun) + netns 提供者 + 他管；不做题           │
+                          │  worker-2  ┐ network_mode: service:worker-1（复用隧道）        │
+                          │  worker-3  ┘ 竞技场主循环 → Pi Agent → flag 双闸门 → 平台      │
+                          └───────────────────────────────────────────────────────────────┘
+                                                        │
+                                              靶场 VPN ─┴─ 目标靶标
+```
+
+worker 的主循环是**竞技场**（`redpilot_worker/orchestrator.py`）：多轮时间盒、多会话重访、
+多维止损、eager 即时提交、能力分片、跨场续接、舰队监督与协作式热重载。
+求解引擎是 **Pi Agent**（`redpilot_worker/adapter/solver/`）。**没有第二套编排** ——
 框架早期那套（`orchestration.solve_one` / assignment claim 链路）已退位删除。
+
+---
 
 ## 起起来
 
 ```bash
-cp .env.example .env      # 填 BENCHMARK_TOKEN / BENCHMARK_BASE_URL / DEEPSEEK_API_KEY
+cp .env.example .env      # 至少填 BENCHMARK_TOKEN / BENCHMARK_BASE_URL / LLM 凭据
 docker compose up -d      # server + 三容器 worker 舰队
 ```
 
 打开 `http://127.0.0.1:8000` 是服务端（观测 SPA + 控制面 API）。
 
-舰队形态 —— `worker-1` 只维持 VPN 与状态汇总（`ADAPTER_ROLE=monitor`，不做题），
-`worker-2/3` 用 `network_mode: service:worker-1` 复用它的网络命名空间：
+### 舰队 vs 单体
+
+舰队形态下 `worker-1` 只维持 VPN 与状态汇总（`ADAPTER_ROLE=monitor`，不做题），
+`worker-2/3` 用 `network_mode: service:worker-1` 复用它的网络命名空间。
 
 一个靶场 VPN 只应有一条隧道，三个容器各起一条会互相抢路由 —— 所以 VPN 由 worker-1 独占。
 代价是它必须常驻（它一停另两个就断网，由 netns 看门狗兜底）。舰队拓扑的取舍与排障见
 [`packages/worker/README.md`](packages/worker/README.md)。
 
-**单体形态**（一个容器自己持 VPN 自己解题，与改造前行为一致，方便对照与排障）点它的名字起：
+**单体形态**（一个容器自己持 VPN 自己解题，方便对照与排障）点它的名字起：
 
 ```bash
 docker compose up -d worker        # 只起这一个；另在 http://127.0.0.1:8080 起本地态势台
 ```
 
-裸 `up -d` 不带它，是因为 `worker` 服务带了一个 profile。**别用
-`--profile monolith up -d`** —— 那会把舰队三容器一起拉起来；compose 对显式点名的服务
-不看 profile 门槛，所以点名就够了。
+裸 `up -d` 不带它，是因为 `worker` 服务带了 profile。**别用 `--profile monolith up -d`** ——
+那会把舰队三容器一起拉起来；compose 对显式点名的服务不看 profile 门槛，点名就够了。
 
 ### 两个地址别搞混
 
@@ -49,6 +78,55 @@ docker compose up -d worker        # 只起这一个；另在 http://127.0.0.1:8
 |---|---|
 | `BENCHMARK_BASE_URL` | **靶场平台**（题目 list/start/submit 的 REST API）。本地自测可指向自带的 server |
 | `OBSERVABILITY_URL` | **观测平台**（本仓库的 server）。compose 内自动为 `http://server:8000` |
+
+---
+
+## 求解引擎
+
+### 传输：默认 RPC，可回退
+
+Pi Agent 用两种传输之一驱动，开关 `ADAPTER_PI_TRANSPORT`：
+
+| 值 | 形态 | 说明 |
+|---|---|---|
+| `rpc`（**默认**） | `pi --mode rpc`，常驻 JSONL，prompt 走 stdin | 靠 `agent_settled` 收尾、可会话中 `steer`、可优雅 `abort`、有真实 token/上下文遥测 |
+| `print` | `pi --mode json --print`，一次性，prompt 在 argv | 旧行为，回退通道；老版 pi 无 `--mode rpc` 时**自动降级**到这里 |
+
+两种传输对事件处理循环**完全同接口**（`adapter/solver/pi_transport.py`），差异被挡在传输层：
+协议帧过滤、扩展弹窗自动应答、常驻进程收尾。设计依据与实测见
+[`docs/pi-rpc-migration-research.md`](docs/pi-rpc-migration-research.md)。
+
+> RPC 有一条专属护栏：`prompt` 被接受却迟迟没有 `agent_start`（模型/凭据解析不了时
+> pi 会**静默**），超过 `ADAPTER_RPC_STARTUP_GRACE`（默认 90s）即判
+> `rpc_no_agent_start`，不再空等整个会话预算。
+
+### provider 与模型：都可配
+
+| 变量 | 作用 | 缺省 |
+|---|---|---|
+| `ADAPTER_PROVIDER`（别名 `SOLVER_PROVIDER`） | 网关路由标签：决定 `--model` 前缀、逐题 `models.json` 的 `providers` 键、凭据 env 名 | `deepseek` |
+| `SOLVER_MODEL` | 模型；裸名补上面的 provider，带 `<provider>/` 前缀则**前缀优先** | `mimo-v2.5` → `deepseek/mimo-v2.5` |
+
+未登记的 provider 自动归为 `<PROVIDER>_API_KEY` + OpenAI 兼容 —— **换网关不用改仓库代码**。
+完整 provider→凭据 env 对照表见
+[`packages/worker/README.md`](packages/worker/README.md#provider-与模型都可配)。
+
+---
+
+## 技能面
+
+`skills/` 下是 **75 个技能**（`SKILL.md` + 附带 `references/`、`scripts/`），来自
+[SpecterOps/skills](https://github.com/SpecterOps/skills)（Apache-2.0 / 各技能 MIT，归属见
+`skills/_attribution/`），扁平化落盘。装载是**渐进式披露**：系统提示只放名字 + 描述，
+Agent 按题目分析自行 `read` 全文；框架另有 top-2 关键词预选当先验
+（`adapter/skill_loader.py` 的 `_DOMAIN_SIGNALS`）。
+
+> ⚠️ 其中相当一部分面向 **MCP 服务或外部基础设施**（BloodHound CE、Ghostwriter、
+> Binary Ninja、Ghidra、SCCM、Mythic、Cobalt Strike 等），worker 容器**未安装**这些依赖，
+> 这类技能在容器内属于方法论文档，不能直接执行。另 `proxychains-tunnel` 与
+> `adapter/taskprompt.py` 里「本环境禁用 proxychains4」的既有约束冲突，以环境约束为准。
+
+---
 
 ## 状态落在哪
 
@@ -62,15 +140,19 @@ docker compose up -d worker        # 只起这一个；另在 http://127.0.0.1:8
 
 舰队形态下三个容器共享同一个 `/work`（`status/` 与 `.stoploss-locks/` 靠它协作）。
 
+---
+
 ## 退出码契约
 
 worker 容器与 compose 的 `restart: on-failure` 靠一组退出码配套（`0` 正常终止 / `86`
 协作式热重载 / `4` VPN 层 / `3` 被孤立的解题 worker）。**完整表在
 [`packages/worker/README.md`](packages/worker/README.md)** —— 那是唯一权威，这里不抄一份。
 
-⚠️ 但有一条运维铁律值得在这里说：**配置错误绝不能非零退出**。`on-failure` 会重启一切
-非零退出，用 exit 1 表达「环境变量没填」= 无限重启闷循环，真因被日志淹没。这也是
-`driver.py` 与 `entrypoint.sh` 在配置校验失败时都走 exit 0 的原因。
+⚠️ 一条运维铁律：**配置错误绝不能非零退出**。`on-failure` 会重启一切非零退出，用 exit 1
+表达「环境变量没填」= 无限重启闷循环，真因被日志淹没。这也是 `driver.py` 与
+`entrypoint.sh` 在配置校验失败时都走 **exit 0** 的原因。
+
+---
 
 ## 凭据
 
@@ -78,7 +160,7 @@ worker 容器与 compose 的 `restart: on-failure` 靠一组退出码配套（`0
 |---|---|
 | `BENCHMARK_TOKEN` | 靶场平台凭据（worker 的 list/start/submit；monitor 也用它做 VPN 预检） |
 | `BENCHMARK_BASE_URL` | 靶场平台地址 |
-| `DEEPSEEK_API_KEY` | LLM 凭据，**pi 的官方 provider env 名**（换 provider 就换这个名字，见 `.env.example`） |
+| `<PROVIDER>_API_KEY` | LLM 凭据，**pi 的官方 provider env 名**。默认 provider=deepseek → `DEEPSEEK_API_KEY` |
 | `OBSERVABILITY_TOKEN` | 遥测**写**端（worker → 平台）。未配则摄取响亮 503，不静默丢弃 |
 | `OBSERVABILITY_READ_TOKEN` | 观测**读**端（态势台 / runs 历史 / transcript） |
 
@@ -86,20 +168,24 @@ worker 容器与 compose 的 `restart: on-failure` 靠一组退出码配套（`0
 只持写端。所以「能写遥测」≠「能读答案」—— 这也是 `OBSERVABILITY_READ_TOKEN`
 **不转发给 worker 容器**的原因。两者皆未设置时读端 503。
 
+---
+
 ## 开发
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q              # 全仓 352
-.venv/bin/python -m pytest -q packages/    # 三包 177
+.venv/bin/python -m pytest -q              # 全仓 387
+.venv/bin/python -m pytest -q packages/    # 三包 212
 .venv/bin/python -m pytest -q tests/       # 竞技场与策略层回归 175
 ```
 
-`pytest.ini` 已把 `packages/`、`tests/` 收进 `testpaths`，并把三包与仓库根加进 `pythonpath`,
-所以裸 `pytest` 就能收全部用例。仓库根 `tests/` 里是 100+ 条竞技场行为的回归用例（止损、
+`pytest.ini` 已把 `packages/`、`tests/` 收进 `testpaths`，并把三包与仓库根加进 `pythonpath`，
+所以裸 `pytest` 就能收全部用例。仓库根 `tests/` 里是 175 条竞技场行为的回归用例（止损、
 task epoch、eager 提交、交付账本、多段题推进、supervisor 判据）。
 
-容器的 entrypoint 与 worker 装配层见 `entrypoint.sh` 与 `packages/worker/ghost_worker/driver.py`。
+容器的 entrypoint 与 worker 装配层见 `entrypoint.sh` 与 `packages/worker/redpilot_worker/driver.py`。
+
+---
 
 ## 进不了镜像的两个资产
 
@@ -113,11 +199,19 @@ task epoch、eager 提交、交付账本、多段题推进、supervisor 判据�
 
 两者都只被 `tests/` 引用，所以 `pytest` 会跑到它们、`docker compose` 不会。
 
+---
+
 ## 文档地图
 
 | 文件 | 内容 |
 |---|---|
-| `AGENTS.md` | **发给解题 Agent 的指令**（写进每道题的工作目录当 `CLAUDE.md`），不是仓库说明 |
-| `packages/worker/README.md` | worker 的跑法、结构、四条关键约定（状态落点 / 退出码 / 进程回收 / flag 双闸门） |
-| `.env.example` | 全部可调项，按段分组并标注「必须一起改」的联动项 |
-| `docs/friend-reference/` | 朋友那一版的部分**历史快照**（只有 3 个部署文件逐字相同，其余是更早的版本；源码一份没存）。照它跑构建会失败 |
+| [`packages/worker/README.md`](packages/worker/README.md) | worker 的跑法、结构、provider/模型配置、四条关键约定（状态落点 / 退出码 / 进程回收 / flag 双闸门） |
+| [`AGENTS.md`](AGENTS.md) | **发给解题 Agent 的指令**（写进每道题的工作目录当 `CLAUDE.md`），不是仓库说明 |
+| [`.env.example`](.env.example) | 全部可调项，按段分组并标注「必须一起改」的联动项 |
+| [`docs/pi-rpc-migration-research.md`](docs/pi-rpc-migration-research.md) | 从 `--print` 换到 RPC 的调研、实测与失败模式 |
+| [`docs/graph-engineering-design.md`](docs/graph-engineering-design.md) | 证据图设计（把黑板 / Heimdall / 证据出身连成一张可追溯的图） |
+| [`docs/deterministic-recon-design.md`](docs/deterministic-recon-design.md) | 确定性侦察与事实编译（先跑工具、再对事实做上下文工程） |
+| [`docs/autonomous-offensive-agent-comparison.md`](docs/autonomous-offensive-agent-comparison.md) | 自主进攻性安全 Agent 架构谱系与本仓库对照 |
+| [`docs/top10-offensive-agents-deep-dive.md`](docs/top10-offensive-agents-deep-dive.md) | 开源前十名 Agent 的源码级深潜 |
+| [`docs/specterops-skills-evaluation.md`](docs/specterops-skills-evaluation.md) | skills 替换决策的评估与取舍 |
+| [`docs/friend-reference/`](docs/friend-reference/) | 早期历史快照（仅存档，照它跑构建会失败） |

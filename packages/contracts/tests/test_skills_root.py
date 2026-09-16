@@ -1,4 +1,4 @@
-"""`ghost_contracts.paths.skills_root` 的定位契约 + 技能面不为空的回归守卫。
+"""`redpilot_contracts.paths.skills_root` 的定位契约 + 技能面不为空的回归守卫。
 
 这一条是**回归守卫**，不是新功能测试：搬迁把两处"数固定层数"的 skills 定位一起
 打断了（`dirname(dirname(__file__))/skills` 与"三级上溯即仓库根"），两处都指向一个
@@ -14,7 +14,7 @@ import os
 import unittest
 from pathlib import Path
 
-from ghost_contracts.paths import skills_root
+from redpilot_contracts.paths import skills_root
 
 # 本文件在 packages/contracts/tests/ → 上溯三级才是仓库根
 _REPO = Path(__file__).resolve().parents[3]
@@ -33,20 +33,20 @@ class SkillsRootTests(unittest.TestCase):
     def test_finds_the_repo_skills_dir_by_walking_up(self):
         """从策略层的真实位置出发，上溯必须命中仓库根的 skills/。
 
-        这是被打断的那一处：起点是 `ghost_worker/adapter/skill_loader.py`，
+        这是被打断的那一处：起点是 `redpilot_worker/adapter/skill_loader.py`，
         距仓库根 5 层 —— 固定层数的写法在搬迁后全部指错。
         """
-        start = _REPO / "packages/worker/ghost_worker/adapter/skill_loader.py"
+        start = _REPO / "packages/worker/redpilot_worker/adapter/skill_loader.py"
         self.assertEqual(skills_root(str(start)), str(_REPO / "skills"))
 
     def test_env_var_wins(self):
         os.environ["ADAPTER_SKILLS_DIR"] = str(_REPO / "skills")
-        start = _REPO / "packages/worker/ghost_worker/adapter/skill_loader.py"
+        start = _REPO / "packages/worker/redpilot_worker/adapter/skill_loader.py"
         self.assertEqual(skills_root(str(start)), str(_REPO / "skills"))
 
     def test_extra_wins_over_the_walk(self):
         """容器侧传 `/app/skills`：镜像里那条不随 HOME 改写消失的路径。"""
-        start = _REPO / "packages/worker/ghost_worker/adapter/skill_loader.py"
+        start = _REPO / "packages/worker/redpilot_worker/adapter/skill_loader.py"
         self.assertEqual(
             skills_root(str(start), extra=str(_REPO / "skills")),
             str(_REPO / "skills"))
@@ -75,7 +75,7 @@ class SkillsAreActuallyLoadedTests(unittest.TestCase):
     """
 
     def test_skill_store_scans_more_than_zero_skills(self):
-        from ghost_worker.adapter.skill_loader import SkillStore
+        from redpilot_worker.adapter.skill_loader import SkillStore
         store = SkillStore()
         self.assertGreater(
             len(store._skills), 0,
@@ -88,7 +88,7 @@ class SkillsAreActuallyLoadedTests(unittest.TestCase):
         上面那条守"扫到了"，这条守"用上了" —— 中间还隔着 `_get_skill_store()`
         的缓存与 `match_skills` 的打分。
         """
-        from ghost_worker.adapter.skill_loader import SkillStore
+        from redpilot_worker.adapter.skill_loader import SkillStore
         store = SkillStore()
         matched = store.match_skills("web sql injection on /login.php",
                                      targets=["http://10.0.0.1"])

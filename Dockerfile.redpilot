@@ -1,0 +1,30 @@
+# ══════════════════════════════════════════════════════════════
+# RedPilot unified server image — control plane + observability platform
+# Combines scheduling, challenges API, and telemetry ingest/read API
+# ══════════════════════════════════════════════════════════════
+
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    LANG=C.UTF-8
+
+# ── 国内镜像源 (pip),extra-index 兜底 pypi.org ──
+RUN printf '[global]\nindex-url = https://mirrors.bfsu.edu.cn/pypi/web/simple\nextra-index-url = https://pypi.org/simple\ntimeout = 120\n[install]\ntrusted-host = mirrors.bfsu.edu.cn\n' \
+        > /etc/pip.conf
+
+WORKDIR /app
+
+# Install redpilot unified package + contracts
+# [platform] extra:完整控制面 + 观测 API 需要 fastapi/uvicorn/pydantic/dotenv/httpx。
+COPY packages/contracts /opt/packages/contracts
+COPY packages/redpilot /opt/packages/redpilot
+RUN pip install --no-cache-dir /opt/packages/contracts "/opt/packages/redpilot[platform]"
+
+# Data and SPA provided by compose bind-mounts: ./data:/app/data  ./web:/app/web:ro
+ENV REDPILOT_DB_PATH=/app/data/redpilot.sqlite3 \
+    OBSERVABILITY_DB=/app/data/obs.sqlite3 \
+    OBSERVABILITY_WEB=/app/web
+
+EXPOSE 8000
+CMD ["sh", "-c", "exec uvicorn redpilot.app:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000}"]

@@ -11,8 +11,8 @@ import json
 import threading
 import unittest
 
-from ghost_worker.live import LiveBus, LiveState
-from ghost_worker.observability import StatusBridge
+from redpilot_worker.live import LiveBus, LiveState
+from redpilot_worker.observability import StatusBridge
 
 
 def _status(*, phase: str | None = "idle", **kw) -> dict:
@@ -25,7 +25,7 @@ def _status(*, phase: str | None = "idle", **kw) -> dict:
     `phase=None` 表示**不带**该键：用来测 StatusBridge 的兜底推导（只有直调
     编排层的老路径才会缺它；竞技场自己每次都写）。
     """
-    from ghost_worker.orchestrator import _STATUS
+    from redpilot_worker.orchestrator import _STATUS
     base = {**dict(_STATUS), "worker_id": 1, "started_at": 1_700_000_000.0,
             "last_beat": 1_700_000_000.0, "last_activity": 1_700_000_000.0,
             "flags_found": [], "error": ""}
@@ -189,7 +189,7 @@ class ToolGranularityTests(unittest.TestCase):
         编排层注入的是 `orchestrator._NULL_BRIDGE` 而不是 None，所以这里锁的是
         "那个占位对象真的什么都不做"——它一旦不小心带了状态，热路径会被拖慢。
         """
-        from ghost_worker.orchestrator import _NULL_BRIDGE
+        from redpilot_worker.orchestrator import _NULL_BRIDGE
         _NULL_BRIDGE.push({"current_code": "x"})
         _NULL_BRIDGE.tool_call("nmap", {}, "x")
         _NULL_BRIDGE.flags_submitted(["flag{a}"])
@@ -295,7 +295,7 @@ class ErrorSurfacingTests(unittest.TestCase):
 
     def test_error_is_capped(self):
         """面板不该被一条超长 traceback 撑爆（cap 与 last_tool 同一族）。"""
-        from ghost_contracts.text import ERROR_HEAD_MAX
+        from redpilot_contracts.text import ERROR_HEAD_MAX
         live = LiveState("worker-1")
         b = StatusBridge(live, None, worker_id="worker-1")
         b.push(_status(error="x" * (ERROR_HEAD_MAX * 3)))
@@ -392,7 +392,7 @@ class HeartbeatContractTests(unittest.TestCase):
         """
         import ast
 
-        import ghost_worker.driver as drv
+        import redpilot_worker.driver as drv
         threads = [
             ast.unparse(node) for node in ast.walk(ast.parse(inspect.getsource(drv)))
             if isinstance(node, ast.Call)
@@ -404,7 +404,7 @@ class HeartbeatContractTests(unittest.TestCase):
         """编排层的心跳线程仍在，且它走 `_beat()`（刷心跳 + 推状态）。"""
         import inspect
 
-        from ghost_worker import orchestrator
+        from redpilot_worker import orchestrator
         src = inspect.getsource(orchestrator.main)
         self.assertIn('name="heartbeat"', src)
         self.assertIn("_beat()", src)
@@ -423,7 +423,7 @@ class PassthroughKeyDriftTests(unittest.TestCase):
     """
 
     def test_every_passthrough_key_is_actually_forwarded(self):
-        from ghost_worker.observability import _PASSTHROUGH_KEYS
+        from redpilot_worker.observability import _PASSTHROUGH_KEYS
         live = LiveState("worker-1")
         bus = LiveBus()
         q = bus.subscribe()
@@ -435,11 +435,11 @@ class PassthroughKeyDriftTests(unittest.TestCase):
             frame = q.get(timeout=2)
         finally:
             bus.unsubscribe(q)
-        ghost = [k for k in _PASSTHROUGH_KEYS
+        rp_keys = [k for k in _PASSTHROUGH_KEYS
                  if f"_{k}" not in frame and k not in frame]
         self.assertEqual(
-            ghost, [],
-            f"observability._PASSTHROUGH_KEYS 里有进不了信封的键: {ghost} "
+            rp_keys, [],
+            f"observability._PASSTHROUGH_KEYS 里有进不了信封的键: {rp_keys} "
             f"（编排层删了/改了名字 → 总线一直在读 None）")
 
 

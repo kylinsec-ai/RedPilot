@@ -1,10 +1,10 @@
 # ══════════════════════════════════════════════════════════════
-# 构建上下文裁剪（合并后：server(Dockerfile.ghost) + worker(Dockerfile) + 舰队）
+# 构建上下文裁剪（合并后：server(Dockerfile.redpilot) + worker(Dockerfile) + 舰队）
 #
 # ⚠️ 两个 Dockerfile 真正需要的输入不同，下面每条都注明了在排除谁的什么：
 #    Dockerfile.base   —— kali 基础层，基本不读仓库内容
-#    Dockerfile.ghost  —— 读 packages/{contracts,ghost} + web/ + main.py
-#    Dockerfile        —— 读 packages/{contracts,ghost,worker} + skills/ + tools/ + web/
+#    Dockerfile.redpilot  —— 读 packages/{contracts,redpilot} + web/ + main.py
+#    Dockerfile        —— 读 packages/{contracts,redpilot,worker} + skills/ + tools/ + web/
 #    不要把 packages/ 或 web/ 排除掉。
 # ══════════════════════════════════════════════════════════════
 
@@ -34,9 +34,9 @@ frontend/src/
 packages/*/build/
 packages/*/dist/
 packages/*/.venv/
-packages/ghost/ghost.egg-info/
-packages/contracts/ghost_contracts.egg-info/
-packages/worker/ghost_worker.egg-info/
+packages/redpilot/redpilot.egg-info/
+packages/contracts/redpilot_contracts.egg-info/
+packages/worker/redpilot_worker.egg-info/
 
 # ── 分叉归档：58MB，且内含活凭据
 1.zip

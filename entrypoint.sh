@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[adapter] === Ghost 平台接入层适配器 ==="
+echo "[adapter] === RedPilot 平台接入层适配器 ==="
 echo "[adapter] BENCHMARK_BASE_URL=${BENCHMARK_BASE_URL:-<unset>}"
 echo "[adapter] ADAPTER_ROLE=${ADAPTER_ROLE:-solver} ADAPTER_WORKER_ID=${ADAPTER_WORKER_ID:-<auto>}"
 
@@ -57,7 +57,7 @@ fi
 cd /app 2>/dev/null || true
 
 # ── VPN 连接 ──
-# Ghost 要求: 所有题目入口地址必须通过 VPN 才能访问
+# RedPilot 要求: 所有题目入口地址必须通过 VPN 才能访问
 # ADAPTER_VPN_CONFIG 为空/未设时跳过（如共享 worker-1 网络的 worker-2/3）
 VPN_CONFIG="${ADAPTER_VPN_CONFIG:-}"
 
@@ -138,5 +138,5 @@ else
   head -20 /tmp/tsec-run.log >&2 2>/dev/null || true
 fi
 
-echo "[adapter] starting arena driver (ghost_worker.orchestrator via driver 装配层)..."
-exec python3 -m ghost_worker.driver
+echo "[adapter] starting arena driver (redpilot_worker.orchestrator via driver 装配层)..."
+exec python3 -m redpilot_worker.driver

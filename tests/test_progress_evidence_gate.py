@@ -10,10 +10,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from ghost_worker.adapter.blackboard import Blackboard
-from ghost_worker.adapter.stoploss import StopLoss
-from ghost_worker.adapter.verify import flag_evidence_policy
-from ghost_worker import orchestrator as driver
+from redpilot_worker.adapter.blackboard import Blackboard
+from redpilot_worker.adapter.stoploss import StopLoss
+from redpilot_worker.adapter.verify import flag_evidence_policy
+from redpilot_worker import orchestrator as driver
 
 
 _TARGET = "10.20.30.40:8080"

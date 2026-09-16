@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 
-from ghost_contracts import digest as D
+from redpilot_contracts import digest as D
 
 # ── 合成 pi 事件构造器(语义与 obs/tests/conftest 一致) ──
 

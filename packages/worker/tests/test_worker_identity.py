@@ -21,7 +21,7 @@ import os
 import unittest
 from contextlib import contextmanager
 
-from ghost_worker import orchestrator as o
+from redpilot_worker import orchestrator as o
 
 
 @contextmanager
@@ -55,7 +55,7 @@ class WorkerIdentityTests(unittest.TestCase):
         for label, wid, count, want in self.FLEET + self.MONOLITH + self.BARE:
             with self.subTest(label):
                 with _env(ADAPTER_WORKER_ID=wid, ADAPTER_WORKER_COUNT=count,
-                          HOSTNAME="ghost-worker"):
+                          HOSTNAME="redpilot-worker"):
                     got = o._worker_id()
                     self.assertEqual(got, want,
                                      f"{label}: ADAPTER_WORKER_ID={wid!r} "
@@ -73,7 +73,7 @@ class WorkerIdentityTests(unittest.TestCase):
         分类的题** —— 单体形态下那些题永远不会被任何人接走。
         """
         with _env(ADAPTER_WORKER_ID="1", ADAPTER_WORKER_COUNT=None,
-                  HOSTNAME="ghost-worker"):
+                  HOSTNAME="redpilot-worker"):
             self.assertEqual(o._worker_id(), 1)
             self.assertEqual(os.path.basename(o._status_path()), "worker-1.json")
             # 单容器没有 monitor 可让位，unknown 题必须归它
@@ -99,7 +99,7 @@ class WorkerIdentityTests(unittest.TestCase):
         运维照 README 敲 `.reload.wid1` 会没人消费。
         """
         with _env(ADAPTER_WORKER_ID="1", ADAPTER_WORKER_COUNT=None,
-                  HOSTNAME="ghost-worker"):
+                  HOSTNAME="redpilot-worker"):
             path = os.path.join(os.getenv("ADAPTER_WORKDIR", "/work"),
                                 f".reload.wid{o._worker_id()}")
             self.assertTrue(path.endswith(".reload.wid1"), path)
@@ -117,7 +117,7 @@ class WorkerIdentityTests(unittest.TestCase):
           count=1 → 5（保持原值，status 写 worker-5.json）
           count=3 → 2（5 % 3，桶号）
         """
-        with _env(ADAPTER_WORKER_ID="5", HOSTNAME="ghost-worker"):
+        with _env(ADAPTER_WORKER_ID="5", HOSTNAME="redpilot-worker"):
             with _env(ADAPTER_WORKER_COUNT="1"):
                 self.assertEqual(o._worker_id(), 5)
                 self.assertEqual(os.path.basename(o._status_path()), "worker-5.json")

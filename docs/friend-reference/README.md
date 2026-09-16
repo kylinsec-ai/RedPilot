@@ -10,11 +10,11 @@
 >
 > 朋友的**源码**（`adapter/`、`drivers/`、`tests/`、`skills/`、`tsecbench/`、
 > `fastapi-console/`）一份都没存进这里：它们逐文件对照过，去重之后已经全部进了
-> 仓库（策略层搬进 `packages/worker/ghost_worker/adapter/`，主循环在
-> `ghost_worker/orchestrator.py`，`skills/` 与 `tsecbench/` 原样保留）。
+> 仓库（策略层搬进 `packages/worker/redpilot_worker/adapter/`，主循环在
+> `redpilot_worker/orchestrator.py`，`skills/` 与 `tsecbench/` 原样保留）。
 >
 > 内容**真的丢了**的只有一份：`CHALLENGES_API.md`（平台接口规约）。它既不在本目录，
-> 也不在仓库 —— 现行契约以 `packages/worker/ghost_worker/adapter/platform/tsecbench_http.py`
+> 也不在仓库 —— 现行契约以 `packages/worker/redpilot_worker/adapter/platform/tsecbench_http.py`
 > 顶部的接口清单为准（架构审查时确认过这是唯一的全损文档）。
 >
 > 上述三个部署文件**不参与任何构建**，照它们跑会因源目录不存在而失败
@@ -97,7 +97,7 @@ bash fastapi-console/run.sh start
 ```
 
 完整接口规约见当时随树附带的 `CHALLENGES_API.md`（**已不在本仓库**；现行契约以
-`packages/worker/ghost_worker/adapter/platform/tsecbench_http.py` 顶部的接口清单为准）。
+`packages/worker/redpilot_worker/adapter/platform/tsecbench_http.py` 顶部的接口清单为准）。
 
 ## 验证
 

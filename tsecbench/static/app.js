@@ -155,11 +155,11 @@ function cardActions(c) {
     b.push(`<button class="primary-btn" data-act="start" data-code="${esc(c.unique_code)}">启动</button>`);
   }
   if (c.container_status !== "stopped" && !c.is_completed) {
-    b.push(`<button class="danger-btn ghost-btn" data-act="close" data-code="${esc(c.unique_code)}">关闭</button>`);
+    b.push(`<button class="danger-btn redpilot-btn" data-act="close" data-code="${esc(c.unique_code)}">关闭</button>`);
   }
   if (!c.is_completed) {
-    b.push(`<button class="ghost-btn" data-act="hint" data-code="${esc(c.unique_code)}">提示</button>`);
-    b.push(`<button class="ghost-btn" data-act="submit" data-code="${esc(c.unique_code)}">提交 flag</button>`);
+    b.push(`<button class="redpilot-btn" data-act="hint" data-code="${esc(c.unique_code)}">提示</button>`);
+    b.push(`<button class="redpilot-btn" data-act="submit" data-code="${esc(c.unique_code)}">提交 flag</button>`);
   }
   return b.join("");
 }

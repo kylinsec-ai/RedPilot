@@ -6,7 +6,7 @@
  *   adminAuth → 控制面 /api/v1/*      (evaluation 生命周期 / VPN 等特权操作)
  *
  * 维护提示:两者都是"同一头名不同取值"或"不同头名",后端约定见
- * packages/ghost/ghost/obs/ingest_common.py 与 frontend/src/lib/api.ts 的注入点。
+ * packages/redpilot/redpilot/obs/ingest_common.py 与 frontend/src/lib/api.ts 的注入点。
  */
 
 function read(key: string): string {
@@ -28,8 +28,8 @@ function write(key: string, value: string): void {
   }
 }
 
-const READ_KEY = "ghost.read_token";
-const ADMIN_KEY = "ghost.admin_token";
+const READ_KEY = "redpilot.read_token";
+const ADMIN_KEY = "redpilot.admin_token";
 
 /** 观测读端凭据:读 /api/*(态势台、runs 历史、transcript)。 */
 export const readAuth = $state({ token: read(READ_KEY) });
@@ -43,7 +43,7 @@ export function setReadToken(value: string): void {
   write(READ_KEY, token);
   // 通知实时通道重连:token 变更前 SSE 可能停在"待授权"态(不自动重试)
   if (typeof window !== "undefined") {
-    window.dispatchEvent(new Event("ghost:read-token-changed"));
+    window.dispatchEvent(new Event("redpilot:read-token-changed"));
   }
 }
 

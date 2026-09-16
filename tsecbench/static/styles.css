@@ -216,7 +216,7 @@ button {
 .primary-btn:active { transform: translateY(1px); }
 .primary-btn:disabled { background: var(--faint); cursor: not-allowed; }
 
-.ghost-btn {
+.redpilot-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -230,8 +230,8 @@ button {
   transition: border-color var(--speed), background var(--speed);
 }
 
-.ghost-btn:hover { border-color: var(--ink); background: var(--paper); }
-.ghost-btn:disabled { color: var(--faint); border-color: var(--line); cursor: not-allowed; background: var(--surface); }
+.redpilot-btn:hover { border-color: var(--ink); background: var(--paper); }
+.redpilot-btn:disabled { color: var(--faint); border-color: var(--line); cursor: not-allowed; background: var(--surface); }
 
 .danger-btn {
   border-color: var(--hard-soft);

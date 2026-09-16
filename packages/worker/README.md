@@ -1,11 +1,11 @@
-# ghost-worker
+# redpilot-worker
 
 安全基准测试的**求解 worker**：一个常驻容器，连上靶场 VPN，领题目、驱动 Pi Agent
 解题、把 flag 提交回平台，同时把全过程实时推到观测平台。
 
-本包的主循环是**竞技场**（`ghost_worker.orchestrator`，约 7,000 行）：多轮时间盒、
+本包的主循环是**竞技场**（`redpilot_worker.orchestrator`，约 7,000 行）：多轮时间盒、
 多会话重访、多维止损、eager 即时提交、能力分片、跨场续接、舰队监督与协作式热重载。
-求解引擎是**朋友的 Pi Agent 实现**（`ghost_worker/adapter/solver/pi_agent.py`）：
+求解引擎是**朋友的 Pi Agent 实现**（`redpilot_worker/adapter/solver/pi_agent.py`）：
 四个看门狗（stall / 会话 deadline / stop_check / 子 Agent 静默死锁）、令牌式进程树
 回收（驱动崩溃后脱组的 `nohup`/`setsid` 子孙也收得回）、subagent 与 skills 安装器、
 逐题 `.pi-home` 隔离、provider 配置落地。
@@ -36,10 +36,41 @@ docker compose up -d worker
 一个靶场 VPN 只应有一条隧道；三个容器各起一条会互相抢路由。代价是 worker-1 必须
 常驻 —— 它一停另两个就断网（由 netns 看门狗兜底：worker-2/3 检测到被孤立会退出重启）。
 
+## provider 与模型（都可配）
+
+求解用的 provider 与模型**都不写死在代码里**，由两个环境变量决定：
+
+| 变量 | 作用 | 缺省 |
+|---|---|---|
+| `ADAPTER_PROVIDER`（别名 `SOLVER_PROVIDER`） | 网关路由标签：决定 `--model <provider>/<id>` 前缀、逐题 `models.json` 的 `providers` 键、凭据 env 名 | `deepseek` |
+| `SOLVER_MODEL` | 模型。写裸名则补上面的 provider；写 `<provider>/<id>` 则**前缀优先** | `mimo-v2.5` → `deepseek/mimo-v2.5` |
+
+**provider → 凭据 env 对照**（`pi_agent.provider_profile()`，未登记的名字自动归为
+`<PROVIDER>_API_KEY` + OpenAI 兼容，所以换网关不用改仓库代码）：
+
+| provider | 凭据 env | api |
+|---|---|---|
+| `deepseek` | `DEEPSEEK_API_KEY` | `openai-completions`（含 DeepSeek reasoning 兼容块） |
+| `glm` | `GLM_API_KEY` | `openai-completions` |
+| `openai` | `OPENAI_API_KEY` | `openai-completions` |
+| `anthropic` | `ANTHROPIC_API_KEY` | `anthropic-messages` |
+| `openrouter` | `OPENROUTER_API_KEY` | `openai-completions` |
+| 其它 | `<大写_下划线>_API_KEY` | `openai-completions` |
+
+换 provider 的最短路径：`ADAPTER_PROVIDER=<name>` + `SOLVER_MODEL=<id>` +（容器里）
+给 `docker-compose.yaml` 转发同名 `<NAME>_API_KEY`。注意凭据回退也走这张表 ——
+不再回退到写死的 `DEEPSEEK_API_KEY`。
+
+> 验证/观察者（verifier / Heimdall）走**独立**的 `_VERIFIER_PRESETS`（默认
+> `deepseek-v4-flash`），不受上面的求解模型变更影响；要改用它自己的 `LLM_MODEL`。
+
+求解引擎传输层（`--mode rpc` 常驻 / `--mode json --print` 一次性）见
+`docs/pi-rpc-migration-research.md`，开关是 `ADAPTER_PI_TRANSPORT`。
+
 ## 结构
 
 ```
-ghost_worker/
+redpilot_worker/
 ├── driver.py         装配层：配置校验 + 观测面接线 + 注入观测桥（不起线程）
 ├── orchestrator.py   主循环（竞技场）：list → 派发 → 多会话 → 提交 → 收尾
 ├── supervisor.py     他管层：卡死判定 → 只允许「请求对方热重载」
@@ -98,4 +129,4 @@ pytest -q packages/worker    # 本包
 
 `packages/worker/tests/` 覆盖观测桥映射、观测中继、provider 失败护栏、态势台绑定。
 仓库根的 `tests/` 里有 100+ 条竞技场行为的回归用例（止损、task epoch、eager 提交、
-交付账本、多段题推进、supervisor 判据），它们 `import ghost_worker.orchestrator`。
+交付账本、多段题推进、supervisor 判据），它们 `import redpilot_worker.orchestrator`。
