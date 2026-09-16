@@ -24,6 +24,7 @@ from tsecbench.errors import APIError
 from . import services as svc
 from .cfg import get_cfg, remote_config, save_cfg
 from .session import SessionMiddleware, mark_dirty
+from .solver import redact_flag_like_text
 from .services import (
     challenge_brief,
     close_challenge,
@@ -42,6 +43,7 @@ from .services import (
     worker_logs,
     list_transcripts,
     read_transcript,
+    render_heimdall_payload,
     usage_summary,
 )
 
@@ -53,10 +55,25 @@ app.add_middleware(SessionMiddleware)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
+def _redact_error_value(value: Any) -> Any:
+    """Keep provider/platform diagnostics from becoming an answer transport."""
+    if isinstance(value, str):
+        return redact_flag_like_text(value)
+    if isinstance(value, list):
+        return [_redact_error_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _redact_error_value(item) for key, item in value.items()}
+    return value
+
+
 def _error(error: APIError) -> JSONResponse:
     return JSONResponse(
         status_code=error.status_code,
-        content={"code": error.code, "message": error.message, "detail": getattr(error, "detail", {})},
+        content={
+            "code": error.code,
+            "message": redact_flag_like_text(error.message),
+            "detail": _redact_error_value(getattr(error, "detail", {})),
+        },
     )
 
 
@@ -166,7 +183,7 @@ def settings_test_platform(request: Request):
     except APIError as exc:
         return JSONResponse(
             status_code=exc.status_code,
-            content={"ok": False, "message": f"连接失败 [{exc.code}]: {exc.message}"},
+            content={"ok": False, "message": f"连接失败 [{exc.code}]: {redact_flag_like_text(exc.message)}"},
         )
 
 
@@ -186,7 +203,7 @@ def settings_test_llm(request: Request):
     except APIError as exc:
         return JSONResponse(
             status_code=exc.status_code,
-            content={"ok": False, "message": f"LLM 连接失败: {exc.message}"},
+            content={"ok": False, "message": f"LLM 连接失败: {redact_flag_like_text(exc.message)}"},
         )
 
 
@@ -239,6 +256,16 @@ def api_close_challenge(request: Request, unique_code: str = ""):
         return _error(exc)
 
 
+@app.get("/api/v1/challenges/heimdall")
+def api_challenges_heimdall(unique_code: str = ""):
+    """观察者之镜（B61）—— 只读。
+
+    不碰 session、不写盘、无副作用：即使观察者从未出过图也返回 200 +
+    available=False，让面板自己决定怎么讲。**不要**给它加写操作。
+    """
+    return render_heimdall_payload(unique_code)
+
+
 # ── VPN API ──────────────────────────────────────────
 
 @app.get("/api/v1/vpn/status")
@@ -271,7 +298,7 @@ def api_vpn_stop():
     return vpn.as_dict(vpn.stop())
 
 
-# ── AI 解题 ──────────────────────────────────────────
+# ── AI 调查计划 ──────────────────────────────────────
 
 class AiPayload(BaseModel):
     unique_code: str
@@ -289,6 +316,7 @@ def api_ai_round(request: Request, payload: AiPayload):
 
 @app.post("/api/v1/ai/auto")
 def api_ai_auto(request: Request, payload: AiPayload):
+    """Compatibility endpoint; it now produces one plan and never submits."""
     try:
         result = run_ai_auto(request.state.session, payload.unique_code)
         mark_dirty(request)
@@ -457,55 +485,30 @@ def api_verifier_set_config(payload: VerifierConfigPayload):
         )
 
 @app.get("/api/v1/verifier/rejected-flags")
-def api_verifier_rejected_flags():
-    """获取被拒绝的flag列表"""
-    try:
-        work_dir = Path(__file__).parent.parent.parent / "work"
-        rejected = []
-        
-        # 扫描所有题目目录
-        for challenge_dir in work_dir.iterdir():
-            if not challenge_dir.is_dir() or challenge_dir.name in ("status", "_events.jsonl"):
+def api_verifier_rejected_flags(request: Request):
+    """Return only a current-session count, never stored flag material.
+
+    The former implementation enumerated every work directory and returned
+    ``FLAG`` contents.  That made the control plane an answer-discovery API and
+    could leak another challenge's output into the current one.  A legacy UI
+    still calling this route receives a shape-compatible empty list plus a
+    count; there is no filesystem scan and no answer text in the response.
+    """
+    history = request.state.session.get("console_ai_history", {})
+    rejected_count = 0
+    if isinstance(history, dict):
+        for entry in history.values():
+            if not isinstance(entry, dict):
                 continue
-            
-            flag_file = challenge_dir / "FLAG"
-            if flag_file.exists():
-                try:
-                    flag_content = flag_file.read_text().strip()
-                    # 读取SOURCE文件查看验证情况
-                    source_file = challenge_dir / "SOURCE"
-                    verified = False
-                    if source_file.exists():
-                        source_content = source_file.read_text()
-                        verified = "flag{" in source_content.lower()
-                    
-                    rejected.append({
-                        "challenge_code": challenge_dir.name,
-                        "flag": flag_content,
-                        "verified_in_source": verified
-                    })
-                except Exception:
-                    continue
-        
-        return {"rejected_flags": rejected}
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"ok": False, "message": f"读取失败: {str(e)}"}
-        )
-
-class ForceSubmitPayload(BaseModel):
-    unique_code: str
-    flag: str
-
-@app.post("/api/v1/verifier/force-submit")
-def api_verifier_force_submit(request: Request, payload: ForceSubmitPayload):
-    """强制提交flag（跳过验证）"""
-    try:
-        result = submit_flag(request.state.session, payload.unique_code, payload.flag)
-        return result
-    except APIError as exc:
-        return _error(exc)
+            try:
+                rejected_count += max(0, int(entry.get("rejected_count", 0) or 0))
+            except (TypeError, ValueError):
+                continue
+    return {
+        "rejected_count": rejected_count,
+        "rejected_flags": [],
+        "scope": "current_session_counts_only",
+    }
 
 
 

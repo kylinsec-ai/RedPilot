@@ -30,7 +30,14 @@ if [[ -n "${VPN_CONFIG}" && -f "${VPN_CONFIG}" ]]; then
 
   ovpn_args=(--config "${VPN_CONFIG}" --daemon --log /tmp/openvpn.log --writepid /tmp/openvpn.pid)
   # 保活: ping + 断线自动重连
-  ovpn_args+=(--ping 10 --ping-restart 60)
+  # B25: --ping-restart 的计时器会被**隧道上任何方向的流量**重置，所以它的实际
+  # 含义是「空闲多久算断线」。原值 60 对一条没有靶标流量的隧道就是死刑：
+  # 空闲 60s → Inactivity timeout → SIGUSR1 → Restart pause 300s → 再连，
+  # 每 360s 一个循环。实测某段空闲期 4 小时内 47 次重启、间隔精确 360s，
+  # 即那段空闲期里隧道只有约 1/6 时间在线（解题期间有流量压着计时器，
+  # 不受影响；受害的是等待/空闲窗口，而 VPN 看门狗恰好在这些窗口跑）。
+  # --ping 10 只保证「我发」，服务端不回包时空闲隧道照样被判死，故放宽到 600s。
+  ovpn_args+=(--ping 10 --ping-restart "${ADAPTER_VPN_PING_RESTART:-600}")
 
   openvpn "${ovpn_args[@]}" || { echo "[adapter] FATAL: openvpn failed" >&2; exit 1; }
 

@@ -1,202 +1,96 @@
-# TSecBench
+# TSecBench Agent 舰队
 
-TSecBench is a FastAPI service for authenticated challenge-task lifecycle management. It lists challenges, starts and closes challenge instances, provides optional hints, and records flag submissions. Task, challenge, container, and submission state is persisted in SQLite.
+这个仓库保留三个当前可部署组件：
 
-TSecBench 是一个用于管理认证挑战任务生命周期的 FastAPI 服务，支持列出题目、启动和关闭题目实例、获取可选提示以及提交 flag。任务、题目、容器和提交状态均持久化到 SQLite。
+- `worker-1`：舰队监控与 OpenVPN 网络命名空间提供者。
+- `worker-2` / `worker-3`：两个同质解题 worker，共享 `worker-1` 的网络。
+- `fastapi-console`：本机 Web 控制台，用于查看舰队、任务和运行产物。
 
-The repository also contains a separate Kali headless workspace for challenge operations. The Kali container is not the API server; run the FastAPI application separately.
+`tsecbench/` 是可独立测试的本地题目 API 核心；三舰队的生产入口是 `entrypoint.sh` 和 `drivers/benchmark_driver.py`。
 
-仓库还包含一个用于挑战操作的独立 Kali 无头工作区。Kali 容器不是 API 服务，需要单独运行 FastAPI 应用。
+## 准备
 
-## Requirements / 环境要求
-
-- Python 3.10 or newer. No Python version is pinned in repository metadata.
-- Python 3.10 或更高版本。仓库元数据未固定 Python 版本。
-- Docker and Docker Compose v2 for the Kali workspace.
-- Kali 工作区需要 Docker 和 Docker Compose v2。
-- Docker CLI is required only when using the Docker challenge provisioner.
-- 只有使用 Docker 题目配置器时才需要 Docker CLI。
-
-## Quick start / 快速开始
-
-### 1. Create a virtual environment / 创建虚拟环境
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements-dev.txt
-```
-
-### 2. Configure benchmark settings / 配置跑分参数
-
-Copy the safe template and replace the placeholder with the token issued for your benchmark task.
-
-复制安全模板，并将占位符替换为跑分任务下发的 token。
+1. 确保已安装 Docker 和 Docker Compose v2。
+2. 复制配置模板，只在本机 `.env` 中填写实际凭据：
 
 ```bash
 cp .env.example .env
 ```
 
-The root `.env` should contain task-specific values:
+3. 将 OpenVPN 配置放到 `vpn/client.ovpn`。`vpn/`、`.env`、`work/` 和 `data/` 都不会进入 Git 或镜像构建上下文。
 
-根目录 `.env` 应包含当前任务的配置：
+## 构建与部署
 
-```dotenv
-BENCHMARK_BASE_URL=https://tsecbench.zc.tencent.com
-BENCHMARK_TOKEN=your-task-issued-token
-```
-
-`.env` is ignored by Git. Never commit it or print the token. Process environment variables take precedence over values loaded from `.env`.
-
-`.env` 已被 Git 排除。不要提交或打印其中的 token。进程环境变量优先于 `.env` 中加载的值。
-
-### 3. Supply a task catalog / 提供题目任务目录
-
-Point the service at a JSON task catalog when challenges should be seeded at startup:
-
-如果需要在启动时初始化题目，请将服务指向 JSON 任务目录：
-
-```bash
-export TSECBENCH_CONFIG=/absolute/path/to/tasks.json
-```
-
-The loader accepts a single task object, a task array, or an object containing `tasks`. Each task contains a `token` and a `challenges` array. A challenge may define `unique_code`, `description`, `difficulty`, `level`, `total_score`, `flags`, and `container_addr`; Docker-backed challenges may also define `image`, `container_port`, and `docker_network`. `TSECBENCH_TASKS_JSON` is the inline-JSON alternative.
-
-加载器支持单个任务对象、任务数组或包含 `tasks` 的对象。每个任务包含 `token` 和 `challenges` 数组。题目可定义 `unique_code`、`description`、`difficulty`、`level`、`total_score`、`flags` 和 `container_addr`；Docker 题目还可以定义 `image`、`container_port` 和 `docker_network`。`TSECBENCH_TASKS_JSON` 可用于传入内联 JSON。
-
-If no catalog is configured, a token-only task is created, but it contains no challenges to list.
-
-如果未配置任务目录，服务会创建一个仅含 token 的任务，但其中没有可列出的题目。
-
-### 4. Start the API / 启动 API
-
-```bash
-python main.py
-```
-
-Or run the exported ASGI application with Uvicorn:
-
-也可以使用 Uvicorn 运行导出的 ASGI 应用：
-
-```bash
-uvicorn main:app --host 127.0.0.1 --port 8000
-```
-
-`main.py` initializes configuration, the SQLite database, and task state while importing `main:app`. Set configuration before starting the process.
-
-导入 `main:app` 时，`main.py` 会初始化配置、SQLite 数据库和任务状态。启动进程前请先完成配置。
-
-## Configuration reference / 配置参考
-
-`Settings.from_env()` loads the repository-root `.env` when it exists, without overriding variables already exported by the shell.
-
-当根目录存在 `.env` 时，`Settings.from_env()` 会加载它，但不会覆盖 shell 中已经导出的变量。
-
-| Variable / 变量 | Default / 默认值 | Purpose / 用途 |
-|---|---|---|
-| `BENCHMARK_BASE_URL` | unset | Benchmark platform base URL exposed through runtime settings / 通过运行时设置提供的跑分平台基础 URL |
-| `BENCHMARK_TOKEN` | unset | Task token used for task loading and request authentication / 用于加载任务和请求认证的任务 token |
-| `TSECBENCH_CONFIG` | unset | Path to a JSON task catalog / JSON 任务目录路径 |
-| `TSECBENCH_TASKS_JSON` | unset | Inline JSON task catalog / 内联 JSON 任务目录 |
-| `TSECBENCH_DB_PATH` | `./data/tsecbench.sqlite3` | SQLite database path / SQLite 数据库路径 |
-| `TSECBENCH_DATABASE` | fallback only | Legacy database variable used when `TSECBENCH_DB_PATH` is unset / 当 `TSECBENCH_DB_PATH` 未设置时使用的旧数据库变量 |
-| `TSECBENCH_MAX_ACTIVE_CHALLENGES` | `3` | Maximum simultaneous active challenges; must be at least 1 / 同时激活的题目上限，必须至少为 1 |
-| `TSECBENCH_PROVISIONER` | `static` | Provisioner mode: `static` or `docker` / 配置器模式：`static` 或 `docker` |
-| `HOST` | `0.0.0.0` | Host used by `python main.py` / `python main.py` 使用的监听地址 |
-| `PORT` | `8000` | Port used by `python main.py`; valid range is 1–65535 / `python main.py` 使用的端口，有效范围为 1–65535 |
-
-## Challenges API / 题目 API
-
-All challenge routes are under `/openapi/v1/challenges` and require the task-issued `BENCHMARK_TOKEN` header.
-
-所有题目接口都位于 `/openapi/v1/challenges` 下，并要求在请求头中携带任务下发的 `BENCHMARK_TOKEN`：
-
-```bash
-curl \
-  -H 'BENCHMARK_TOKEN: your-task-issued-token' \
-  http://127.0.0.1:8000/openapi/v1/challenges
-```
-
-The normal workflow is:
-
-标准调用流程如下：
-
-1. `GET /openapi/v1/challenges` to list challenges and progress. / 使用该接口列出题目和作答进度。
-2. `POST /openapi/v1/challenges/start?unique_code=<code>` to start a challenge and obtain `container_addr`. / 启动题目并获取 `container_addr`。
-3. Connect to the challenge address through the required SSLVPN. / 通过要求的 SSLVPN 连接题目地址。
-4. Optionally call `GET /openapi/v1/challenges/hint?unique_code=<code>`; hints reduce later scores. / 可选调用提示接口；提示会降低后续得分。
-5. Submit each flag with `POST /openapi/v1/challenges/submit`. / 使用提交接口逐个提交 flag。
-6. Call `POST /openapi/v1/challenges/close?unique_code=<code>` to release resources. / 调用关闭接口释放资源。
-
-At most three challenges are active by default. Re-submitting a correct flag returns `duplicate`; expired or stopped tasks return `invalid_state`; missing or invalid tokens return `task_not_found`.
-
-默认最多同时激活三道题目。重复提交正确 flag 会返回 `duplicate`；过期或已停止的任务返回 `invalid_state`；缺失或无效 token 返回 `task_not_found`。
-
-See [`CHALLENGES_API.md`](CHALLENGES_API.md) for complete request/response and error contracts.
-
-完整的请求、响应和错误约定请参阅 [`CHALLENGES_API.md`](CHALLENGES_API.md)。
-
-## Kali workspace / Kali 工作区
-
-The Compose service builds and runs an interactive Kali headless container with the persistent `kali-data` volume mounted at `/workspace`.
-
-Compose 服务会构建并运行交互式 Kali 无头容器，并将持久化卷 `kali-data` 挂载到 `/workspace`。
+首次部署：
 
 ```bash
 docker compose build
 docker compose up -d
 docker compose ps
-docker compose exec -it kali bash
 ```
 
-Stop or restart without deleting the volume:
-
-停止或重启时不要删除数据卷：
+三台 worker 全量滚动重建时，先停掉共享旧网络的解题 worker，再替换 `worker-1`：
 
 ```bash
-docker compose stop
-docker compose start
+docker compose stop worker-2 worker-3
+docker compose up -d --force-recreate --no-deps worker-1
+until [ "$(docker inspect -f '{{.State.Health.Status}}' tsecbench-worker-1)" = healthy ]; do sleep 5; done
+docker compose up -d --force-recreate --no-deps worker-2 worker-3
+docker compose ps
 ```
 
-Rebuild and start in one step:
+不要执行 `docker compose down -v`；它会删除持久化数据。
 
-重新构建并启动：
+## 运行检查
 
 ```bash
-docker compose up -d --build
+docker compose ps
+docker compose logs --tail 100 worker-1 worker-2 worker-3
+docker exec tsecbench-worker-1 ip addr show tun0
+cat work/status/worker-*.json
 ```
 
-The Compose file does not publish an API port, inject benchmark environment variables, or start Uvicorn. Do not run `docker compose down -v`; it deletes the persistent volume.
+没有待解题目时，worker 以配置的轮询间隔进入 `await-task`，不应持续占用 CPU。
 
-Compose 文件不会发布 API 端口、注入跑分环境变量或启动 Uvicorn。不要执行 `docker compose down -v`，该命令会删除持久化卷。
-
-## Development and testing / 开发与测试
-
-Run the current test suite from the repository root:
-
-在仓库根目录运行当前测试套件：
+## Web 控制台
 
 ```bash
-python -m pytest -q
+python -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt -r fastapi-console/requirements.txt
+bash fastapi-console/run.sh start
 ```
 
-Tests use pytest and FastAPI `TestClient`. Endpoint tests create isolated SQLite databases with `tmp_path`; settings tests use temporary dotenv files and `monkeypatch`. Coverage includes authentication, challenge lifecycle, scoring, duplicate submissions, validation, resource limits, expiry, restart persistence, dotenv loading, and environment precedence.
+默认地址为 `http://127.0.0.1:8003`。重启控制台：
 
-测试使用 pytest 和 FastAPI `TestClient`。接口测试通过 `tmp_path` 创建隔离的 SQLite 数据库；设置测试使用临时 dotenv 文件和 `monkeypatch`。覆盖内容包括认证、题目生命周期、计分、重复提交、参数校验、资源限制、过期任务、重启持久化、dotenv 加载和环境变量优先级。
+```bash
+bash fastapi-console/run.sh stop
+bash fastapi-console/run.sh start
+```
 
-There is no configured linter, formatter, coverage threshold, Makefile, lockfile, or CI workflow. Keep changes focused and add behavior tests for new observable contracts.
+## 本地题目 API
 
-仓库未配置 linter、formatter、覆盖率阈值、Makefile、锁文件或 CI 工作流。请保持改动聚焦，并为新的可观测行为增加测试。
+如需单独启动 `tsecbench/` 的测试 API：
 
-## Project layout / 项目结构
+```bash
+.venv/bin/python -m uvicorn 'tsecbench.api:create_app' --factory --host 127.0.0.1 --port 8000
+```
 
-- `main.py` — ASGI application export and direct Uvicorn runner / ASGI 应用导出和直接 Uvicorn 启动入口。
-- `tsecbench/api.py` — FastAPI factory, routes, request/response models, and exception handlers / FastAPI 工厂、路由、请求响应模型和异常处理器。
-- `tsecbench/config.py` — environment loading, validation, and task catalog loading / 环境加载、校验和任务目录加载。
-- `tsecbench/models.py` — task/challenge/flag normalization and scoring helpers / 任务、题目、flag 规范化和计分辅助函数。
-- `tsecbench/service.py` — authenticated business rules and lifecycle transitions / 认证业务规则和生命周期状态转换。
-- `tsecbench/store.py` — SQLite schema, transactions, persistence, and startup recovery / SQLite 模式、事务、持久化和启动恢复。
-- `tsecbench/provisioner.py` — static and Docker challenge provisioning / static 和 Docker 题目配置器。
-- `tests/test_challenges_api.py` — endpoint and settings behavior tests / 接口和设置行为测试。
-- `.env.example` — safe configuration template; copy to local `.env` / 安全配置模板，复制为本地 `.env`。
-- `Dockerfile` and `docker-compose.yaml` — Kali workspace image and lifecycle / Kali 工作区镜像和生命周期配置。
+完整接口规约见 [CHALLENGES_API.md](CHALLENGES_API.md)。
+
+## 验证
+
+```bash
+.venv/bin/python -m pytest -q
+docker compose config -q
+```
+
+解题链路的回归测试位于 `tests/test_solver_regressions.py`，本地题目 API 测试位于 `tests/test_challenges_api.py`。
+
+## 主要目录
+
+- `adapter/`：调度、求解、验证、止损和运行观测。
+- `drivers/`：三舰队运行入口。
+- `skills/`：按题型注入的解题技能。
+- `fastapi-console/`：现用 Web 控制台。
+- `tsecbench/`：本地题目 API 和持久化实现。
+- `work/`：运行产物，不进镜像和 Git。

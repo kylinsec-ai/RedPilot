@@ -1,3 +1,5 @@
 # TsecBench 平台接入层适配器 - Python 依赖
-# 注: kali-headless 镜像已自带 requests/httpx/pyyaml/dotenv
+# 基础镜像不作为运行时依赖来源；开发、CI 与重建镜像均从这里安装。
 openai>=1.30.0,<2.0.0
+requests>=2.31,<3
+python-dotenv>=1.0,<2

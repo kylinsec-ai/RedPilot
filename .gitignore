@@ -1,15 +1,24 @@
-.agent.env
+# ── 敏感配置（绝不提交）──
 .env
+.agent.env
+*.env.local
+vpn/
+
+# ── 运行产物 / 数据 ──
+work/
+data/
+*.log
+backend.log
+frontend.log
+fastapi.log
+watchdog.log
+django_console.sqlite3
+
+# ── Python ──
 __pycache__/
 *.py[cod]
-.pytest_cache/
 .venv/
-data/
-*.sqlite3
-*.sqlite3-shm
-*.sqlite3-wal
-tsecbench-frontend/node_modules/
-tsecbench-frontend/dist/
+.pytest_cache/
 
 # ── 系统 ──
 .DS_Store
@@ -21,3 +30,9 @@ dist/
 
 # 遗留监控产物（supervisor.py 已删除）
 supervisor_report.txt
+
+# ── 分叉归档 1.zip(含活凭据)与跨分支残留 —— 绝不入库 ──
+1.zip
+*.zip
+TsecBench-main/
+bin/

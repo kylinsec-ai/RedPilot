@@ -3,7 +3,7 @@
 带来源标注的事实存储与查询，支持 ATT&CK 目标链追踪。
 
 每条事实包含:
-- kind: 类别 (recon/credential/vuln/foothold/flag/network/service)
+- kind: 类别 (recon/credential/vuln/foothold/network/service)
 - content: 内容
 - source: 来源命令
 - confidence: 置信度
@@ -19,8 +19,6 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional
-
-from .solver.base import is_valid_flag
 
 log = logging.getLogger("adapter.blackboard")
 
@@ -94,7 +92,7 @@ def goals_for_category(category: str = "") -> list[Goal]:
 _IP_PORT_RX = re.compile(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):?(\d{1,5})?\b")
 _SERVICE_RX = re.compile(r"\b(http|ssh|ftp|mysql|redis|smtp|dns|smb|rdp|vnc|mssql|postgresql)\b", re.I)
 # 凭证线索（B14）：旧正则 \S+ 把 HTML 表单字段（login ==）、SQLi payload
-# （password='）、状态码（admin: 500）统统当凭证——实测 c-05 攒了 61 条
+# （password='）、状态码（admin: 500）统统当凭证——实测某题攒了 61 条
 # credential 事实，注入下一场的却是 "login ==; pass ==; admin ==; login: 500;
 # admin: 500"（actionable_assets 只取前 5 条，噪音把信号挤没）。
 # 收紧：值必须是 3~64 位的引号串或字母数字/常见符号串；分隔符只用空格/制表符
@@ -106,7 +104,7 @@ _CRED_RX = re.compile(
     re.I,
 )
 # 整条事实必须「键=值」到底（B14 复核）：_CRED_RX 是前缀匹配，旧数据里
-# "passwd: HTTPConnectionPool(host='10.0.190.241'," 会取到 HTTPConnectionPool
+# "passwd: HTTPConnectionPool(host='10.x.x.x'," 会取到 HTTPConnectionPool
 # 而通过判定。净化存量/收新事实时都要求全串匹配，尾部残留（括号/引号/换行）
 # 即判噪音。允许 markdown 加粗的尾部 **。
 _CRED_FULL_RX = re.compile(
@@ -161,9 +159,6 @@ def _cred_quality_ok(content: str) -> bool:
     quoted = bool(m.group(1) or m.group(2))
     val = next((g for g in m.groups() if g), "")
     return _cred_value_ok(val, quoted)
-
-
-_FLAG_RX = re.compile(r"flag\{[^}]{1,200}\}", re.I)
 
 
 class Blackboard:
@@ -262,12 +257,11 @@ class Blackboard:
                              confidence=0.6, iter=iter)):
                 added += 1
 
-        # Flag 候选
-        for m in _FLAG_RX.finditer(output):
-            if is_valid_flag(m.group(0)):
-                if self.add(Fact(kind="flag", content=m.group(0), source=source,
-                                 confidence=0.9, iter=iter)):
-                    added += 1
+        # Flag candidates deliberately do not enter the blackboard.  Until the
+        # platform confirms them, they belong exclusively to the delivery
+        # evidence ledger.  Persisting them here lets a repeated local read
+        # look like a new fact after redaction/reload and can keep a stalled
+        # challenge alive indefinitely.
 
         return added
 
@@ -278,10 +272,30 @@ class Blackboard:
         return [f for f in self.facts if f.kind == kind]
 
     def next_open_goal(self) -> Optional[Goal]:
-        """返回下一个未完成的目标"""
+        """返回下一个未完成的目标。
+
+        目标链过去只检查 ``Goal.satisfied``，但驱动从未更新这个字段，
+        因此多段题每次 prompt 都被告知仍在做 recon。这里把已观察到的
+        客观事实作为只读推进信号（不把推断写成事实），同时保留显式
+        ``satisfied`` 的优先级；这样不会改变止损/提交判定，只纠正阶段提示。
+        """
+        kinds = {f.kind for f in self.facts}
+        network_count = sum(1 for f in self.facts if f.kind == "network")
         for g in self.goals:
-            if not g.satisfied:
-                return g
+            if g.satisfied:
+                continue
+            # 这些是最低限度的“已经看见”条件，不代表漏洞或 flag 已成立。
+            if g.id == "recon" and ("network" in kinds or "service" in kinds):
+                continue
+            if g.id == "analyze" and self.facts:
+                continue
+            if g.id == "foothold" and ("foothold" in kinds or "credential" in kinds):
+                continue
+            if g.id == "credential" and "credential" in kinds:
+                continue
+            if g.id == "lateral" and network_count >= 2:
+                continue
+            return g
         return None
 
     def actionable_assets(self) -> str:

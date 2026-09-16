@@ -55,12 +55,6 @@ store = SessionStore()
 SESSION_COOKIE = "fastapi_sessionid"
 
 
-def get_session(request) -> dict[str, Any]:
-    """从请求取会话 dict（FastAPI 依赖注入使用）。"""
-    session = request.state.session
-    return session
-
-
 class SessionMiddleware:
     """Starlette 中间件：读取/创建会话，保存到 request.state.session。"""
 

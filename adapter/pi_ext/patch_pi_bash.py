@@ -10,6 +10,11 @@ if "TsecBench 框架护栏" in src:
 
 anchor1 = "export function createLocalBashOperations(options) {"
 inject1 = '''// ── TsecBench 框架护栏: 单场重复命令短路 + 实时写 tried_commands.md ──
+// B28: 本模块是 ESM（package.json "type":"module"，Node 20 无 process.getBuiltinModule），
+// 原先在函数里 require("node:fs") 会抛 ReferenceError 并被 catch 吞掉 —— 实时落盘
+// 一次都没成功过。改为顶层 import（两个别名不与本文件既有绑定冲突）。
+import { appendFileSync as _bgAppendFile } from "node:fs";
+import { join as _bgJoin } from "node:path";
 const _bgRepeatLimit = Number(process.env.PI_BASH_REPEAT_LIMIT || 3);
 const _bgSeen = new Map();
 function _bgNorm(cmd) {
@@ -30,8 +35,7 @@ function _bgMaybeShortCircuit(cmd, cwd) {
   } else {
     _bgSeen.set(key, { count: 1, firstOut: "" });
     try {
-      const _fs = require("node:fs"), _path = require("node:path");
-      if (cwd) _fs.appendFileSync(_path.join(cwd, "tried_commands.md"), "$ " + key + "\\n", "utf8");
+      if (cwd) _bgAppendFile(_bgJoin(cwd, "tried_commands.md"), "$ " + key + "\\n", "utf8");
     } catch (_) {}
   }
   return null;
@@ -68,4 +72,4 @@ assert src.count(old3) == 1, f"old3={src.count(old3)}"
 src = src.replace(old3, new3, 1)
 
 open(p, "w", encoding="utf-8").write(src)
-print("v2b patch OK")
+print("v2c patch OK (ESM imports)")

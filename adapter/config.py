@@ -9,8 +9,13 @@
 
 from __future__ import annotations
 
+import datetime
+import logging
 import os
+import re
 from dataclasses import dataclass, field
+
+log = logging.getLogger(__name__)
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -98,12 +103,14 @@ class SolverConfig:
         key = (_env("ANTHROPIC_AUTH_TOKEN")
                or _env("ANTHROPIC_API_KEY")
                or _env("SOLVER_API_KEY") or "")
+        model = (_env("ANTHROPIC_MODEL")
+                 or _env("SOLVER_MODEL", preset["model"]) or preset["model"])
+        check_model_expiry(model)
         return cls(
             provider=provider,
             base_url=base.rstrip("/"),
             api_key=key,
-            model=(_env("ANTHROPIC_MODEL")
-                   or _env("SOLVER_MODEL", preset["model"]) or preset["model"]),
+            model=model,
             small_fast_model=_env("SOLVER_SMALL_FAST_MODEL", preset["small_fast_model"]) or preset["small_fast_model"],
             max_turns=int(_env("SOLVER_MAX_TURNS", "60") or "60"),
             session_seconds=int(_env("SOLVER_SESSION_SECONDS", "1500") or "1500"),
@@ -113,6 +120,47 @@ class SolverConfig:
             auto_compact_window=_env("SOLVER_AUTO_COMPACT_WINDOW", preset.get("auto_compact_window", "")) or "",
             api_timeout_ms=_env("SOLVER_API_TIMEOUT_MS", preset.get("api_timeout_ms", "")) or "",
         )
+
+
+
+# ── 模型到期检查 ──────────────────────────────────────────────
+# 模型名里带 expires-on-MMDD（如 deepseek-v4.1-flash-expires-on-0910）。
+# 平台会按日轮换模型，到期后调用全部失败，而 fleet 处于 await-task 轮询时
+# 没有会话在跑、不会报错 —— 必须在启动时把它喊出来。
+_MODEL_EXPIRY_RX = re.compile(r"expires?-on-(\d{2})(\d{2})", re.I)
+
+
+def check_model_expiry(model: str) -> None:
+    """模型名含 expires-on-MMDD 时按剩余天数告警；无该后缀则静默。"""
+    m = _MODEL_EXPIRY_RX.search(model or "")
+    if not m:
+        return
+    today = datetime.date.today()
+    try:
+        exp = datetime.date(today.year, int(m.group(1)), int(m.group(2)))
+    except ValueError:
+        return
+    # B31：模型名只带 MMDD，不带年份。12 月看到 01 月、1 月看到 12 月会解析成
+    # 同年 → 得到 ±300 多天的假差值（12 月底把"次年 1 月 5 日"报成"今年已过期"，
+    # 触发一次没必要的换模型）。按最近的一个该月日来定年份。
+    if (exp - today).days < -180:
+        exp = datetime.date(today.year + 1, exp.month, exp.day)
+    elif (exp - today).days > 180:
+        exp = datetime.date(today.year - 1, exp.month, exp.day)
+    days = (exp - today).days
+    if days > 0:
+        if days <= 3:
+            log.warning("模型 %s 还有 %d 天到期（%s）—— 请提前在 :8003 控制台更换",
+                        model, days, exp.isoformat())
+        return
+    # B39：日期过了**不等于**模型会失效 —— 名字里的 expires-on-MMDD 只是平台命名
+    # 约定，不构成硬约束（实测 ...expires-on-0910 在"到期日"当天仍正常服务，用户
+    # 已确认不会到期）。原实现在这里打 ERROR「请立刻换模型；否则所有会话都会失败」，
+    # 那是一句**事实错误**的断言，而且每启动一次喊一次、永久刷屏 —— 真出问题时
+    # 会被它淹没。日期已过却没有会话失败，恰恰说明该后缀不生效，降为 INFO 陈述
+    # 事实即可；模型真失效的话，会话本身会大声报错，不需要这里替它喊。
+    log.info("模型 %s 名字里的到期日 %s 已过 %d 天；该后缀非硬约束，"
+             "若会话正常则无需处理", model, exp.isoformat(), -days)
 
 
 # ── LLM (验证器) 配置 ────────────────────────────────────────
@@ -139,7 +187,9 @@ class LLMConfig:
     thinking: bool = True
     reasoning_effort: str = "high"
     fast_model: str = ""
-    empty_retries: int = 2
+    # [B47c] 判断 Agent 专用（唯一消费者是 benchmark_driver 的 verifier）。
+    # 2→4：实测模型会连续返回空响应，三次全空时判断 Agent 无意见、闸门静默消失。
+    empty_retries: int = 4
     max_tokens_fast: int = 3072
 
     def is_usable(self) -> bool:
@@ -162,13 +212,19 @@ def build_verifier_config(solver: SolverConfig) -> LLMConfig:
         api_key=(_env("LLM_API_KEY") or solver.api_key or ""),
         model=_env("LLM_MODEL") or preset["model"],
         temperature=float(_env("LLM_TEMPERATURE", "0.3") or "0.3"),
-        max_tokens=int(_env("LLM_MAX_TOKENS", "1024") or "1024"),
+        # [B53] 1024→4096。判断 Agent 目前显式传 4096，这一行是**兜底**：
+        # `_max = max_tokens or self.cfg.max_tokens`，哪天显式参数被去掉，
+        # 1024 会把「思维链吃光预算→正文永远为空」原样复现。
+        max_tokens=int(_env("LLM_MAX_TOKENS", "4096") or "4096"),
         timeout=int(_env("LLM_TIMEOUT", "120") or "120"),
         min_interval=float(_env("LLM_MIN_INTERVAL", "0") or "0"),
         thinking=(_env("LLM_THINKING", "0") == "1"),
         reasoning_effort=_env("LLM_REASONING_EFFORT", "low") or "low",
         max_tokens_fast=int(_env("LLM_MAX_TOKENS_FAST", "1024") or "1024"),
-        empty_retries=int(_env("LLM_EMPTY_RETRIES", "2") or "2"),
+        # [B47c] 2→4（=最多 5 次尝试）。超时是套在一次 chat() 外层的 30s join，
+        # 实测每次约 3.2s，5 次最坏约 16s 仍在预算内；再大就有被 join 熔断
+        # 吃掉的风险，反而连已拿到的裁决都丢。
+        empty_retries=int(_env("LLM_EMPTY_RETRIES", "4") or "4"),
         fast_model=_env("LLM_FAST_MODEL", preset["model"]) or preset["model"],
     )
 

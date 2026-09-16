@@ -80,10 +80,14 @@ class SkillStore:
         (r"\b(?:445|139|135)\b", 1.5, "pentest"),
         # 关键词 → 技能映射
         (r"sql.?inject|xss|ssrf|csrf|lfi|rfi|upload|deseriali|webshell", 3.0, "web"),
+        # reverse: 纯静态逆向 / 自定义 VM / 字节码解释器（比 pwn 更匹配 .elf 逆向题）
+        (r"revers|逆向|disassembl|反汇编|bytecode|字节码|virtual.?machine|虚拟机|"
+         r"vm\b|deobfuscat|反混淆|unpack|脱壳|crackme|校验器|凭据输出|内部执行机制", 3.0, "reverse"),
+        (r"\.elf$|\.bin$|\.exe$", 2.0, "reverse"),
         (r"buffer.?overflow|format.?string|heap|stack|rop|ret2|shellcode|pwn", 3.0, "pwn"),
         (r"rsa|aes|des|cipher|encrypt|decrypt|hash|md5|sha|crypto", 3.0, "crypto"),
         (r"lateral|pivot|内网|横向|提权|privilege.?escal|credential|渗透", 3.0, "pentest"),
-        (r"forensic|memory.?dump|volatility|carv|stego|隐写|取证|流量", 3.0, "forensics"),
+        (r"forensic|memory.?dump|内存镜像|内存分析|镜像取证|volatility|carv|stego|隐写|取证|流量", 3.0, "forensics"),
         (r"aws|s3|iam|cloud|容器逃逸|metadata|云", 3.0, "cloud"),
         (r"bypass|evas|waf|antivirus|obfuscat|检测|规避|对抗", 3.0, "evasion"),
         # java-exploit: Java 生态应用利用（4.0 压过 web，Java 特征必进 top-2）

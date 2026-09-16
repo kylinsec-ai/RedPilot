@@ -54,8 +54,7 @@
         <div class="action-grid">
           <button class="action-button" id="btn-start"><span class="action-glyph" aria-hidden="true">→</span><span><b>启动容器</b><small>OPEN TARGET</small></span></button>
           <button class="action-button action-hint" id="btn-hint"><span class="action-glyph" aria-hidden="true">?</span><span><b>获取提示</b><small>会影响后续得分</small></span></button>
-          <button class="action-button action-ai" id="btn-round"><span class="action-glyph" aria-hidden="true">AI</span><span><b>AI 解题一轮</b><small>ONE ROUND</small></span></button>
-          <button class="action-button action-ai-strong" id="btn-auto"><span class="action-glyph" aria-hidden="true">✦</span><span><b>AI 自动通关</b><small>RUN TO COMPLETE</small></span></button>
+          <button class="action-button action-ai" id="btn-round"><span class="action-glyph" aria-hidden="true">AI</span><span><b>AI 生成解题计划</b><small>PLAN ONLY · 不会提交 FLAG</small></span></button>
           <button class="action-button action-danger" id="btn-close"><span class="action-glyph" aria-hidden="true">×</span><span><b>关闭容器</b><small>RELEASE RESOURCE</small></span></button>
         </div>
         <div class="manual-submit">
@@ -86,6 +85,19 @@
           <tbody id="history-body"></tbody>
         </table>
       </section>
+
+      <!-- [B61] 观察者之镜：只读。展示的是注入**下一场** prompt 的那张图本身 -->
+      <section class="panel mirror-panel" id="mirror-panel">
+        <div class="log-head">
+          <div><p class="eyebrow mono">OBSERVER / MIRROR</p><h2>观察者之镜</h2></div>
+          <span class="section-count mono" id="mirror-meta">—</span>
+        </div>
+        <p class="mirror-state" id="mirror-state">加载中…</p>
+        <div class="mirror-counts" id="mirror-counts" style="display:none"></div>
+        <pre class="mirror-body mono" id="mirror-body" style="display:none"></pre>
+        <div class="mirror-notes" id="mirror-notes"></div>
+        <div class="mirror-gone" id="mirror-gone"></div>
+      </section>
     </main>
 
     <aside class="panel log-panel">
@@ -112,17 +124,26 @@ const logBox = document.getElementById('run-log');
 const statusBadge = document.getElementById('status-badge');
 const statusNote = document.getElementById('status-note');
 
+// 本页原先**用了 esc() 却从没定义过它**（agent.html / dashboard.html 各有一份）。
+// 一旦有提交记录，renderHistory() 就会 ReferenceError。补上；观察者面板也用它。
+function esc(s) {
+  const div = document.createElement('div');
+  div.textContent = s == null ? '' : String(s);
+  return div.innerHTML;
+}
+
 function appendLog(log) {
   const empty = logBox.querySelector('.dim');
   if (empty) empty.remove();
-  logBox.insertAdjacentHTML('beforeend', logLine(log.time, log.type, log.text));
+  // 计划内容来自 LLM，永远按纯文本显示；不能让不可信输出成为 HTML。
+  logBox.insertAdjacentHTML('beforeend', logLine(esc(log.time), esc(log.type), esc(log.text)));
   logBox.scrollTop = logBox.scrollHeight;
 }
 
 function setBusy(busy, label) {
   STATE.busy = busy;
   document.getElementById('busy-state').textContent = busy ? (label || 'PROCESSING...') : '';
-  ['btn-start', 'btn-hint', 'btn-round', 'btn-auto', 'btn-close', 'btn-submit'].forEach(id => {
+  ['btn-start', 'btn-hint', 'btn-round', 'btn-close', 'btn-submit'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = busy;
   });
@@ -157,7 +178,6 @@ function renderState() {
   document.getElementById('btn-close').disabled = STATE.containerStatus !== 'available' || STATE.busy;
   document.getElementById('btn-hint').disabled = STATE.completed || STATE.hintViewed || STATE.busy;
   document.getElementById('btn-round').disabled = STATE.busy || STATE.completed;
-  document.getElementById('btn-auto').disabled = STATE.busy || STATE.completed;
   if (STATE.hintViewed) {
     const hintEl = document.getElementById('hint-panel');
     hintEl.style.display = 'flex';
@@ -253,30 +273,13 @@ document.getElementById('btn-hint').addEventListener('click', () => run(async ()
 }, '获取提示'));
 
 document.getElementById('btn-round').addEventListener('click', () => run(async () => {
-  setBusy(true, 'AI SOLVING...');
-  appendLog({ time: now(), type: 'info', text: '--- AI 解题一轮 ---' });
+  setBusy(true, 'AI PLANNING...');
+  appendLog({ time: now(), type: 'info', text: '--- AI 解题计划（不会自动提交 flag）---' });
   const res = await apiCall('/api/v1/ai/round', 'POST', { unique_code: CODE });
   (res.logs || []).forEach(appendLog);
-  if (res.candidates && res.candidates.length) {
-    (res.results || []).forEach(r => {
-      SUBMISSIONS.push({ flag: r.flag, correct: !!r.correct, awarded: r.awarded || 0 });
-      if (r.correct && !STATE.completed) {
-        STATE.correctCount = r.correct_flag_count;
-        STATE.score = r.cumulative_score;
-        if (r.correct_flag_count >= r.total_flag_count) STATE.completed = true;
-      }
-    });
-    renderHistory();
-  }
+  if (res.plan) appendLog({ time: now(), type: 'info', text: '解题计划:\n' + res.plan });
   await refresh();
-}, 'AI 解题'));
-
-document.getElementById('btn-auto').addEventListener('click', () => run(async () => {
-  setBusy(true, 'RUNNING...');
-  const res = await apiCall('/api/v1/ai/auto', 'POST', { unique_code: CODE });
-  (res.logs || []).forEach(appendLog);
-  await refresh();
-}, '自动通关'));
+}, 'AI 计划'));
 
 document.getElementById('btn-close').addEventListener('click', () => run(async () => {
   setBusy(true, 'CLOSING...');
@@ -295,9 +298,23 @@ document.getElementById('btn-submit').addEventListener('click', async () => {
     const res = await apiCall('/api/v1/challenges/submit', 'POST', { unique_code: CODE, flag });
     SUBMISSIONS.push({ flag, correct: res.correct, awarded: res.awarded });
     if (res.correct) {
-      STATE.correctCount = res.correct_flag_count;
+      const before = Number(STATE.correctCount || 0);
+      const reported = Number(res.correct_flag_count || 0);
       STATE.score = res.cumulative_score;
-      if (res.correct_flag_count >= res.total_flag_count) STATE.completed = true;
+      const expected = Math.max(1, Number(STATE.totalFlags || 1));
+      const reportedTotal = Number(res.total_flag_count || 0);
+      const total = Math.max(expected, reportedTotal);
+      if (reportedTotal > 0) {
+        STATE.correctCount = Math.max(before, reported);
+      } else if (expected === 1) {
+        STATE.correctCount = Math.max(before, 1);
+      } else {
+        STATE.correctCount = Math.min(expected, Math.max(before, reported) + 1);
+      }
+      const complete = reportedTotal > 0
+        ? reported >= total
+        : expected === 1 ? !!res.correct : STATE.correctCount >= expected;
+      if (complete) STATE.completed = true;
       appendLog({ time: now(), type: 'success', text: '√ 正确: ' + flag + ' (+' + res.awarded + ') 累计 ' + res.cumulative_score });
     } else {
       appendLog({ time: now(), type: 'error', text: '× 错误: ' + flag });
@@ -314,6 +331,102 @@ document.getElementById('manual-flag').addEventListener('keyup', e => {
   if (e.key === 'Enter') document.getElementById('btn-submit').click();
 });
 
+// ── 观察者之镜（B61）───────────────────────────────────────
+// 只读展示 work/<code>/.heimdall.json。服务端用 adapter.heimdall.render() 渲染，
+// 所以这里显示的就是主 Agent 当时收到的**同一张图**（打码处会显式标注）。
+// 抽成具名函数是为了能被 Node 自测直接调用（B60 的教训：埋在大函数里的逻辑测不到）。
+const MIRROR = { timer: null };
+
+function mirrorChip(label, n) {
+  return '<span class="mirror-chip"><b>' + label + '</b>' + (n || 0) + '</span>';
+}
+
+function renderMirror(d) {
+  const state = document.getElementById('mirror-state');
+  const counts = document.getElementById('mirror-counts');
+  const body = document.getElementById('mirror-body');
+  const notes = document.getElementById('mirror-notes');
+  const gone = document.getElementById('mirror-gone');
+  const meta = document.getElementById('mirror-meta');
+
+  counts.style.display = 'none';
+  counts.innerHTML = '';
+  body.style.display = 'none';
+  body.textContent = '';        // 永远走 textContent：那是 LLM 的输出，不能当 HTML
+  notes.innerHTML = '';
+  gone.innerHTML = '';
+
+  if (!d || !d.available) {
+    meta.textContent = '—';
+    state.className = 'mirror-state';
+    let why = (d && d.reason) || '观察者还没有为这道题出过图';
+    if (d && d.updated_text) why += '（最后一次观察 ' + d.updated_text + '）';
+    state.textContent = why;
+    return;
+  }
+
+  state.className = 'mirror-state dim';
+  state.textContent = '这是另一路 Agent 读主 Agent 的思考画出的镜子，注入下一场的 prompt；'
+    + '它只举镜子、不发指令，且每条都可能错。';
+  meta.textContent = '第 ' + d.session + ' 场' + (d.updated_text ? ' · ' + d.updated_text : '');
+
+  counts.innerHTML = mirrorChip('LOCK', d.counts.lock) + mirrorChip('DEAD', d.counts.dead)
+    + mirrorChip('ANGLES', d.counts.angles) + mirrorChip('POSTPONE', d.counts.postpone)
+    + mirrorChip('TENSION', d.tension_total);
+  counts.style.display = 'flex';
+
+  if (d.map_text) { body.textContent = d.map_text; body.style.display = 'block'; }
+
+  const n = [];
+  if (d.redacted > 0) {
+    n.push('<span class="mirror-warn">⚠ 已按合规口径打码 ' + d.redacted
+      + ' 处 —— 这不是主 Agent 原样看到的字面</span>');
+  }
+  const drops = Object.entries(d.dropped_by_cap || {});
+  const dtot = drops.reduce(function (a, kv) { return a + kv[1]; }, 0);
+  if (dtot > 0) {
+    n.push('<span class="mirror-note">另有 ' + dtot + ' 条超出每类显示上限，未进入注入正文（'
+      + drops.map(function (kv) { return kv[0] + ' ' + kv[1]; }).join('、') + '）</span>');
+  }
+  if (d.char_trimmed) {
+    n.push('<span class="mirror-note">注入正文另因字数预算被截断过（镜像不该抢占注意力）</span>');
+  }
+  notes.innerHTML = n.join('');
+
+  // 撤销与淡出措辞必须分开：撤销 = "这条错了"，淡出 = "这条没再被观察到"。
+  // 混在一起会让人把后者读成前者 —— 而误判死路正是观察者红线 2 要防的事。
+  let g = '';
+  if (d.retracted && d.retracted.length) {
+    g += '<div class="mirror-gone-block"><span class="eyebrow mono">曾标出但已撤销</span>'
+      + d.retracted.map(function (x) {
+          return '<div class="mirror-gone-item"><span class="mono">' + esc(x.id) + '</span> '
+            + esc(x.text) + (x.why ? ' <i>—— ' + esc(x.why) + '</i>' : '') + '</div>';
+        }).join('')
+      + '</div>';
+  }
+  if (d.faded && d.faded.length) {
+    g += '<div class="mirror-gone-block faded"><span class="eyebrow mono">已淡出（不一定是错的）</span>'
+      + d.faded.map(function (x) {
+          return '<div class="mirror-gone-item"><span class="mono">' + esc(x.id) + '</span> '
+            + esc(x.text) + '</div>';
+        }).join('')
+      + '</div>';
+  }
+  gone.innerHTML = g;
+}
+
+async function refreshMirror() {
+  try {
+    const res = await fetch('/api/v1/challenges/heimdall?unique_code=' + encodeURIComponent(CODE));
+    renderMirror(await res.json());
+  } catch (e) {
+    renderMirror({ available: false, reason: '观察者接口不可达：' + e.message });
+  }
+}
+
 refresh();
 REFRESH_TIMER = setInterval(refresh, 5000);
+// 图只在一场会话结束后才变（分钟级），刷新比主 refresh 慢一档就够
+refreshMirror();
+MIRROR.timer = setInterval(refreshMirror, 15000);
 {% endblock %}

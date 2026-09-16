@@ -28,6 +28,21 @@ def _parse_tags(v) -> list:
     return []
 
 
+def _parse_files(v) -> list:
+    """保留平台可选的本地材料元数据，不下载、不解析其内容。
+
+    ``files`` 不在当前 TSecBench HTTP 文档的必填响应字段中，因此缺失时
+    必须安静地退化为空列表。若某个平台确实在题目列表中提供它，保留字符串
+    文件名或字典元数据原样交给上层；上层只将其用于来源边界，绝不把 URL
+    或元数据当作下载指令。
+    """
+    if isinstance(v, (str, dict)):
+        return [v]
+    if isinstance(v, (list, tuple)):
+        return [item for item in v if isinstance(item, (str, dict))]
+    return []
+
+
 def _first_str(d: dict, *keys) -> str:
     """按序返回第一个非空字段值（兼容各平台字段命名差异）。"""
     for k in keys:
@@ -52,6 +67,8 @@ class Challenge:
     container_addr: list[str] = field(default_factory=list)
     category: str = ""          # 平台显式分类（平台不提供时靠 _infer_category 动态推断）
     tags: list[str] = field(default_factory=list)   # 平台携带的标签
+    # 可选的本地题材料元数据。仅保存平台已返回的文件名/描述，不触发下载。
+    files: list = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Challenge":
@@ -68,6 +85,7 @@ class Challenge:
             container_addr=d.get("container_addr") or [],
             category=_first_str(d, "category", "type", "challenge_type"),
             tags=_parse_tags(d.get("tags")),
+            files=_parse_files(d.get("files")),
         )
 
     @property

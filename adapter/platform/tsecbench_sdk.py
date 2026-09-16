@@ -13,6 +13,7 @@ from .base import (
     APIError, Challenge, ChallengeNotFound, CloseResult, DuplicateSubmit,
     HintResult, InvalidState, PlatformBackend, ResourceUnavailable,
     StartResult, SubmitResult, TaskNotFound, VpnCheckError, VpnCheckResult,
+    _parse_files,
 )
 
 log = logging.getLogger("adapter.platform.sdk")
@@ -98,6 +99,7 @@ class TSecBenchSDKBackend(PlatformBackend):
                 container_addr=list(getattr(c, "container_addr", []) or []),
                 category=getattr(c, "category", "") or getattr(c, "type", "") or "",
                 tags=list(getattr(c, "tags", []) or []),
+                files=_parse_files(getattr(c, "files", None)),
             )
             for c in items
         ]

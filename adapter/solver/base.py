@@ -17,6 +17,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+# [B55b] FLAG 文件候选口径的唯一来源 —— 与 driver 侧 _read_flag_file 共用，
+# 别再各写一套（B55 的根因就是两层口径漂移）。verify.py 是叶子模块，无循环依赖。
+from adapter.verify import flag_line_candidate
+
 log = logging.getLogger("adapter.solver")
 
 # flag 提取正则
@@ -38,16 +42,25 @@ def extract_flags(text: str) -> list[str]:
     """从文本中提取所有 flag{...} 格式的候选（过滤非法 body）"""
     if not text:
         return []
-    found = set()
+    # 提交顺序也属于解题流程：多 flag 题若使用 set，Python hash 随进程改变，
+    # 同一份工具输出会得到随机投递顺序。保留首现顺序，同时仍做精确去重。
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(candidate: str) -> None:
+        if candidate not in seen:
+            seen.add(candidate)
+            found.append(candidate)
+
     for m in _FLAG_RX.finditer(text):
         f = m.group(0)
         if is_valid_flag(f):
-            found.add(f)
+            _add(f)
     for m in _FINAL_ANSWER_RX.finditer(text):
         for fm in _FLAG_RX.finditer(m.group(1)):
             if is_valid_flag(fm.group(0)):
-                found.add(fm.group(0))
-    return list(found)
+                _add(fm.group(0))
+    return found
 
 
 # ── 续接块（B14）──────────────────────────────────────────────
@@ -126,7 +139,9 @@ class SolveResult:
     error: str = ""
     turns: int = 0
     duration_s: float = 0.0
+    termination_reason: str = ""  # completed / timeout / stalled / stopped / max_turns / error
     infra_blocked: bool = False
+    target_fault: bool = False   # B16：目标端口通但服务持续 5xx/后端崩溃
 
     @property
     def has_flags(self) -> bool:
@@ -161,7 +176,11 @@ class SolverBackend(ABC):
 
     @staticmethod
     def _read_flag_files(workdir: str, flags: list[str]) -> list[str]:
-        """从工作目录的标准 flag 文件补录候选"""
+        """从工作目录的标准 flag 文件补录候选。
+
+        [B55b] 判据统一走 `verify.flag_line_candidate`（信封 + 裸答案），
+        与 driver 侧 `_read_flag_file` 同一口径。
+        """
         for name in ("FLAG", "flag.txt", "FLAG.txt"):
             p = os.path.join(workdir, name)
             try:
@@ -169,9 +188,8 @@ class SolverBackend(ABC):
                     with open(p, encoding="utf-8", errors="ignore") as f:
                         for line in f:
                             v = line.strip()
-                            if v and "{" in v and v.endswith("}") and len(v) <= 200:
-                                if v not in flags:
-                                    flags.append(v)
+                            if flag_line_candidate(v) and v not in flags:
+                                flags.append(v)
             except Exception:
                 pass
         return flags

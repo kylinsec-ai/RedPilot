@@ -15,9 +15,43 @@ TSecBench 平台 HTTP 适配器
 
 from __future__ import annotations
 
+import logging
+import re as _re
 from typing import Optional
 
 import requests
+
+log = logging.getLogger(__name__)
+
+_FLAG_RX = _re.compile(r"flag\{[^}]{0,200}\}", _re.I)
+
+
+_SECRET_KEY_RX = _re.compile(r"token|secret|key|auth|passw|credential", _re.I)
+
+
+def _safe(v):
+    """回显打码 + 过滤敏感键：任何 flag{...}/疑似密钥一律折叠。"""
+    s = str(v)
+    if len(s) > 80:
+        s = s[:80] + "…"
+    return _FLAG_RX.sub("flag{<redacted>}", s)
+
+
+def _safe_body(d):
+    """只回显非敏感键的短值，用于记录平台判错原因等诊断信息。"""
+    out = {}
+    for k, v in d.items():
+        if not isinstance(k, str):
+            continue
+        if _SECRET_KEY_RX.search(k):
+            out[k] = "<redacted>"
+        elif isinstance(v, str):
+            out[k] = _safe(v)
+        elif isinstance(v, (bool, int, float)) or v is None:
+            out[k] = v
+        else:
+            out[k] = "<%s>" % type(v).__name__
+    return out
 
 from .base import (
     APIError, Challenge, ChallengeNotFound, CloseResult, DuplicateSubmit,
@@ -139,6 +173,7 @@ class TSecBenchHTTPBackend(PlatformBackend):
         if resp.status_code == 409:
             try:
                 body = resp.json()
+                log.info("submit 409 body: %s", _safe_body(body))
                 if body.get("code") == "duplicate":
                     return SubmitResult(correct=False, duplicate=True,
                                        error="duplicate")
@@ -146,6 +181,13 @@ class TSecBenchHTTPBackend(PlatformBackend):
                 pass
         self._handle_error(resp)
         d = resp.json()
+        # B24：把平台返回的原始字段记下来（此前只取 6 个字段，其余全丢）。
+        # 只记「键名 + 非 flag 的短字符串值」，用于事后判断平台有没有给出
+        # 判错原因等可用信息。
+        try:
+            log.info("submit resp: %s", _safe_body(d))
+        except Exception:
+            pass
         return SubmitResult(
             correct=d.get("correct", False),
             awarded=int(d.get("awarded", 0) or 0),

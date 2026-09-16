@@ -444,6 +444,9 @@ input:focus, select:focus { outline: none; border-color: var(--accent); backgrou
 .tr-turn .tr-kind { color: var(--text-dim); border-color: rgba(127,127,127,0.3); }
 .tr-out-hdr { margin-top: 4px; padding: 3px 12px; background: rgba(14,116,107,0.07); }
 .tr-out-hdr .tr-kind { color: var(--accent); border-color: rgba(14,116,107,0.35); background: var(--accent-soft); }
+/* [B60] 会话结束分隔行（agent_end 事件） */
+.tr-end { margin-top: 8px; padding: 3px 12px; border-top: 1px dashed var(--border-strong); color: var(--text-dim); font-weight: 600; }
+.tr-end .tr-kind { color: var(--text-dim); border-color: rgba(127,127,127,0.3); }
 
 /* ── transcript 面板独立布局（不再继承 log-panel/log-body）── */
 .tr-panel { min-width: 0; position: static; display: block; }
@@ -475,3 +478,27 @@ input:focus, select:focus { outline: none; border-color: var(--accent); backgrou
 .usage-note { margin: 10px 0 0; color: var(--text-dim); font-size: 11px; line-height: 1.6; }
 @media (max-width: 1180px) { .usage-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 @media (max-width: 720px) { .usage-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* [B59] 账号级 API 故障横幅（driver 写 work/.api_fault，恢复后自动撤）。
+   用 --warning 琥珀而非 --risk 红：这不是错误，是「在等外部条件恢复」。 */
+.api-fault { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; padding: 12px 15px; border: 1px solid rgba(168, 106, 18, 0.5); background: var(--warning-soft); border-radius: 10px; }
+.api-fault strong { flex: 0 0 auto; color: var(--warning); font-size: 12px; font-weight: 600; }
+.api-fault .dim { font-size: 12px; }
+.api-fault-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--warning); animation: api-fault-pulse 1.6s ease-in-out infinite; }
+@keyframes api-fault-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+/* ── 观察者之镜（B61）───────────────────────────────────── */
+.mirror-panel { display: grid; gap: 10px; }
+.mirror-state { margin: 0; color: var(--text); font-size: 12px; line-height: 1.7; }
+.mirror-counts { display: flex; flex-wrap: wrap; gap: 8px; }
+.mirror-chip { display: inline-flex; align-items: baseline; gap: 6px; border: 1px solid var(--border-strong); border-radius: 8px; padding: 4px 10px; font: 12px/1 var(--mono); color: var(--text); background: var(--panel-soft); }
+.mirror-chip b { color: var(--text-dim); font-weight: 400; font-size: 9px; letter-spacing: 0.1em; }
+.mirror-body { margin: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); color: var(--text); font-size: 12px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; max-height: 420px; overflow: auto; }
+.mirror-notes { display: grid; gap: 6px; }
+.mirror-warn { color: var(--warning); font-size: 11px; line-height: 1.6; }
+.mirror-note { color: var(--text-dim); font-size: 11px; line-height: 1.6; }
+.mirror-gone { display: grid; gap: 10px; }
+.mirror-gone-block { border-left: 2px solid var(--border-strong); padding-left: 10px; display: grid; gap: 4px; }
+.mirror-gone-block.faded { border-left-style: dashed; }
+.mirror-gone-item { font-size: 12px; color: var(--text-dim); line-height: 1.6; }
+.mirror-gone-item i { color: var(--text-faint); font-style: normal; }

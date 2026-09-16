@@ -23,16 +23,23 @@
 // 环境变量: PI_BASH_TIMEOUT_SECONDS(默认600), PI_BASH_MAX_FILE_MB(默认4096)。
 
 import { createBashTool } from "@earendil-works/pi-coding-agent";
+import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const MAX_SECONDS = parseInt(process.env.PI_BASH_TIMEOUT_SECONDS || "600", 10);
 const MAX_FILE_MB = parseInt(process.env.PI_BASH_MAX_FILE_MB || "4096", 10);
 const INNER_SHELL = process.env.PI_BASH_SHELL || "bash";
 const REPEAT_LIMIT = parseInt(process.env.PI_BASH_REPEAT_LIMIT || "3", 10);
 
-// 单场已执行命令 seen-set: key -> {count, firstOut}
-// 模块作用域 = 每 pi 进程 = 每场会话, 天然按场隔离(每次 solve 新 fork pi)。
+// 当前 Pi 进程已执行命令 seen-set: key -> {count, firstOut}；启动时再从
+// .bash_guard_state.json 恢复本题实例内的跨 session 计数。
 const seen = new Map();
 const SEEN_FILE = "tried_commands.md";
+// 跨 Pi session 的轻量命令账本。seen Map 本身每个 session 都会重置，
+// 只靠它无法阻止「上一场扫过、下一场又原样扫一遍」。账本只保存规范化命令
+// 的计数，不保存命令输出或 flag/凭据正文；题目收尾时由工作区清理一起删除。
+const STATE_FILE = ".bash_guard_state.json";
+const STATE_MAX_KEYS = 2000;
 let seenFileWarned = false;
 
 // 命令规范化: 折叠空白 + 去掉前置 "cd <workdir> && " + 去掉尾随 2>&1|head 噪音。
@@ -47,12 +54,49 @@ function normCmd(cmd) {
 // 把首见命令实时 append 到 cwd/tried_commands.md (与 driver 同格式 "$ cmd")。
 function persistSeen(cwd, key, cmd) {
   try {
-    const fs = require("fs");
-    const path = require("path");
-    const p = path.join(cwd, SEEN_FILE);
-    fs.appendFileSync(p, "$ " + key + "\n", "utf8");
+    const p = join(cwd, SEEN_FILE);
+    appendFileSync(p, "$ " + key + "\n", "utf8");
   } catch (e) {
     if (!seenFileWarned) { seenFileWarned = true; try { console.error("[bash-guard] persistSeen warn: " + e.message); } catch (_) {} }
+  }
+}
+
+function statePath(cwd) {
+  return join(cwd, STATE_FILE);
+}
+
+function loadPersistentSeen(cwd) {
+  try {
+    const p = statePath(cwd);
+    if (!existsSync(p)) return;
+    const data = JSON.parse(readFileSync(p, "utf8"));
+    if (!data || typeof data !== "object" || !data.commands) return;
+    for (const [key, value] of Object.entries(data.commands)) {
+      const count = Number(value?.count || 0);
+      if (key && Number.isFinite(count) && count > 0) {
+        seen.set(key, { count, firstOut: "" });
+      }
+    }
+  } catch (_) {
+    // 账本损坏只影响去重，不能阻断主解题链路。
+  }
+}
+
+function savePersistentSeen(cwd) {
+  try {
+    const entries = Array.from(seen.entries()).slice(-STATE_MAX_KEYS);
+    const commands = {};
+    for (const [key, value] of entries) {
+      commands[key] = {
+        count: Number(value?.count || 0),
+      };
+    }
+    const p = statePath(cwd);
+    const tmp = p + ".tmp";
+    writeFileSync(tmp, JSON.stringify({ version: 1, commands }), "utf8");
+    renameSync(tmp, p);
+  } catch (_) {
+    // 去重账本是优化项，写失败不能让 bash 工具失败。
   }
 }
 
@@ -78,6 +122,7 @@ function detectSelfRefRedirect(cmd) {
 
 export default function (pi) {
   const cwd = process.cwd();
+  loadPersistentSeen(cwd);
   const bashTool = createBashTool(cwd, {
     spawnHook: ({ command, cwd, env }) => {
       const cmd = (command || "").trim();
@@ -100,9 +145,11 @@ export default function (pi) {
           };
         }
         st.count += 1;
+        savePersistentSeen(cwd);
       } else {
         seen.set(key, { count: 1, firstOut: "" });
         persistSeen(cwd, key, cmd);
+        savePersistentSeen(cwd);
       }
 
       // 1) 自引用重定向拦截 (治本, 直接不执行)
@@ -139,6 +186,7 @@ export default function (pi) {
             if (s && !s.firstOut) {
               const txt = typeof out === "string" ? out : JSON.stringify(out || "");
               s.firstOut = String(txt).slice(0, 700);
+              savePersistentSeen(cwd);
             }
           }).catch(() => {});
         } else if (res) {
@@ -146,6 +194,7 @@ export default function (pi) {
           if (s && !s.firstOut) {
             const txt = typeof res === "string" ? res : JSON.stringify(res || "");
             s.firstOut = String(txt).slice(0, 700);
+            savePersistentSeen(cwd);
           }
         }
       } catch (_) {}

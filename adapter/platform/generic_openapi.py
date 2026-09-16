@@ -24,7 +24,7 @@ from .base import (
     APIError, Challenge, ChallengeNotFound, CloseResult, DuplicateSubmit,
     HintResult, InvalidState, PlatformBackend, ResourceUnavailable,
     StartResult, SubmitResult, TaskNotFound, VpnCheckError, VpnCheckResult,
-    _parse_tags,
+    _parse_files, _parse_tags,
 )
 
 log = logging.getLogger("adapter.platform.generic")
@@ -59,6 +59,9 @@ DEFAULT_SPEC = {
             "is_completed": "is_completed",
             "container_status": "container_status",
             "container_addr": "container_addr",
+            # Optional metadata only. Platforms using another field name can
+            # map it explicitly through their JSON spec.
+            "files": "files",
         },
     },
     "submit_fields": {                 # submit 请求体字段名
@@ -219,6 +222,7 @@ class GenericOpenAPIBackend(PlatformBackend):
                 category=_resolve(c, fields.get("category", "category"), "")
                          or _resolve(c, "type", "") or _resolve(c, "challenge_type", ""),
                 tags=_parse_tags(_resolve(c, fields.get("tags", "tags"), [])),
+                files=_parse_files(_resolve(c, fields.get("files", "files"), [])),
             ))
         return out
 
