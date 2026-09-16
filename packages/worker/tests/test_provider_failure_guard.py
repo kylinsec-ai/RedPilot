@@ -12,10 +12,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
-from ghost_worker.adapter.solver import create_solver
-from ghost_worker.adapter.solver.pi_agent import cleanup_instance_processes
 from ghost_worker.solver.base import SolveResult
 
 

@@ -34,18 +34,10 @@ vs `phase`、`session_started_at` vs `started_at`…），所以需要一层显�
 from __future__ import annotations
 
 import logging
-import os
-import time
 from typing import Any, Mapping
 
 from ghost_contracts.redact import summarize_args
-from ghost_contracts.text import (
-    ASSISTANT_PREVIEW_MAX,
-    ERROR_HEAD_MAX,
-    OUTPUT_TAIL_MAX,
-    head_text,
-    tail_text,
-)
+from ghost_contracts.text import ERROR_HEAD_MAX, OUTPUT_TAIL_MAX, head_text, tail_text
 
 log = logging.getLogger("ghost_worker.observability")
 
