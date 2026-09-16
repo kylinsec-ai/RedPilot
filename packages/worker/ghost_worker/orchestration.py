@@ -25,6 +25,20 @@ from ._sdk import (
     VpnCheckError,
 )
 
+# ── 策略层：朋友线合并进来的证据守门(adapter/ 是顶层包,见 Dockerfile 4b) ──
+# 缺包时**静默降级**为"平台 submit 即唯一闸门"(合并前的行为),绝不因策略层
+# 缺失而让求解挂掉。这条 fail-open 只针对"模块不存在",不针对判定结果。
+# ⚠ 曾经在这里多写了一个不存在的 `is_valid_flag`(它在 adapter/solver/base.py,
+#   不在 verify.py),ImportError 被下面的 except 吞掉 → 整层静默失效。降级
+#   必须是**响亮**的:留一条 warning,否则这类事故与"闸门通过了"无法区分。
+try:  # pragma: no cover - 环境相关
+    from adapter.verify import Claim, Verifier, flag_confidence
+except Exception as _policy_import_err:  # pragma: no cover
+    Claim = Verifier = flag_confidence = None  # type: ignore[assignment]
+    logging.getLogger("ghost_worker.orchestration").warning(
+        "策略层 adapter.verify 不可用(%s) — 回退为平台 submit 单闸门;证据校验关闭",
+        _policy_import_err)
+
 from ghost_contracts.paths import safe_code
 from ghost_contracts.text import (
     ASSISTANT_PREVIEW_MAX,
@@ -48,6 +62,28 @@ log = logging.getLogger("ghost_worker.orchestration")
 # 靶场生命周期常量/实现单源 target.py。
 PROVIDER_FAILURE_RETRIES = 2  # 0-turn+报错(provider 失败)的会话级重开次数
 
+# ── 证据闸门常量 ──────────────────────────────────────────────
+# 朋友侧原值:flag_confidence 的 grounded 门 + Verifier.verify。原样搬运,不调参 ——
+# 这些数字是他在真靶场上标定出来的(B47 的 0.50 强提门、B44 的裸 body 不算证据)。
+GROUNDED_SUBMIT_CONF = 0.50
+
+
+def _verifier() -> "Verifier | None":
+    """构造证据校验器。进程内单例(Verifier 无状态,构造一次即可)。
+
+    llm=None:朋友的 skeptic/followup 两道 LLM 门需要 LLM 客户端,
+    main 侧 worker 目前不持 LLM 依赖 → 只启用确定性 grounding 门。
+    这不是"关掉校验",而是启用其中最硬的一道(逐字出现在真实命令输出里,
+    且该命令自身不含候选 —— 排除 echo 自造)。
+    """
+    global _VERIFIER
+    if _VERIFIER is None and Verifier is not None:
+        _VERIFIER = Verifier(llm=None)
+    return _VERIFIER
+
+
+_VERIFIER = None
+
 
 class ProviderFailure(Exception):
     """provider 失败(0-turn 会话+报错)耗尽重试 — driver 据此计数熔断(exit 3)。
@@ -59,7 +95,8 @@ class ProviderFailure(Exception):
 
 
 __all__ = ["solve_one", "build_task", "_prioritize", "LiveReporter", "make_live_hooks",
-           "START_MAX_RETRIES", "CLOSE_RETRIES", "PROVIDER_FAILURE_RETRIES", "ProviderFailure"]
+           "START_MAX_RETRIES", "CLOSE_RETRIES", "PROVIDER_FAILURE_RETRIES", "ProviderFailure",
+           "GROUNDED_SUBMIT_CONF"]
 
 
 # ── 实时监视报告器(重推导 _live_set,单例改注入式) ────────────
@@ -275,11 +312,34 @@ async def solve_one(
         # 去重键用原文精确匹配(平台按原文哈希判分,大小写敏感;归一化键会误杀);
         # 仅在收到平台响应后标记(异常未触达平台的不标记,下一轮可重试);
         # 非法候选(含 prompt 占位符 flag{...})直接跳过。
+        #
+        # ── 证据闸门(朋友线合并) ──────────────────────────────────
+        # 在"平台提交"之前多一道确定性 grounding 门:候选必须逐字出现在本会话
+        # 真实工具输出里(flag_confidence 排除 echo/cat 自写后的那条口径)。
+        # 原委见 adapter/verify.py 头部:agent 自造的 flag 会进 FLAG 文件,
+        # 只靠平台判分会白耗提交机会并污染账簿。
+        # **fail-open**:策略层缺失 / 判定抛异常 → 退回"平台即唯一闸门",
+        # 宁多交一次也不因监控拖挂求解(与 hallucination.py 同一条安全性质)。
         for cand in result.flags:
             if not is_valid_flag(cand):
                 continue
             if cand in submitted.setdefault(code, set()):
                 continue
+            evidence_note = ""
+            if flag_confidence is not None:
+                try:
+                    claim = flag_confidence(cand, "", list(result.tool_outputs or []))
+                    if Verifier is not None:
+                        claim = _verifier().verify(claim)
+                    if not claim.verified and claim.grounded and claim.confidence >= GROUNDED_SUBMIT_CONF:
+                        evidence_note = f" [force-submit grounded conf={claim.confidence:.2f}]"
+                    elif not claim.verified:
+                        log.info("flag gate REJECT on %s (%s, conf=%.2f): %s",
+                                 code, claim.reject_reason or "?", claim.confidence, cand[:40])
+                        continue
+                except Exception:
+                    log.debug("flag gate unavailable on %s — falling back to platform-only",
+                              code, exc_info=True)
             _live_set(phase="submitting")
             try:
                 r = await client.submit_flag(code, cand)
@@ -294,8 +354,8 @@ async def solve_one(
                 continue
             submitted[code].add(cand)
             if r.correct:
-                log.info("FLAG CORRECT on %s: %s (+%d pts, cumulative %d)",
-                         code, cand[:40], r.awarded, r.cumulative_score)
+                log.info("FLAG CORRECT on %s: %s (+%d pts, cumulative %d)%s",
+                         code, cand[:40], r.awarded, r.cumulative_score, evidence_note)
                 accepted.append(cand)
                 if r.correct_flag_count >= r.total_flag_count:
                     log.info("solved %s (%d/%d flags)", code,
