@@ -1,12 +1,146 @@
 # ══════════════════════════════════════════════════════════
-# Ghost 平台编排 — 统一服务器 + 求解 worker
-# server = 控制面 + 观测平台统一服务(:8000)
-# worker = 常驻 Pi Agent 求解容器(VPN 持有者),串行刷题
-# legacy 模式仍可让 worker 经 BENCHMARK_BASE_URL 访问远端官方平台。
+# Ghost 平台编排 — 统一服务器 + 三容器 worker 舰队
+#
+# server    = 控制面 + 观测平台统一服务(:8000)
+# worker-1  = 舰队协调者：**只维持 VPN + 状态汇总 + 他管**，不做题
+# worker-2  = 解题 worker（复用 worker-1 的 netns，自己不起 VPN）
+# worker-3  = 解题 worker（同上）
+#
+# 为什么 VPN 由 worker-1 独占：一个靶场 VPN 只应有一条隧道。三个容器各起一条
+# 会互相抢路由；worker-2/3 用 `network_mode: service:worker-1` 直接复用它的
+# 网络命名空间，物理上共用一条隧道。代价是 worker-1 必须常驻 —— 它一停，
+# 另两个就断网（这条由 netns 看门狗兜底：worker-2/3 检测到被孤立会退出重启）。
+#
+# 为什么 worker-1 不做题：它是 netns 提供者，重启它会同时打断两个解题 worker。
+# 所以它的能力被架构限死为"只请求对方热重载"，见 ghost_worker/supervisor.py。
 # ══════════════════════════════════════════════════════════
 
+x-worker-build: &worker-build
+  context: .
+  dockerfile: Dockerfile
+
+x-worker-healthcheck: &worker-healthcheck
+  # 心跳文件由编排层 _beat() 每 30s 刷新（含会话进行中），所以"文件新鲜"
+  # 等价于"进程活着"。会话卡死由会话级看门狗重建，不影响心跳 —— 这是刻意的：
+  # 健康检查的语义是"进程存活"，不是"正在产出进展"。
+  test: ["CMD-SHELL", "test -f /tmp/driver_heartbeat && [ $(( $(date +%s) - $(stat -c %Y /tmp/driver_heartbeat) )) -lt ${WATCHDOG_MAX_IDLE_SECONDS:-300} ]"]
+  interval: 60s
+  timeout: 10s
+  retries: 3
+  start_period: 300s
+
+x-worker-volumes: &worker-volumes
+  - ./work:/work
+  - ./vpn:/vpn:ro
+  # 挂载宿主最新包源（免重建镜像；editable 安装指向 /opt/packages/*，热补丁即生效）
+  - ./packages/contracts:/opt/packages/contracts:ro
+  - ./packages/ghost:/opt/packages/ghost:ro
+  - ./packages/worker:/opt/packages/worker:ro
+  - ./tools:/opt/tools:ro
+  # pi skills 自动发现目录（~/.pi/agent/skills）：改 skill 内容免重建镜像，下一题即生效
+  - ./skills:/root/.pi/agent/skills:ro
+  - ./web:/app/web:ro
+
+# ── 三个 worker 共用的环境（凭据 / LLM / 观测 / 运行）──
+# 时间盒与止损参数**一律写死字面值**，不用 ${VAR:-default}：
+# .env 会被导出进进程环境，而进程环境优先于 compose 默认值 —— 写 ${} 会被
+# .env 里的同名键静默盖掉（朋友的现场证据：ADAPTER_USE_HINTS 实际=1 而
+# compose 默认=0）。字面值让容器配置与"谁启动的"无关、可复现。
+x-worker-env: &worker-env
+  TZ: Asia/Shanghai
+  # ── 平台凭据（跑分任务下发；monitor 也要，它用同一客户端做 VPN 预检）──
+  BENCHMARK_TOKEN: ${BENCHMARK_TOKEN:-}
+  BENCHMARK_BASE_URL: ${BENCHMARK_BASE_URL:-}
+  # ── LLM 凭据：pi 官方 provider env 名直通容器（仓库代码不读不改；
+  #    pi 解析顺序 auth.json > env；默认 provider: deepseek）──
+  DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+  OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
+  ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+  ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+  ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+  ADAPTER_PI_THINKING: ${ADAPTER_PI_THINKING:-}
+  # ── 平台接入方式：直连 HTTP（无第三方依赖）──
+  ADAPTER_PLATFORM: ${ADAPTER_PLATFORM:-tsecbench-http}
+  ADAPTER_PROVIDER: ${ADAPTER_PROVIDER:-deepseek}
+  ADAPTER_SOLVER_MODEL: ${SOLVER_MODEL:-}
+  ADAPTER_SKILLS_DIR: ${ADAPTER_SKILLS_DIR:-}
+  SOLVER_SESSION_SECONDS: ${SOLVER_SESSION_SECONDS:-1500}
+  SOLVER_TIMEOUT_MS: '300000'
+  SOLVER_GATEWAY: ${SOLVER_GATEWAY:-0}
+  PI_STALL_TIMEOUT: '900'
+  PI_BASH_TIMEOUT_SECONDS: ${PI_BASH_TIMEOUT_SECONDS:-600}
+  PI_BASH_MAX_FILE_MB: ${PI_BASH_MAX_FILE_MB:-4096}
+  ADAPTER_PI_EXTENSIONS: ${ADAPTER_PI_EXTENSIONS:-/app/adapter/pi_ext/bash_guard.js}
+  # ── 运行 ──
+  ADAPTER_WORKDIR: /work
+  ADAPTER_FLAG_FORMAT: ${ADAPTER_FLAG_FORMAT:-flag{...}}
+  ADAPTER_WORKER_COUNT: '3'
+  ADAPTER_MAX_CONCURRENCY: ${ADAPTER_MAX_CONCURRENCY:-3}
+  ADAPTER_WORKER_CONCURRENCY: ${ADAPTER_WORKER_CONCURRENCY:-1}
+  ADAPTER_OFFLINE_MODE: ${ADAPTER_OFFLINE_MODE:-1}
+  # ── 时间盒 / 止损（2026-09-11 定稿：简单 20 / 中等 30 / 困难 90 分钟）──
+  # ★单题**终身**预算必须一并抬到 5400：默认 4000s 会在第 66 分钟掐掉困难题，
+  #   只改时间盒不改这里，90 分钟是假的。
+  ADAPTER_TIMEBOX_EASY: '1200'
+  ADAPTER_TIMEBOX_MEDIUM: '1800'
+  ADAPTER_TIMEBOX_HARD: '5400'
+  ADAPTER_FIRSTPASS_FLOOR: '1200'
+  ADAPTER_FIRSTPASS_SWEEP: '24000'
+  ADAPTER_PER_CHALLENGE_SECONDS: '5400'
+  ADAPTER_ZERO_FLAG_CUTOFF: '3'
+  ADAPTER_MAX_SESSIONS: ${ADAPTER_MAX_SESSIONS:-8}
+  ADAPTER_DRY_FACTS_CUTOFF: ${ADAPTER_DRY_FACTS_CUTOFF:-3}
+  ADAPTER_KEEPALIVE_MAX: ${ADAPTER_KEEPALIVE_MAX:-2}
+  ADAPTER_USE_HINTS: ${ADAPTER_USE_HINTS:-0}
+  ADAPTER_ADAPTIVE_SESSION: ${ADAPTER_ADAPTIVE_SESSION:-1}
+  ADAPTER_SUBAGENT: ${ADAPTER_SUBAGENT:-1}
+  SKEPTIC_VOTES: ${SKEPTIC_VOTES:-1}
+  ADAPTER_TOTAL_SECONDS: ${ADAPTER_TOTAL_SECONDS:-21300}
+  ADAPTER_ROUND_TIMEBOXES: ${ADAPTER_ROUND_TIMEBOXES:-480,820,1500,2000}
+  # ── 多段内网题：保留同一 Pi 会话更久，先做一次平台提示复核再给探索窗口 ──
+  ADAPTER_MULTIFLAG_MAX_TURNS: '120'
+  ADAPTER_MULTIFLAG_HINT_REVIEW: '1'
+  ADAPTER_MULTIFLAG_POST_HINT_DRY_SESSIONS: '3'
+  # ── 全自动派发：轮询间隔 / 挂掉题重试冷却 / 每题最大自动重试 / API 退避 ──
+  ADAPTER_AUTO_POLL: ${ADAPTER_AUTO_POLL:-60}
+  ADAPTER_DROP_RETRY: ${ADAPTER_DROP_RETRY:-600}
+  ADAPTER_AUTO_MAX_RETRY: ${ADAPTER_AUTO_MAX_RETRY:-3}
+  ADAPTER_API_BACKOFF: ${ADAPTER_API_BACKOFF:-600}
+  # ── eager 提交（找到并写入 FLAG 后即时投递）与解出后延迟关靶场 ──
+  ADAPTER_EAGER_SUBMIT_INTERVAL: ${ADAPTER_EAGER_SUBMIT_INTERVAL:-3}
+  ADAPTER_CLOSE_GRACE_SECONDS: '30'
+  # ── 观察者（B61）：额外占一次 LLM 调用与最长 45s，只提供复盘不是求解主链，
+  #    默认关，明确设 1 才启用 ──
+  ADAPTER_HEIMDALL: ${ADAPTER_HEIMDALL:-0}
+  ADAPTER_HEIMDALL_TIMEOUT: ${ADAPTER_HEIMDALL_TIMEOUT:-45}
+  # ── 观测面 ──
+  OBSERVABILITY_WEB: /app/web
+  OBSERVABILITY_URL: ${OBSERVABILITY_URL:-http://server:8000}
+  OBSERVABILITY_TOKEN: ${OBSERVABILITY_TOKEN:-}
+  # 态势台监听：docker-proxy 经容器全网卡转发，故容器内绑 0.0.0.0；
+  # 宿主侧暴露面由 ports 段的 host_ip 单独收口（默认回环）。
+  STATUS_BIND: ${STATUS_BIND:-0.0.0.0}
+
+# ── 三个 worker 共用的引擎调优（restart / shm / init）──
+x-worker-runtime: &worker-runtime
+  image: ghost-adapter:latest
+  # restart 语义与编排层退出码契约对齐（见 ghost_worker/orchestrator.py 的 main）：
+  #   exit 0  任务终态 / 配置错（明示后停止）= 正常终止，不重启；
+  #   exit 86 协作式热重载（touch work/.reload.widN，收尾后自行退出）= 拉起换新码；
+  #   exit 4  VPN 层瞬断 / 事件循环卡死 = 拉起重试；
+  #   其余非零 = 意外崩溃，on-failure 拉起。
+  #   注意：on-failure 会重启一切非零退出 —— 配置错误绝不能用 1/2 退出
+  #   （unless-stopped 还会对 exit 0 无限重启，旧容器 25h 内 677 次循环的真因）。
+  restart: on-failure
+  shm_size: 2gb
+  stdin_open: true
+  tty: true
+  # Docker 提供的 init 回收孤儿孙进程：driver 作为 PID 1 时，长 Pi 会话会
+  # 积累 defunct（实测）。
+  init: true
+
 services:
-  # ── 统一服务器:控制面 + 观测平台 ──
+  # ── 统一服务器：控制面 + 观测平台 ──
   server:
     build:
       context: .
@@ -26,7 +160,7 @@ services:
       GHOST_DB_PATH: /app/data/ghost.sqlite3
       # Observability settings
       OBSERVABILITY_TOKEN: ${OBSERVABILITY_TOKEN:-}
-      # 读端凭据(态势台/runs/transcript)。读端返回明文 flag 与完整实录,不再匿名开放;
+      # 读端凭据（态势台/runs/transcript）。读端返回明文 flag 与完整实录，不再匿名开放；
       # 未设置则回落 OBSERVABILITY_TOKEN。注意本项**不转发给 worker** —— 让"能写遥测"
       # 不等于"能读答案"。
       OBSERVABILITY_READ_TOKEN: ${OBSERVABILITY_READ_TOKEN:-}
@@ -35,15 +169,15 @@ services:
       # Self-reference for canonical event outbox
       OBSERVABILITY_URL: ${OBSERVABILITY_URL:-http://localhost:8000}
     ports:
-      # 统一端口 8000 提供所有 API (控制面 + 观测)
-      # 宿主侧默认只绑回环;需要局域网访问时设置 SERVER_HOST_IP=0.0.0.0
+      # 统一端口 8000 提供所有 API（控制面 + 观测）
+      # 宿主侧默认只绑回环；需要局域网访问时设置 SERVER_HOST_IP=0.0.0.0
       - target: 8000
         host_ip: ${SERVER_HOST_IP:-127.0.0.1}
         published: ${SERVER_PORT:-8000}
     volumes:
       - ./data:/app/data
       - ./web:/app/web:ro
-      # 热补丁挂载(开发用):免重建镜像直接生效代码修改
+      # 热补丁挂载（开发用）：免重建镜像直接生效代码修改
       - ./packages/contracts:/opt/packages/contracts:ro
       - ./packages/ghost:/opt/packages/ghost:ro
     healthcheck:
@@ -53,94 +187,119 @@ services:
       retries: 3
       start_period: 10s
 
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ghost-adapter:latest
-    container_name: ghost-worker
-    # restart 语义与 driver/entrypoint 退出码契约对齐:
-    #   exit 0(任务完成/配置错误,driver 与 entrypoint 均以 0 明示)= 正常终止,不重启;
-    #   exit 3(API 瞬断)/exit 4(VPN 层)= 自动拉起;其余非零(意外崩溃)= on-failure 自动拉起。
-    #   注意:on-failure 会重启一切非零退出 —— 配置错误绝不能用 1/2 退出
-    #   (unless-stopped 还会对 exit 0 无限重启,旧容器 25h 内 677 次循环的真因)
-    restart: on-failure
-    shm_size: 2gb
-    stdin_open: true
-    tty: true
-    # ── Watchdog: driver 心跳超时自动重启 ──
-    healthcheck:
-      test: ["CMD-SHELL", "test -f /tmp/driver_heartbeat && [ $(( $(date +%s) - $(stat -c %Y /tmp/driver_heartbeat) )) -lt ${WATCHDOG_MAX_IDLE_SECONDS:-300} ]"]
-      interval: 60s
-      timeout: 10s
-      retries: 3
-      start_period: 300s
-    # ── VPN: 所有题目入口地址必须经 VPN 访问;唯一 worker 持有 tun ──
+  # ── worker-1：舰队协调者（VPN 持有者 + 监控 + 他管，不做题）──
+  worker-1:
+    <<: *worker-runtime
+    build: *worker-build
+    container_name: ghost-worker-1
+    profiles: ["fleet"]
+    healthcheck: *worker-healthcheck
+    # VPN：唯一持有 tun 的容器；worker-2/3 复用它的 netns
     cap_add:
       - NET_ADMIN
       - NET_RAW
     devices:
       - /dev/net/tun:/dev/net/tun
     environment:
-      # ── 平台凭据 (必填, 跑分任务下发) ──
-      BENCHMARK_TOKEN: ${BENCHMARK_TOKEN:-}
-      BENCHMARK_BASE_URL: ${BENCHMARK_BASE_URL:-}
-      # assignment 模式:Worker 只领取 job,控制面地址与服务凭据独立于题目 token
-      WORKER_MODE: ${WORKER_MODE:-legacy}
-      PLATFORM_URL: ${PLATFORM_URL:-http://server:8000}
-      PLATFORM_WORKER_TOKEN: ${PLATFORM_WORKER_TOKEN:-}
-      ASSIGNMENT_LEASE_SECONDS: ${ASSIGNMENT_LEASE_SECONDS:-300}
-      # ── LLM 凭据: pi 官方 provider env 名直通容器(仓库代码不读不改;
-      #    pi 解析顺序: auth.json > env;默认 provider: deepseek;
-      #    换 provider 在此加一行同名转发,env 名对照表见 README) ──
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
-      # ── 模型/会话 (SOLVER_MODEL 为完整 [provider/]model,缺省值见 adapter/config.py) ──
-      SOLVER_MODEL: ${SOLVER_MODEL:-}
-      SOLVER_SESSION_SECONDS: ${SOLVER_SESSION_SECONDS:-1500}
-      PI_STALL_TIMEOUT: ${PI_STALL_TIMEOUT:-480}
-      # ── 运行 ──
-      ADAPTER_WORKDIR: /work
-      ADAPTER_FLAG_FORMAT: ${ADAPTER_FLAG_FORMAT:-flag{...}}
-      # 本地态势台 SPA 目录(挂载的 web 构建产物)
-      OBSERVABILITY_WEB: /app/web
-      # ── 人读态势台（只读 :8080；STATUS_PORT=0 禁用求解器内服务，
-      #    但 0 不能出现在下方 ports 映射里（compose 校验直接失败，容器起不来），
-      #    禁用时请一并注释掉整个 ports 段）──
-      # STATUS_BIND 须为 0.0.0.0：docker-proxy 经容器全网卡地址转发；
-      #    宿主侧暴露面由 ports 段的 host_ip 单独收口（默认回环）
-      STATUS_PORT: ${STATUS_PORT:-8080}
-      STATUS_BIND: ${STATUS_BIND:-0.0.0.0}
-      WORKER_ID: ${WORKER_ID:-worker-1}
-      # ── 观测平台摄取(可选):compose 网络内以 service DNS 可达;
-      #    宿主直跑 driver 时设 OBSERVABILITY_URL=http://127.0.0.1:8000 ──
-      OBSERVABILITY_URL: ${OBSERVABILITY_URL:-http://server:8000}
-      OBSERVABILITY_TOKEN: ${OBSERVABILITY_TOKEN:-}
-      # ── VPN 配置路径 (容器内, entrypoint 读取;文件不存在则跳过) ──
+      <<: *worker-env
+      ADAPTER_ROLE: monitor
+      ADAPTER_WORKER_ID: '0'
+      WORKER_ID: worker-monitor
       ADAPTER_VPN_CONFIG: /vpn/client.ovpn
-    ports:
-      # 容器侧端口与 STATUS_PORT 保持一致(旧写法固定 8080,改 STATUS_PORT 会失联)。
-      # 宿主侧默认只绑回环:态势台数据无鉴权且含实时 FLAG/完整实录,LAN 一律不可达;
-      # 需要远程查看时显式放行 STATUS_HOST_IP=0.0.0.0(务必自评估暴露面)。
-      # STATUS_PORT=0 禁用时仍须注释掉整个 ports 段(0 通不过 compose 校验)。
-      - target: ${STATUS_PORT:-8080}
-        host_ip: ${STATUS_HOST_IP:-127.0.0.1}
-        published: ${STATUS_PORT:-8080}
-    volumes:
-      - ./work:/work
-      - ./vpn:/vpn:ro
-      # 可选: 自定义 pi 注册/凭据(models.json/auth.json,官方格式;镜像不再内置,按需启用)
-      # - ./pi:/root/.pi/agent:ro
-      # 挂载宿主最新包源(免重建镜像;editable 安装指向 /opt/packages/*,热补丁即生效)
-      - ./packages/contracts:/opt/packages/contracts:ro
-      - ./packages/ghost:/opt/packages/ghost:ro
-      - ./packages/worker:/opt/packages/worker:ro
-      - ./tools:/opt/tools:ro
-      # pi skills 自动发现目录(~/.pi/agent/skills):改 skill 内容免重建镜像,下一题即生效
-      - ./skills:/root/.pi/agent/skills:ro
-      - ./web:/app/web:ro
+      # 空闲隧道别被 60s 的 ping-restart 判死（朋友实测：4h 内 47 次重启、
+      # 间隔精确 360s、在线率 ≈1/6）。entrypoint 里 600 是默认值，这里显式化。
+      ADAPTER_VPN_PING_RESTART: ${ADAPTER_VPN_PING_RESTART:-600}
+    volumes: *worker-volumes
     depends_on:
       server:
         condition: service_healthy
 
-# worker 解题产物 bind-mount 到宿主机 ./work(不入库)
+  # ── worker-2 / worker-3：解题 worker（复用 worker-1 的 netns）──
+  # 能力集合完全一致（不按角色分工）：任何技能类题两个 worker 都能解；
+  # 无法分类的题按 unique_code 哈希均匀分流（见 orchestrator._unknown_bucket）。
+  worker-2:
+    <<: *worker-runtime
+    build: *worker-build
+    container_name: ghost-worker-2
+    profiles: ["fleet"]
+    network_mode: service:worker-1
+    healthcheck: *worker-healthcheck
+    environment:
+      <<: *worker-env
+      ADAPTER_WORKER_ID: '1'
+      WORKER_ID: worker-1
+      ADAPTER_CAPABILITIES: ${ADAPTER_CAPABILITIES_W2:-web,cloud,pwn,reverse,forensics,crypto,pentest,evasion,misc}
+      # 共享 worker-1 的隧道，自己不起 VPN
+      ADAPTER_VPN_CONFIG: ''
+      # 本地态势台关掉：network_mode: service:worker-1 下容器端口发布不可用，
+      # 绑在 8081 也只有共享 netns 里可见（宿主看不到），留着是个陷阱。
+      # 观测不受影响 —— 数据仍经 relay 进 obs 平台 :8000。
+      STATUS_PORT: '0'
+    ports:
+      # network_mode: service:worker-1 时 ports 不可用 —— 发布由 worker-1 承担。
+      # 宿主看 worker-2 的态势台请走服务端 obs（:8000）或 docker exec。
+      []
+    volumes: *worker-volumes
+    depends_on:
+      server:
+        condition: service_healthy
+      worker-1:
+        condition: service_healthy
+
+  worker-3:
+    <<: *worker-runtime
+    build: *worker-build
+    container_name: ghost-worker-3
+    profiles: ["fleet"]
+    network_mode: service:worker-1
+    healthcheck: *worker-healthcheck
+    environment:
+      <<: *worker-env
+      ADAPTER_WORKER_ID: '2'
+      WORKER_ID: worker-2
+      ADAPTER_CAPABILITIES: ${ADAPTER_CAPABILITIES_W3:-web,cloud,pwn,reverse,forensics,crypto,pentest,evasion,misc}
+      ADAPTER_VPN_CONFIG: ''
+      # 同 worker-2：共享 netns 下端口发布不可用，态势台关掉，观测走 relay
+      STATUS_PORT: '0'
+    ports: []
+    volumes: *worker-volumes
+    depends_on:
+      server:
+        condition: service_healthy
+      worker-1:
+        condition: service_healthy
+
+  # ── 单体 worker：不带舰队拓扑的单机/调试形态 ──
+  # `docker compose up -d worker` 起这一个容器（默认 profile，与 fleet 互斥）。
+  # 它自己持 VPN 自己解题 —— 与改造前行为一致，方便对照与排障。
+  worker:
+    <<: *worker-runtime
+    build: *worker-build
+    container_name: ghost-worker
+    healthcheck: *worker-healthcheck
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      <<: *worker-env
+      ADAPTER_WORKER_ID: ${ADAPTER_WORKER_ID:-1}
+      WORKER_ID: ${WORKER_ID:-worker-1}
+      ADAPTER_VPN_CONFIG: /vpn/client.ovpn
+      STATUS_PORT: ${STATUS_PORT:-8080}
+    ports:
+      # 容器侧端口与 STATUS_PORT 保持一致（旧写法固定 8080，改 STATUS_PORT 会失联）。
+      # 宿主侧默认只绑回环：态势台数据无鉴权且含实时 FLAG/完整实录，LAN 一律不可达；
+      # 需要远程查看时显式放行 STATUS_HOST_IP=0.0.0.0（务必自评估暴露面）。
+      # STATUS_PORT=0 禁用时须注释掉整个 ports 段（0 通不过 compose 校验）。
+      - target: ${STATUS_PORT:-8080}
+        host_ip: ${STATUS_HOST_IP:-127.0.0.1}
+        published: ${STATUS_PORT:-8080}
+    volumes: *worker-volumes
+    depends_on:
+      server:
+        condition: service_healthy
+
+# worker 解题产物 bind-mount 到宿主机 ./work（不入库）
+# 舰队形态下三个容器共享同一个 /work（status/ 与 .stoploss-locks/ 靠它协作）
