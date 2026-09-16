@@ -1,33 +1,42 @@
-"""
-Agent 能力层 — 统一结果模型与 SolverBackend 抽象接口
+"""求解引擎契约 — 竞技场主循环与 Pi 引擎之间的那层薄接口。
 
-设计目标：解题 Agent（solver）固定使用 Pi Agent 编排网络安全 Agent。
-- pi_agent.py      Pi Agent CLI 适配器（唯一求解引擎）
-- factory.py       创建 Pi Agent 后端
+## 这一层为什么还在
 
-上层（编排层）只依赖本文件的 SolveResult 与 solve() 接口。
-flag 提取/校验单源 ghost_worker.flags;心跳路径单源 ghost_contracts.paths。
+竞技场主循环（`ghost_worker.orchestrator`）用**朋友自己的** `SolverBackend`
+接口调引擎（`flag_format=` / `on_fact=` / `stop_check=` / `transcript_path=`），
+而这里保留的是框架侧的两个东西：
+
+- `SolveResult`：框架读的那个结果形状。**注意它与朋友
+  `ghost_worker.adapter.solver.SolveResult` 不是同一个类** —— 朋友版没有
+  `provider_failure` 判据，而"0-turn + 报错"是识别 LLM 上游故障的唯一信号
+  （2026-09-08 事故：pi 对 provider 400 只发 stopReason=error，漏读 → err=none
+  → 编排层当成"正常跑完没解出来" → 280 run/0 flag/63 题静默烧库）。
+  `provider_failure` 因此是**框架侧必须自己持有**的判据，不能丢。
+- `touch_heartbeat()`：compose healthcheck 读的那个心跳文件（路径单源在
+  `ghost_contracts.paths`）。
+
+## 已退役的部分
+
+- `AgentAdapter` 抽象与 `solver/friend.py` 桥接层：它们服务的是框架自己的
+  `orchestration.solve_one`，而那条链路已整体退位（竞技场主循环直接调朋友引擎）。
+- `solver/factory.create_solver()`：竞技场用它那边的工厂
+  （`ghost_worker.adapter.solver.factory.create_solver`），不再需要框架这一份。
 """
 
 from __future__ import annotations
 
-import logging
 import os
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 
-from ghost_contracts.paths import FLAG_FILES, HEARTBEAT_PATH
-from ghost_worker.flags import is_valid_flag
+from ghost_contracts.paths import HEARTBEAT_PATH
 
-log = logging.getLogger("ghost_worker.solver")
 
 @dataclass
 class SolveResult:
-    """Agent 会话执行结果（各后端统一输出）。
+    """一次 Pi 会话的结果（框架侧形状；字段与朋友结果模型的并集）。
 
-    字段是框架与朋友两侧的**并集**：框架侧原有 7 个（编排层直接消费），
-    朋友侧多 5 个（续接块 / 终态原因 / 目标故障）。
+    前 7 个字段是框架编排原有的；后 5 个是朋友引擎独有、为过渡期排查保留
+    （handoff 目前全仓无消费者，朋友自己的注释里也这么写）。
     """
     flags: list[str] = field(default_factory=list)
     tool_outputs: list = field(default_factory=list)
@@ -36,14 +45,12 @@ class SolveResult:
     turns: int = 0
     duration_s: float = 0.0
     infra_blocked: bool = False
-
-    # ── 朋友侧字段（B14/B16）。编排层目前不消费，但保留在结果里：
-    #    过渡期排查需要看得到"这局是被 stall 掐的还是跑完了"。
+    # ── 朋友引擎独有 ──
     final_answer: str = ""
     final_text: str = ""
-    handoff: str = ""              # B14 续接块（已达成原语/已证死路/下一步）
-    termination_reason: str = ""   # completed/timeout/stalled/stopped/max_turns/error
-    target_fault: bool = False     # B16 目标端口通但服务持续 5xx
+    handoff: str = ""
+    termination_reason: str = ""
+    target_fault: bool = False
 
     @property
     def has_flags(self) -> bool:
@@ -51,69 +58,23 @@ class SolveResult:
 
     @property
     def provider_failure(self) -> bool:
-        """零回合且末端报错 = provider 失败而非"会话完成"。
+        """0-turn 且带报错 = LLM 上游故障，不是"这题没解出来"。
 
-        pi 对 provider 400/超限等仅发 stopReason=error 的收尾消息(err=none 表象),
-        编排层若当正常完成处理就会静默烧题库(2026-09-08 事故:280 run/0 flag)。
-        turns==0 保证真实工作过(哪怕带错误)的会话不误判。
+        这是 `solve_one` 判 provider 故障的**唯一**判据，也是熔断与"结束本 visit
+        的会话循环"的共同入口。见模块头的事故说明：判否 = 静默烧题。
         """
         return self.turns == 0 and bool(self.error)
 
 
-# ── 心跳文件 ─────────────────────────────────────────────
+# 兼容别名：朋友侧的调用点使用 CCResult（= SolveResult 的另一名字）。
+CCResult = SolveResult
+
 
 def touch_heartbeat() -> None:
-    """更新心跳文件 mtime（失败静默）— driver 与 solver 会话共用"""
+    """刷新心跳文件 mtime（compose healthcheck 依据）。失败静默 —— 心跳写不动
+    时该报的警由 healthcheck 那一侧报，这里抛异常只会把启动流程带崩。"""
     try:
         with open(HEARTBEAT_PATH, "a"):
             os.utime(HEARTBEAT_PATH, None)
     except Exception:
         pass
-
-
-class AgentAdapter(ABC):
-    """Agent 会话适配器(编排层唯一依赖的接口;pi 只是其中一个实现)。
-
-    命名说明:历史名 SolverBackend 保留为兼容别名(见文件尾),新代码一律用
-    AgentAdapter。orchestration.solve_one 只依赖本接口,不 import pi 具体实现;
-    Pi 实现见 pi_agent.PiAgentBackend,测试可用 FakeAdapter 注入。
-    """
-
-    name: str = "abstract"
-
-    @abstractmethod
-    def solve(
-        self,
-        prompt: str,
-        workdir: str,
-        cfg,
-        *,
-        on_fact: Optional[Callable] = None,
-        transcript_path: Optional[str] = None,
-        max_retries: int = 2,
-        on_event: Optional[Callable] = None,
-    ) -> SolveResult:
-        """执行一次解题会话，返回统一结果"""
-
-    @staticmethod
-    def _read_flag_files(workdir: str, flags: list[str]) -> list[str]:
-
-        """从工作目录的标准 flag 文件补录候选(文件名单源 contracts.FLAG_FILES)"""
-        for name in FLAG_FILES:
-            p = os.path.join(workdir, name)
-            try:
-                if os.path.isfile(p):
-                    with open(p, encoding="utf-8", errors="ignore") as f:
-                        for line in f:
-                            v = line.strip()
-                            if v and "{" in v and v.endswith("}") and len(v) <= 200:
-                                if v not in flags and is_valid_flag(v):
-                                    flags.append(v)
-            except Exception:
-                pass
-        return flags
-
-
-# 兼容别名:历史 import 路径(ghost_worker.solver.SolverBackend)保持可用。
-# 新代码请用 AgentAdapter;两者是同一接口,不存在重复抽象。
-SolverBackend = AgentAdapter

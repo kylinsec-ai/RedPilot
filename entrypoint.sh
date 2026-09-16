@@ -3,36 +3,21 @@ set -euo pipefail
 
 echo "[adapter] === Ghost 平台接入层适配器 ==="
 echo "[adapter] BENCHMARK_BASE_URL=${BENCHMARK_BASE_URL:-<unset>}"
-echo "[adapter] WORKER_MODE=${WORKER_MODE:-legacy}"
+echo "[adapter] ADAPTER_ROLE=${ADAPTER_ROLE:-solver} ADAPTER_WORKER_ID=${ADAPTER_WORKER_ID:-<auto>}"
 
 # ── 校验必需环境变量 ──
 # 缺失 = 配置错误:明示后 exit 0 停止(restart:on-failure 会重启一切非零退出,
 # 只有 exit 0 能"停一次";用 :? 会 exit 1 无限闷循环,掩盖真因)
-case "${WORKER_MODE:-legacy}" in
-  assignment)
-    if [[ -z "${PLATFORM_URL:-}" ]]; then
-      echo "[adapter] FATAL: assignment 模式需设置 PLATFORM_URL(控制面地址)——容器停止,补齐后重新 docker compose up -d" >&2
-      exit 0
-    fi
-    if [[ -z "${PLATFORM_WORKER_TOKEN:-}" ]]; then
-      echo "[adapter] FATAL: assignment 模式需设置 PLATFORM_WORKER_TOKEN(须与 core GHOST_WORKER_TOKEN 相同)——容器停止,补齐后重新 docker compose up -d" >&2
-      exit 0
-    fi
-    ;;
-  legacy)
-    if [[ -z "${BENCHMARK_TOKEN:-}" ]]; then
-      echo "[adapter] FATAL: BENCHMARK_TOKEN 未设置(.env 或 compose 环境变量)——容器停止,补齐后重新 docker compose up -d" >&2
-      exit 0
-    elif [[ -z "${BENCHMARK_BASE_URL:-}" ]]; then
-      echo "[adapter] FATAL: BENCHMARK_BASE_URL 未设置——容器停止,补齐后重新 docker compose up -d" >&2
-      exit 0
-    fi
-    ;;
-  *)
-    echo "[adapter] FATAL: 未知 WORKER_MODE='${WORKER_MODE}'(仅支持 legacy/assignment)——容器停止,修正后重新 docker compose up -d" >&2
-    exit 0
-    ;;
-esac
+#
+# 注:worker-1(ADAPTER_ROLE=monitor)也要 BENCHMARK_TOKEN —— 它虽然不做题,
+# 但要用同一个客户端做 VPN 预检与状态汇总。
+if [[ -z "${BENCHMARK_TOKEN:-}" ]]; then
+  echo "[adapter] FATAL: BENCHMARK_TOKEN 未设置(.env 或 compose 环境变量)——容器停止,补齐后重新 docker compose up -d" >&2
+  exit 0
+elif [[ -z "${BENCHMARK_BASE_URL:-}" ]]; then
+  echo "[adapter] FATAL: BENCHMARK_BASE_URL 未设置——容器停止,补齐后重新 docker compose up -d" >&2
+  exit 0
+fi
 
 # LLM 凭据由 pi 自行解析(官方 env 名,其次 ~/.pi/agent/auth.json)。
 # 空字符串的 *_API_KEY 视为未设后 unset(避免空值歧义;provider 凭据 env 名
@@ -64,8 +49,11 @@ if [[ -n "${VPN_CONFIG}" && -f "${VPN_CONFIG}" ]]; then
   echo "[adapter] starting OpenVPN: ${VPN_CONFIG}"
 
   ovpn_args=(--config "${VPN_CONFIG}" --daemon --log /tmp/openvpn.log --writepid /tmp/openvpn.pid)
-  # 保活: ping + 断线自动重连
-  ovpn_args+=(--ping 10 --ping-restart 60)
+  # 保活: ping + 断线自动重连。
+  # ping-restart **默认 600s 而不是 60s** —— 朋友的实测记录:60s 对空闲隧道
+  # 就是死刑（4 小时内 47 次重启、间隔精确 360s、隧道在线率 ≈1/6）。空闲时
+  # ping 不回不代表隧道坏了，降到 60s 会把整轮跑分切成碎片。
+  ovpn_args+=(--ping 10 --ping-restart "${ADAPTER_VPN_PING_RESTART:-600}")
 
   # openvpn 启动失败视为 VPN 层瞬断:exit 4 → restart:on-failure 自动拉起(与 driver 同款语义)
   openvpn "${ovpn_args[@]}" || { echo "[adapter] FATAL: openvpn failed, exiting 4 (restart will retry)" >&2; exit 4; }
@@ -121,19 +109,15 @@ if ! mkdir -p "${ADAPTER_WORKDIR:-/work}"; then
   exit 0
 fi
 
-if [[ "${WORKER_MODE:-legacy}" == "assignment" ]]; then
-  echo "[adapter] assignment mode: platform connectivity is checked during worker registration"
+# ── 验证平台连通性（tsec-run 冒烟:官方 SDK CLI,只读 list;非致命,仅告警）──
+echo "[adapter] testing platform API connectivity via tsec-run..."
+if TSEC_BASE_URL="${BENCHMARK_BASE_URL}" TSEC_TOKEN="${BENCHMARK_TOKEN}" tsec-run > /tmp/tsec-run.log 2>&1; then
+  echo "[adapter] platform API reachable"
+  head -5 /tmp/tsec-run.log
 else
-  # ── 验证平台连通性（tsec-run 冒烟:官方 SDK CLI,只读 list;非致命,仅告警）──
-  echo "[adapter] testing platform API connectivity via tsec-run..."
-  if TSEC_BASE_URL="${BENCHMARK_BASE_URL}" TSEC_TOKEN="${BENCHMARK_TOKEN}" tsec-run > /tmp/tsec-run.log 2>&1; then
-    echo "[adapter] platform API reachable"
-    head -5 /tmp/tsec-run.log
-  else
-    echo "[adapter] WARNING: platform unreachable / bad token (see /tmp/tsec-run.log)" >&2
-    head -20 /tmp/tsec-run.log >&2 2>/dev/null || true
-  fi
+  echo "[adapter] WARNING: platform unreachable / bad token (see /tmp/tsec-run.log)" >&2
+  head -20 /tmp/tsec-run.log >&2 2>/dev/null || true
 fi
 
-echo "[adapter] starting benchmark driver..."
+echo "[adapter] starting arena driver (ghost_worker.orchestrator via driver 装配层)..."
 exec python3 -m ghost_worker.driver

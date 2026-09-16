@@ -1,25 +1,27 @@
-"""
-Ghost worker 包(解耦版)
+"""Ghost worker 包。
 
-求解引擎固定为 Pi Agent(ghost_worker.solver);legacy 模式直调官方
-tsec-benchmark SDK(list 驱动主循环),assignment 模式经 assignment.py 领取
-控制面 job/lease 后仍复用同一个 orchestration.solve_one 执行器。
+形态: 一个容器（worker-1 持 VPN 并向外共享 netns，worker-2/3 复用它）。
+主循环是**朋友的竞技场**（`orchestrator`，多会话/时间盒/止损/eager 提交/
+能力分片/舰队监督/热重载），求解引擎是朋友的 Pi Agent（`adapter.solver`）。
 
-可观测性经 obs.localserver(注入式 stdlib 仪表板)与本包 relay(→obs 平台)。
-编排入口:
-- orchestration.solve_one / driver.amain   legacy/assignment 双模式主循环(默认入口,python -m ghost_worker.driver)
+装配入口: `python -m ghost_worker.driver`
+  driver.main()  = WorkerSettings 校验 + 观测面（LiveState/LiveBus/relay/
+                   roster/:8080）+ StatusBridge 注入
+  orchestrator.main() = 主循环本体（本包不再有第二套编排）
+
+可观测性经 obs.localserver（注入式 stdlib 仪表板）与本包 relay（→obs 平台）。
+编排侧状态另落 `<workdir>/status/worker-<N>.json`（supervisor 与只读控制台读）。
 """
 
 from .config import SolverConfig
-from .assignment import AssignmentClient, AssignmentError
 from .task import AgentTask
 from .taskprompt import build_task_prompt, write_context_md
 from .flags import extract_flags, is_valid_flag
 from .transcripts import compress_transcript
 from .live import LiveBus, LiveState, head_text, summarize_args, tail_text
-from .solver import SolveResult, SolverBackend, create_solver, touch_heartbeat
+from .observability import StatusBridge
+from .solver import SolveResult, touch_heartbeat
 from .settings import WorkerSettings
-from .orchestration import solve_one, build_task
 from .relay import ObsRelay, maybe_start_relay
 
 __version__ = "0.1.0"
@@ -27,14 +29,14 @@ __version__ = "0.1.0"
 __all__ = [
     # 配置与任务
     "SolverConfig", "AgentTask", "WorkerSettings",
-    "AssignmentClient", "AssignmentError",
-    "build_task_prompt", "write_context_md", "build_task",
+    "build_task_prompt", "write_context_md",
     # flag 与 transcript
     "extract_flags", "is_valid_flag", "compress_transcript",
-    # 实时状态
+    # 实时状态与观测桥
     "LiveBus", "LiveState", "head_text", "summarize_args", "tail_text",
-    # 求解器
-    "SolveResult", "SolverBackend", "create_solver", "touch_heartbeat",
-    # 编排与中继
-    "solve_one", "ObsRelay", "maybe_start_relay",
+    "StatusBridge",
+    # 求解引擎契约
+    "SolveResult", "touch_heartbeat",
+    # 观测中继
+    "ObsRelay", "maybe_start_relay",
 ]

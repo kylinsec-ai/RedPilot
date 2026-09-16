@@ -43,11 +43,6 @@ class WorkerSettings:
 
     benchmark_base_url: str = ""
     benchmark_token: str = ""
-    # assignment 模式的控制面地址与服务凭据;默认仍使用 legacy SDK list 模式
-    worker_mode: str = "legacy"
-    platform_url: str = ""
-    platform_worker_token: str = ""
-    assignment_lease_seconds: int = 300
     workdir: str = "/work"
     worker_id: str = "worker-1"
     status_port: int = 8080
@@ -68,18 +63,6 @@ class WorkerSettings:
 
     @classmethod
     def from_env(cls) -> "WorkerSettings":
-        # 未知 WORKER_MODE:compose 入口(entrypoint.sh)先行 exit 0 拦截;
-        # 宿主直跑 driver 时此处 warn + 回落 legacy(单机调试不断腿)。
-        mode = (os.getenv("WORKER_MODE", "legacy") or "legacy").strip().lower()
-        if mode not in {"legacy", "assignment"}:
-            log.warning("bad WORKER_MODE=%r, falling back to legacy", mode)
-            mode = "legacy"
-        try:
-            lease_seconds = int(os.getenv("ASSIGNMENT_LEASE_SECONDS", "300"))
-        except ValueError:
-            log.warning("bad ASSIGNMENT_LEASE_SECONDS, falling back to 300")
-            lease_seconds = 300
-        lease_seconds = min(max(lease_seconds, 30), 3600)
         # ADAPTER_WORKER_ID 缺失时从 WORKER_ID 的尾部数字兜底（"worker-3" → 3），
         # 再不行回 1。朋友的 `_worker_id()` 有一模一样的兜底（HOSTNAME 正则），
         # 这里先解析出来是为了让 relay 的 worker_id 与编排侧序号能对齐校验。
@@ -93,10 +76,6 @@ class WorkerSettings:
         return cls(
             benchmark_base_url=os.getenv("BENCHMARK_BASE_URL", "").strip(),
             benchmark_token=os.getenv("BENCHMARK_TOKEN", "").strip(),
-            worker_mode=mode,
-            platform_url=os.getenv("PLATFORM_URL", "").strip().rstrip("/"),
-            platform_worker_token=os.getenv("PLATFORM_WORKER_TOKEN", "").strip(),
-            assignment_lease_seconds=lease_seconds,
             workdir=os.getenv("ADAPTER_WORKDIR", "/work").strip() or "/work",
             worker_id=(os.getenv("WORKER_ID", "worker-1").strip() or "worker-1"),
             status_port=_parse_status_port(),

@@ -117,15 +117,30 @@ _STATUS_LOCK = threading.Lock()
 # ── 框架观测桥（可选）────────────────────────────────────
 # 装配层（ghost_worker.driver）注入一个 StatusBridge，把上面这份状态转译成
 # LiveState/LiveBus，喂给 relay(→obs 平台) 与本地态势台(:8080)。
-# **默认 None**：直调本模块（仓库根 9 个测试、`--once` 排查）时行为与搬迁前
-# 逐字一致。签名约定：`push(status: dict) -> None`，自己吞掉所有异常。
-_STATUS_BRIDGE = None
+# 默认是 _NullBridge（全空操作）：直调本模块（仓库根 9 个测试、`--once` 排查）
+# 时行为与搬迁前逐字一致。接口约定：push / tool_start / tool_output /
+# flags_submitted，实现方自己吞掉所有异常。
+
+
+class _NullBridge:
+    """未注入时的占位：让调用点不必到处判空（全 no-op，无状态）。"""
+
+    __slots__ = ()
+
+    def push(self, status) -> None: ...
+    def tool_start(self, tool, args) -> None: ...
+    def tool_output(self, out) -> None: ...
+    def flags_submitted(self, flags) -> None: ...
+
+
+_NULL_BRIDGE = _NullBridge()
+_STATUS_BRIDGE = _NULL_BRIDGE
 
 
 def set_status_bridge(bridge) -> None:
     """注入/摘除观测桥（None = 关闭）。装配层在启动时调用一次。"""
     global _STATUS_BRIDGE
-    _STATUS_BRIDGE = bridge
+    _STATUS_BRIDGE = bridge if bridge is not None else _NULL_BRIDGE
 
 # 周期复活冷却基准在 stoploss 持久化状态里（revive() 打 last_revive_wall 戳）——
 # 进程内存表重启即清零会让"刚 drop 的题"重启后立刻复活白拿新预算。
@@ -585,15 +600,11 @@ def _update_status(**kw) -> None:
         os.replace(tmp, p)  # 原子替换，防止其他 worker 读到半写 JSON
     except Exception:
         pass
-    # 框架观测桥（可选，装配层注入）：把同一份状态再喂给 LiveState/LiveBus，
-    # 让 relay(→obs 平台) 与本地态势台(:8080) 看到实时进度。未注入时空操作。
+    # 框架观测桥（装配层注入）：把同一份状态再喂给 LiveState/LiveBus，
+    # 让 relay(→obs 平台) 与本地态势台(:8080) 看到实时进度。
     # **刻意放在落盘之后**：status/worker-N.json 是 supervisor 与只读控制台的
     # 数据源，它不能被观测桥的任何异常拖住。
-    if _STATUS_BRIDGE is not None:
-        try:
-            _STATUS_BRIDGE.push(_STATUS)
-        except Exception:
-            pass
+    _STATUS_BRIDGE.push(_STATUS)
 
 
 def _adaptive_session_limits(ch: Challenge, solver: SolverConfig, session_idx: int,
@@ -5085,6 +5096,10 @@ def _solve_one_unlocked(
                 # filtering only non-empty callbacks would either lose that
                 # valid route or let arbitrary local reads reset StopLoss.
                 _update_status(last_activity=time.time())
+                # 观测桥：status 只有会话粒度，工具粒度在这里补（面板要"此刻在跑
+                # 什么"）。桥未注入时是 _NullBridge，空操作。
+                _STATUS_BRIDGE.tool_start(tool, args)
+                _STATUS_BRIDGE.tool_output(output)
 
             # 转录路径以本次 live instance 的随机 scope 隔离。round/session
             # 是证据顺序的唯一来源；mtime 可因重启/复制而变化，不参与判定。

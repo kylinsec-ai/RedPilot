@@ -14,12 +14,8 @@ import json
 
 import pytest
 
-from ghost_worker.orchestration import (
-    PROVIDER_FAILURE_RETRIES,
-    ProviderFailure,
-    LiveReporter,
-    solve_one,
-)
+from ghost_worker.adapter.solver import create_solver
+from ghost_worker.adapter.solver.pi_agent import cleanup_instance_processes
 from ghost_worker.solver.base import SolveResult
 
 
@@ -40,6 +36,13 @@ def test_turns_with_error_is_not_provider_failure():
     assert not SolveResult(turns=3, error="timeout").provider_failure
 
 
+def _adapter_cfg(**changes):
+    """按朋友引擎的 from_env 口径造配置（12 字段），只覆写指定项。"""
+    import dataclasses
+    from ghost_worker.adapter.config import SolverConfig as _SC
+    return dataclasses.replace(_SC.from_env(), **changes)
+
+
 # ── pi_agent: stopReason=error 读出(用假 pi 可执行脚本驱动真 solve 循环) ──
 
 _AGENT_END_ERROR_EVENT = json.dumps({
@@ -57,22 +60,19 @@ def test_pi_agent_surfaces_stop_reason_error(tmp_path, monkeypatch):
     fake = tmp_path / "fakepi.sh"
     fake.write_text(f'#!/bin/sh\necho {_json_quote(_AGENT_END_ERROR_EVENT)}\n')
     fake.chmod(0o755)
-    from ghost_worker.solver.friend import FriendSolver
-    from ghost_worker.config import SolverConfig
+    from ghost_worker.adapter.solver import create_solver
 
     workdir = tmp_path / "wd"
     workdir.mkdir()
     monkeypatch.setattr("shutil.which", lambda cmd: str(fake))
-    # 朋友的引擎把 fake 当 pi 拉起（cmd 经构造函数透传）。
+    # 引擎把 fake 当 pi 拉起（cmd 经构造函数透传）。
     # HOME 逐题隔离、令牌回收、provider 配置落地都在引擎内部，本用例不关心。
-    solver = FriendSolver()
-    solver._backend.cmd = str(fake)
-    solver._backend.model = "deepseek/prov-model"
-    cfg = SolverConfig(model="deepseek/prov-model", session_seconds=30)
+    solver = create_solver(model="deepseek/prov-model")
+    solver.cmd = str(fake)
+    cfg = _adapter_cfg(model="deepseek/prov-model", session_seconds=30)
     result = solver.solve("p", str(workdir), cfg, transcript_path=str(tmp_path / "t.jsonl"))
     assert result.turns == 0
     assert "MissingSessionID" in result.error
-    assert result.provider_failure
 
 
 def _json_quote(s: str) -> str:
@@ -80,234 +80,61 @@ def _json_quote(s: str) -> str:
     return shlex.quote(s)
 
 
-# ── solve_one: 会话级重试耗尽后上抛 ProviderFailure ──
-
-class _FlakySolver:
-    """连续返回 provider 失败结果的假后端"""
-    name = "flaky"
-
-    def __init__(self, failures: int = 99):
-        self.failures = failures
-        self.calls = 0
-
-    def solve(self, prompt, workdir, cfg, **kwargs):
-        self.calls += 1
-        if self.calls <= self.failures:
-            return SolveResult(turns=0, error="400 MissingSessionID")
-        return SolveResult(turns=2, duration_s=1.0)
+# ── 会话级重试：框架自己那层已随 orchestration.solve_one 退位 ──
+#
+# 原用例断言的是框架侧 `orchestration.solve_one` 的会话重试循环（0-turn+报错
+# 重开至多 PROVIDER_FAILURE_RETRIES 次，耗尽上抛 ProviderFailure 给 driver 熔断）。
+# 竞技场主循环（orchestrator._solve_one_unlocked）**自己**就是多会话模型，
+# 按 difficulty/时间盒/stoploss 给每道题多个 session，并有它自己的 B59 账号级
+# 故障熔断（`_is_api_fault` / `_mark_api_fault` / api_pause）。那一层由仓库根的
+# tests/test_solver_regressions.py 与 test_scheduler_stoploss_backoff.py 覆盖。
+#
+# 这里保留的判据是**跨两层共用的那个**：`SolveResult.provider_failure`
+# （上面三条用例）。引擎替掉、编排退位，这两件事都没有改变"0-turn + 报错
+# = LLM 上游故障"这条判据 —— 而它正是 2026-09-08 静默烧题的入口。
 
 
-class _StubClient:
-    """solve_one 用到的最小平台 client(start/hint/close;不会走到 submit)"""
-
-    class _R:
-        closed = True
-        container_addr: list = []
-        hint = ""
-
-    async def start_challenge(self, code):
-        return self._R()
-
-    async def get_hint(self, code):
-        return self._R()
-
-    async def submit_flag(self, code, flag):  # pragma: no cover - 不应到达
-        raise AssertionError("submit should not be reached on provider failure")
-
-    async def close_challenge(self, code):
-        return self._R()
+# ── driver 层的连续熔断：框架版已退位 ──
+#
+# 原用例断言框架 driver 的 `provider_fail_streak` → exit 3 / 成功清零 / 任务结束
+# exit 0 三条。竞技场主循环的对应物是**两层**，都不再是"连败 3 题 exit 3"：
+#   - 题目级：stoploss 的多维止损（zero_flag_cutoff / dry_facts / 时间盒）；
+#   - 账号级：B59 的 API 暂停 + 退避（`_is_api_fault` → `api_pause_count`），
+#     刻意**不退出** —— 退出会被 restart:on-failure 拉起、进程内计数清零，
+#     每轮重启再烧 3 题形成无限循环（这正是框架侧那段注释记的事故）。
+# 两者的回归在 tests/test_solver_regressions.py、test_scheduler_stoploss_backoff.py。
 
 
-class _Ch:
-    unique_code = "x-01"
-    description = "test"
-    container_addr: list = []
-    flag_count = 1
-    correct_flag_count = 0
-    difficulty = "easy"
-    total_score = 100
-    is_completed = False
-
-
-def test_solve_one_retries_then_raises_provider_failure(monkeypatch):
-    """会话级重试:1 次首跑 + PROVIDER_FAILURE_RETRIES 次重开,耗尽后上抛"""
-    import asyncio
-
-    async def run():
-        monkeypatch.setattr("ghost_worker.orchestration._async_sleep", _async_sleep_noop)
-        solver = _FlakySolver(failures=PROVIDER_FAILURE_RETRIES + 1)
-        cfg = type("C", (), {"model": "prov/model", "session_seconds": 5})()
-        with pytest.raises(ProviderFailure):
-            await solve_one(_StubClient(), _Ch(), cfg=cfg, solver_backend=solver,
-                            reporter=LiveReporter(), relay=None,
-                            workdir_root="/tmp/tsec-test-work")
-        return solver.calls
-
-    assert asyncio.run(run()) == PROVIDER_FAILURE_RETRIES + 1
-
-
-def test_solve_one_recovers_when_provider_recovers(monkeypatch):
-    """前两次失败,第三次恢复:正常返回,不上抛"""
-    import asyncio
-
-    async def run():
-        monkeypatch.setattr("ghost_worker.orchestration._async_sleep", _async_sleep_noop)
-        solver = _FlakySolver(failures=2)
-        cfg = type("C", (), {"model": "prov/model", "session_seconds": 5})()
-        solved, accepted = await solve_one(_StubClient(), _Ch(), cfg=cfg,
-                                           solver_backend=solver,
-                                           reporter=LiveReporter(), relay=None,
-                                           workdir_root="/tmp/tsec-test-work")
-        return solver.calls, solved, accepted
-
-    calls, solved, accepted = asyncio.run(run())
-    assert calls == 3
-    assert solved is False and accepted == []
-
-
-async def _async_sleep_noop(_s):
-    return None
-
-
-# ── driver: 连续 PROVIDER_FAILURE_EXIT_STREAK 题 → exit 3 熔断 ──
-
-def test_driver_exits_3_on_consecutive_provider_failures(monkeypatch):
-    """连败 3 题必须 exit 3,绝不静默烧完 roster(第 4/5 题不被触碰)"""
-    import asyncio
-
-    import ghost_worker.driver as driver
-
-    calls = {"n": 0}
-
-    async def fake_solve_one(client, ch, **kwargs):
-        calls["n"] += 1
-        raise ProviderFailure(f"{ch.unique_code}: 0 turns, error X")
-
-    class _StubClient2:
-        async def list_challenges(self):
-            return [_Ch() for _ in range(5)]
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-    monkeypatch.setattr(driver, "GhostmarkAsync", lambda **kw: _StubClient2())
-    monkeypatch.setattr(driver, "solve_one", fake_solve_one)
-
-    settings = type("S", (), {"benchmark_base_url": "http://x", "benchmark_token": "t",
-                              "workdir": "/tmp/tsec-test-work",
-                              "flag_format": "flag{...}"})()
-    cfg = type("C", (), {"model": "prov/model"})()
-
-    # 直接驱动 amain(绕过 main 的装配单例):SystemExit.code 应为 3
-    async def runner():
-        try:
-            await driver.amain(settings, cfg, object())
-        except SystemExit as e:
-            return e.code
-        return None
-
-    code = asyncio.run(runner())
-    assert code == 3
-    # 熔断发生在第 3 题:后续题目未被触碰(第 4/5 题没被烧)
-    assert calls["n"] == driver.PROVIDER_FAILURE_EXIT_STREAK
-
-
-def test_driver_streak_resets_on_success(monkeypatch):
-    """败→成→败→成→败 相间出现:永不熔断,5 题全处理完正常收尾"""
-    import asyncio
-
-    import ghost_worker.driver as driver
-
-    # 交替出现:streak 每次被成功清零,最多到 1
-    outcomes: list = [ProviderFailure("x-01: 0 turns"), (False, []),
-                      ProviderFailure("y-01: 0 turns"), (False, []),
-                      ProviderFailure("z-01: 0 turns"), (False, []),
-                      ProviderFailure("w-01: 0 turns"), (False, []),
-                      ProviderFailure("v-01: 0 turns"), (False, [])]
-    idx = {"n": 0}
-
-    async def fake_solve_one(client, ch, **kwargs):
-        o = outcomes[idx["n"]]
-        idx["n"] += 1
-        if isinstance(o, ProviderFailure):
-            raise o
-        return o
-
-    class _StubClient2:
-        def __init__(self):
-            self.calls = 0
-
-        async def list_challenges(self):
-            # 第 1 次列 10 题;第 2 次(一轮刷完后)模拟任务结束,让 amain 走 exit 0
-            self.calls += 1
-            if self.calls > 1:
-                import tsec_benchmark
-                raise tsec_benchmark.InvalidState("done")
-            return [_Ch() for _ in range(10)]
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-    stub = _StubClient2()
-    monkeypatch.setattr(driver, "GhostmarkAsync", lambda **kw: stub)
-    monkeypatch.setattr(driver, "solve_one", fake_solve_one)
-
-    settings = type("S", (), {"benchmark_base_url": "http://x", "benchmark_token": "t",
-                              "workdir": "/tmp/tsec-test-work",
-                              "flag_format": "flag{...}"})()
-    cfg = type("C", (), {"model": "prov/model"})()
-
-    async def fake_sleep(_s):
-        return None
-
-    monkeypatch.setattr(driver.asyncio, "sleep", fake_sleep)
-    monkeypatch.setattr("ghost_worker.orchestration._async_sleep", _async_sleep_noop)
-
-    async def runner():
-        try:
-            await driver.amain(settings, cfg, object())
-        except SystemExit as e:
-            return e.code
-        return None
-
-    code = asyncio.run(runner())
-    assert code == 0  # 任务结束正常退出,不是熔断的 3
-    assert idx["n"] == 10  # 10 题全处理,没有中途熔断
-
-
-def test_nonzero_exit_with_only_stderr_is_provider_failure(tmp_path, monkeypatch):
+def test_nonzero_exit_leaves_a_diagnosable_error(tmp_path, monkeypatch):
     """非零退出且只往 stderr 输出:必须留下 error,否则 0-turn 护栏失效。
 
     这是 2026-09-08 那类静默烧题的另一种形态:pi 因坏模型名/缺凭据/参数错误
-    立刻非零退出,stdout 没有任何 JSON 事件 → turns==0 且 error=="" →
-    provider_failure 判否 → 该题被当成"正常未解"记入结果。
+    立刻非零退出,stdout 没有任何 JSON 事件 → turns==0 且 error=="" → 上层
+    把它当成"正常跑完没解出来"（编排层判 provider 故障 / 账号级故障**都靠
+    error 文本**，空 error 等于两道护栏同时失效）。
+
+    断言刻意只锁"诊断信息进来了"：`provider_failure` 是框架侧 SolveResult 的
+    属性，朋友引擎的结果模型里没有它 —— 判据由编排层自建（见 orchestrator 的
+    `_is_api_fault` 与 stoploss），本用例不越界去断言别人家的属性。
     """
+    from ghost_worker.adapter.solver import create_solver
+
     fake = tmp_path / "fakepi.sh"
     # 只往 stderr 写,stdout 空,退出码 2
     fake.write_text('#!/bin/sh\necho "model not found: prov/nope" >&2\nexit 2\n')
     fake.chmod(0o755)
-    from ghost_worker.solver.friend import FriendSolver
-    from ghost_worker.config import SolverConfig
 
     workdir = tmp_path / "wd"
     workdir.mkdir()
     monkeypatch.setattr("shutil.which", lambda cmd: str(fake))
-    solver = FriendSolver()
-    solver._backend.cmd = str(fake)
-    solver._backend.model = "deepseek/prov-nope"
-    result = solver.solve("p", str(workdir), SolverConfig(model="deepseek/prov-nope",
-                                                         session_seconds=30))
+    # 竞技场主循环直接构造朋友引擎（框架侧的 FriendSolver 桥接已退役）
+    solver = create_solver(model="deepseek/prov-nope")
+    solver.cmd = str(fake)
+    result = solver.solve("p", str(workdir), _adapter_cfg(model="deepseek/prov-nope"))
 
-    assert result.turns == 0
+    assert result.turns == 0, "非零退出不该被记成一场正常会话"
     assert result.error, "非零退出未留下 error —— 0-turn 护栏失效"
     assert "model not found" in result.error
-    assert result.provider_failure
 
 
 # ── lease 丢失时必须真杀 pi 进程 ──
@@ -383,59 +210,8 @@ def test_cleanup_instance_processes_is_noop_without_token(tmp_path):
     assert cleanup_instance_processes(str(workdir), grace_seconds=0.1) == 0
 
 
-# ── assignment 模式的 provider 熔断 ──
-
-class _RecordingAssignmentClient:
-    """记录 complete 载荷的最小控制面 client。"""
-
-    def __init__(self):
-        self.completes: list[dict] = []
-        self.heartbeats = 0
-
-    async def complete(self, attempt_id, lease_id, **kwargs):
-        self.completes.append({"attempt_id": attempt_id, **kwargs})
-        return {"ok": True}
-
-    async def attempt_heartbeat(self, attempt_id, lease_id, seconds):
-        self.heartbeats += 1
-        return {"ok": True}
-
-
-def test_assignment_provider_failure_reports_interrupted(monkeypatch):
-    """provider 失败必须上报 interrupted 而非 failed。
-
-    failed 会让 core 把 job 置终态且**不可再 claim**(store.py 的 job 状态机)——
-    LLM 上游一挂就逐题烧穿整个队列。interrupted 则让 job 回 pending 待重做,
-    配合 driver 的进程内冷却,上游恢复后可继续。
-    """
-    import asyncio
-    import ghost_worker.driver as driver
-
-    async def failing_solve(*args, **kwargs):
-        raise driver.ProviderFailure("provider 500")
-
-    monkeypatch.setattr(driver, "solve_one", failing_solve)
-
-    class _Bench:
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def list_challenges(self): return [_Ch()]
-
-    monkeypatch.setattr(driver, "GhostmarkAsync", lambda **kw: _Bench())
-
-    client = _RecordingAssignmentClient()
-    settings = type("S", (), {"workdir": "/tmp/wd", "flag_format": "flag{...}",
-                             "assignment_lease_seconds": 300,
-                             "benchmark_base_url": None, "platform_url": "http://p"})()
-    cfg = type("C", (), {"model": "m", "session_seconds": 60})()
-    assignment = {"attempt_id": "a1", "lease_id": "l1", "unique_code": "x-01",
-                  "benchmark_base_url": "http://b", "benchmark_token": "t"}
-
-    outcome = asyncio.run(driver._solve_assignment(
-        settings, cfg, None, client, assignment,
-        reporter=type("R", (), {"set": lambda *a, **k: None})(), relay=None))
-
-    assert outcome == "provider_failure", "熔断信号未回传"
-    assert client.completes, "未上报终态"
-    assert client.completes[-1]["status"] == "interrupted", \
-        f"provider 失败应报 interrupted(job 回 pending),实报 {client.completes[-1]['status']}"
+# ── assignment 模式的 provider 熔断：整条链路已退位 ──
+#
+# assignment（向控制面 claim job → solve → 回报 attempt）是框架独有的一条链路，
+# 竞技场主循环完全不知道它（它自己 list_challenges + 自派发）。随框架侧编排
+# 退位，assignment.* 及其熔断用例一并删除；见 ghost_worker/driver.py 的头注释。

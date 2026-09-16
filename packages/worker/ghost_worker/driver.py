@@ -1,403 +1,51 @@
 #!/usr/bin/env python3
 """
-Ghost 求解驱动 — 进程装配 + 主循环(从主树 benchmark_driver 重推导)。
+Ghost worker 装配层 — 进程装配 + 观测面接线，主循环交给 orchestrator。
 
-形态: 一个带 VPN 的容器,常驻、一次开一道题、单会话求解、逐 flag 直接提交、
-刷完轮询待命。多 flag 题未全解出时留待下一轮冷启动再试(无记忆续接)。
+形态: 一个容器(worker-1 持 VPN 并向外共享 netns，worker-2/3 复用它)。
 
-主循环:
-  GhostmarkAsync(入口 VPN 预检;list 平台为完成状态唯一权威)
-    → 未完成题按 难度升序/分值降序 排列
-    → 逐题 orchestration.solve_one(start → hint(无条件取) → 1 次 pi 会话
-                    → 候选去重直提 → close)
-    → 全部刷完 sleep 后重新列题(新题自动纳入)
+    driver.main()                       ← 本模块：装配
+      ├── WorkerSettings/SolverConfig   校验配置（错就 exit 0，明示后停止）
+      ├── 心跳线程 + LiveState/LiveBus  观测面（下一段）
+      ├── StatusBridge 注入 orchestrator ← 把编排状态翻成 live 快照
+      ├── ObsRelay / RosterPoller / :8080 态势台
+      └── orchestrator.main()            ← 竞技场主循环（list→派发→多会话→提交）
 
-本地可观测性: obs.localserver(注入式 stdlib 仪表板 :8080)
+主循环本体（多会话/时间盒/止损/eager 提交/能力分片/舰队监督/热重载）在
+`ghost_worker.orchestrator`，本模块不再有自己的 list 循环。
+
+本地可观测性: ghost.obs.localserver(注入式 stdlib 仪表板 :8080)
 远端可观测性: ghost_worker.relay(→ obs 平台 /api/internal/*)
-
-失败语义: 配置错误(缺凭据/坏 SOLVER_MODEL 等)exit 0(明示后停止,on-failure 不重启);
-SDK 入口 VPN 预检失败 exit 4;平台任务结束(409)exit 0;列表失败 exit 3;
-exit 3/4 由容器 restart 策略拉起;单题启动/提交失败只记日志,不 panic。
+编排侧状态:   <workdir>/status/worker-<N>.json（supervisor 与只读控制台读）
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
-import secrets
 import sys
 import threading
 import time
 
-from ._sdk import InvalidState, GhostmarkAsync, VpnCheckError
-
 from ghost.obs.localserver import serve_forever_in_thread as _serve_local
-from ghost_contracts.paths import LIVE_DIR, safe_code
+from ghost_contracts.paths import LIVE_DIR
 
-from .assignment import AssignmentClient, AssignmentError
-from .assignment_session import complete_with_retry, lease_watch
+from . import orchestrator
 from .config import SolverConfig
 from .live import LiveBus, LiveState
+from .observability import StatusBridge
 from .relay import maybe_start_relay
 from .roster import RosterPoller
 from .settings import WorkerSettings
-from .solver import create_solver, touch_heartbeat
-from .adapter.solver.pi_agent import cleanup_instance_processes
-from .orchestration import LiveReporter, ProviderFailure, _prioritize, solve_one
+from .solver import touch_heartbeat
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("ghost_worker.driver")
 
-CYCLE_SLEEP = 30          # 一轮刷完后的等待(秒)
-IDLE_SLEEP = 60           # 无待解题时的轮询间隔(秒)
-PROVIDER_FAILURE_EXIT_STREAK = 3  # 连续 N 题 provider 失败 → 熔断(legacy=exit 3;assignment=进程内冷却)
-# assignment 模式的冷却时长(秒)。刻意不 exit:restart:on-failure 会拉起容器并清零
-# 进程内计数 → 每轮重启再烧 3 题,无限循环。进程内冷却自愈且不触碰退出码契约。
-PROVIDER_COOLDOWN_SECONDS = int(os.getenv("PROVIDER_COOLDOWN_SECONDS", "900"))
+# 退出码契约见 orchestrator.main() 的注释（0/2/86/4）。本模块不自行退出。
 
 
-# amain() 进入时填充:心跳线程据此探测事件循环活性(卡死 → os._exit(4))
-_LOOP: "asyncio.AbstractEventLoop | None" = None
-
-
-# ── 主循环 ──────────────────────────────────────────────────
-
-
-async def _solve_assignment(
-    settings: WorkerSettings,
-    cfg: SolverConfig,
-    solver_backend,
-    assignment_client: AssignmentClient,
-    assignment: dict,
-    *,
-    reporter,
-    relay,
-) -> None:
-    """领取到一个 assignment 后复用现有 solve_one 执行器。"""
-
-    attempt_id = assignment["attempt_id"]
-    lease_id = assignment["lease_id"]
-    code = assignment["unique_code"]
-    status = "failed"
-    solved = False
-    provider_failed = False
-    accepted: list[str] = []
-    error = None
-    if relay is not None:
-        try:
-            relay.bind_attempt(
-                evaluation_id=assignment.get("evaluation_id"),
-                job_id=assignment.get("job_id"),
-                attempt_id=attempt_id,
-            )
-        except Exception:
-            log.exception("failed to bind obs run to assignment %s", attempt_id)
-    lease_lost = asyncio.Event()
-    lease_task = asyncio.create_task(
-        lease_watch(assignment_client, assignment,
-                    settings.assignment_lease_seconds, lease_lost)
-    )
-    vpn_failed = False
-    try:
-        base_url = (
-            assignment.get("benchmark_base_url")
-            or settings.benchmark_base_url
-            or settings.platform_url
-        )
-        token = str(assignment.get("benchmark_token") or "")
-        if not base_url or not token:
-            raise RuntimeError("assignment does not contain benchmark connection settings")
-        async with GhostmarkAsync(base_url=base_url, token=token) as benchmark:
-            challenges = await benchmark.list_challenges()
-            challenge = next((item for item in challenges if item.unique_code == code), None)
-            if challenge is None:
-                raise RuntimeError(f"assigned challenge is not visible to benchmark token: {code}")
-            solve_task = asyncio.create_task(solve_one(
-                benchmark,
-                challenge,
-                cfg=cfg,
-                solver_backend=solver_backend,
-                reporter=reporter,
-                relay=relay,
-                workdir_root=settings.workdir,
-                flag_format=settings.flag_format,
-                instance_token=secrets.token_hex(16),
-            ))
-            lease_gone = asyncio.create_task(lease_lost.wait())
-            done, _pending = await asyncio.wait(
-                {solve_task, lease_gone}, return_when=asyncio.FIRST_COMPLETED,
-            )
-            if lease_gone in done and not solve_task.done():
-                # 租约已丢:继续算只是烧 Pi 时长,complete 必 409 —— 中止并上报 interrupted
-                # (job 回 pending,下一轮可重做)。
-                log.error("assignment lease lost for %s, aborting solve", code)
-                solve_task.cancel()
-                # 关键:取消 asyncio 任务**杀不掉** to_thread 里已启动的 pi 子进程。
-                # 不显式杀,它会在后台继续烧 LLM 时长、继续写同一个 workdir,而 job 已回
-                # pending 可能被再次领取 —— 同一 workdir 两个会话互相踩。
-                killed = await asyncio.to_thread(
-                    cleanup_instance_processes,
-                    os.path.join(settings.workdir, safe_code(code)))
-                if killed:
-                    log.warning("killed in-flight pi process group for %s after lease loss", code)
-                try:
-                    await solve_task
-                except asyncio.CancelledError:
-                    pass
-                status, error = "interrupted", "lease lost; solve aborted"
-            else:
-                lease_gone.cancel()
-                try:
-                    await lease_gone
-                except asyncio.CancelledError:
-                    pass
-                solved, accepted = await solve_task
-                status = "solved" if solved else "done"
-    except ProviderFailure as exc:
-        error = str(exc)
-        provider_failed = True
-        # 上报 interrupted 而非 failed:interpreted as "job 回 pending 待重做"。
-        # failed 会让 job 变成终态且不可再 claim —— LLM 上游一挂就逐题烧穿整个队列
-        # (legacy 模式有 exit-3 熔断兜底,assignment 模式此前没有)。
-        status = "interrupted"
-        log.error("assignment provider failure on %s: %s", code, exc)
-    except VpnCheckError as exc:
-        # 运行中 VPN 掉线与入口预检同语义:上报 interrupted 后走 exit 4 重启通道。
-        error = str(exc)
-        log.error("assignment VPN failed on %s: %s", code, exc)
-        vpn_failed = True
-        status = "interrupted"
-    except Exception as exc:
-        error = str(exc)
-        log.exception("assignment failed on %s", code)
-    finally:
-        lease_task.cancel()
-        try:
-            await lease_task
-        except asyncio.CancelledError:
-            pass
-        # 已接受 flag 明文补给平台(非权威,加性):assignment 模式不关 run,
-        # 而该字段此前只经 run_close 写入 —— 不补则 /api/challenge 恒返回空 flags。
-        # 放在 complete 之前:平台侧 run 行此时已由事件流建立,补写必命中。
-        if relay is not None and accepted:
-            try:
-                relay.send_accepted_flags(accepted)
-            except Exception:
-                log.exception("failed to ship accepted flags for %s", attempt_id)
-        # 终态上报(租约语义单源 assignment_session.complete_with_retry)。
-        await complete_with_retry(
-            assignment_client, code, attempt_id, lease_id,
-            status=status, solved=solved,
-            flags_found=len(accepted) if accepted else None,
-            error=error,
-        )
-        if relay is not None:
-            try:
-                relay.clear_attempt()
-            except Exception:
-                log.exception("failed to clear obs assignment context %s", attempt_id)
-    if vpn_failed:
-        sys.exit(4)
-    return "provider_failure" if provider_failed else "ok"
-
-
-async def _assignment_main(
-    settings: WorkerSettings,
-    cfg: SolverConfig,
-    solver_backend,
-    *,
-    reporter,
-    relay,
-) -> None:
-    """assignment 模式主循环；legacy list 模式保留在 amain 下方。"""
-
-    async with AssignmentClient(
-        settings.platform_url,
-        settings.platform_worker_token,
-        settings.worker_id,
-    ) as assignment_client:
-        try:
-            await assignment_client.register(
-                {"solver": "pi", "model": cfg.model, "worker_mode": "assignment"}
-            )
-        except AssignmentError as exc:
-            log.error("worker registration failed: %s", exc)
-            # 配置错(401/403/未配 token 的 503)停服 exit 0;瞬断 503/5xx 才 exit 3 拉起。
-            config_error = exc.status_code in {401, 403} or exc.code in {
-                "worker_token_required", "worker_token_not_configured",
-            }
-            sys.exit(0 if config_error else 3)
-
-        provider_fail_streak = 0
-        while True:
-            try:
-                assignment = await assignment_client.claim(settings.assignment_lease_seconds)
-            except AssignmentError as exc:
-                log.error("job claim failed: %s", exc)
-                if exc.code == "worker_not_registered":
-                    # 控制面 DB 被重置/重启:补注册一次,而不是 60s 空转到天荒地老。
-                    try:
-                        await assignment_client.register(
-                            {"solver": "pi", "model": cfg.model, "worker_mode": "assignment"}
-                        )
-                        continue
-                    except AssignmentError as reg_exc:
-                        log.error("worker re-registration failed: %s", reg_exc)
-                        sys.exit(0 if reg_exc.status_code in {401, 403} else 3)
-                if exc.status_code in {401, 403} or exc.code in {
-                    "worker_token_required", "worker_token_not_configured",
-                }:
-                    sys.exit(0)
-                await asyncio.sleep(IDLE_SLEEP)
-                continue
-            except Exception:
-                log.exception("job claim transport failed")
-                await asyncio.sleep(IDLE_SLEEP)
-                continue
-
-            if assignment is None:
-                reporter.set(phase="idle", challenge_code="", error="")
-                await asyncio.sleep(IDLE_SLEEP)
-                continue
-
-            outcome = await _solve_assignment(
-                settings,
-                cfg,
-                solver_backend,
-                assignment_client,
-                assignment,
-                reporter=reporter,
-                relay=relay,
-            )
-            reporter.set(phase="idle", challenge_code="", error="")
-
-            # provider 熔断:连续 N 题因 LLM 上游故障失败时冷却,而不是继续领下一题。
-            #
-            # 为什么不能沿用 legacy 的 exit 3:compose 的 restart:on-failure 会把容器
-            # 拉起来,进程内计数随之清零 → 每轮重启再烧 3 题,无限循环(退出码契约的
-            # 注释里记着"25h 内 677 次重启循环"那次事故)。
-            # 进程内冷却不触碰退出码契约:容器不重启、本地态势台保持在线,上游恢复后
-            # 自愈;期间不领新 job(队列上的题留给上游恢复后处理,而不是被逐个烧掉)。
-            if outcome == "provider_failure":
-                provider_fail_streak += 1
-                if provider_fail_streak >= PROVIDER_FAILURE_EXIT_STREAK:
-                    log.critical(
-                        "provider failed on %d consecutive job(s); cooling down %.0fs "
-                        "before claiming more (set PROVIDER_COOLDOWN_SECONDS to tune)",
-                        provider_fail_streak, PROVIDER_COOLDOWN_SECONDS)
-                    reporter.set(phase="idle", challenge_code="",
-                                 error="provider cooldown")
-                    await asyncio.sleep(PROVIDER_COOLDOWN_SECONDS)
-                    provider_fail_streak = 0
-            else:
-                provider_fail_streak = 0
-
-async def amain(settings: WorkerSettings, cfg: SolverConfig, solver_backend, *,
-                reporter=None, relay=None) -> None:
-    """异步主循环:SDK 入口 VPN 预检 → list/start/hint/solve/submit/close 串行刷题。
-
-    reporter/relay 由 main() 显式注入(装配单例);None 时求解照常,仅无实时推送
-    (测试直调 amain 依赖此默认)。本函数不读任何模块级装配全局。
-    """
-    global _LOOP
-    _LOOP = asyncio.get_running_loop()  # 心跳线程据此探测事件循环活性
-    reporter = reporter or LiveReporter(None, None)
-    # 模式分流:assignment(控制面 claim → solve → complete → canonical 关闭)
-    # vs legacy(SDK list 轮询,relay run_close 关闭)。legacy 保留兼容,不删除。
-    if getattr(settings, "worker_mode", "legacy") == "assignment":
-        await _assignment_main(
-            settings,
-            cfg,
-            solver_backend,
-            reporter=reporter,
-            relay=relay,
-        )
-        return
-    submitted: dict[str, set[str]] = {}
-    solved_ever: set[str] = set()
-    provider_fail_streak = 0  # 连续 provider 失败(0-turn+报错)计数,见循环内熔断
-    try:
-        async with GhostmarkAsync(base_url=settings.benchmark_base_url,
-                                      token=settings.benchmark_token) as client:
-            while True:
-                # 拉取题目;平台 is_completed 为完成状态的唯一权威
-                try:
-                    challenges = await client.list_challenges()
-                except InvalidState:
-                    log.info("task finished on platform, exiting")
-                    sys.exit(0)
-                except Exception as e:
-                    # 鉴权/配置错(坏 BENCHMARK_TOKEN)是确定性失败:exit 0 明示停止,
-                    # 不进 exit 3 的 restart 闷循环。SDK 未分类型,按状态码子串启发判断。
-                    lowered = str(e).lower()
-                    if "401" in lowered or "403" in lowered or "unauthor" in lowered:
-                        log.error("challenge list auth failed (bad BENCHMARK_TOKEN?): %s", e)
-                        sys.exit(0)
-                    log.error("failed to list challenges: %s", e)
-                    sys.exit(3)  # 容器 restart 策略拉起(重连 VPN/API)
-
-                pending = [c for c in challenges if not c.is_completed and c.unique_code not in solved_ever]
-                if not pending:
-                    # 无待解题:回 idle(带空 code)——否则 obs live_state 与两块仪表板
-                    # 永久残留上个 run 的 phase='closing'('closing' ∈ ACTIVE_PHASES →
-                    # 恒显 '求解中:<最后 code>',timeline meta.live 恒真)
-                    reporter.set(phase="idle", challenge_code="", error="")
-                    log.info("no pending challenges, polling again in %ds", IDLE_SLEEP)
-                    await asyncio.sleep(IDLE_SLEEP)
-                    continue
-
-                for ch in _prioritize(pending):
-                    try:
-                        solved, accepted = await solve_one(
-                            client, ch, cfg=cfg, solver_backend=solver_backend,
-                            reporter=reporter, relay=relay,
-                            workdir_root=settings.workdir,
-                            flag_format=settings.flag_format,
-                            submitted=submitted)
-                    except ProviderFailure as e:
-                        # 会话级重试耗尽仍 0-turn+报错:计连续 streak,达阈值熔断。
-                        # 说明 LLM 上游坏了而非题目难——继续循环只会静默烧完
-                        # roster(2026-09-08 事故:280 run/0 flag/63 题全烧)。
-                        # exit 3 复用"瞬断自动拉起"语义,给 provider/网络恢复留窗口。
-                        provider_fail_streak += 1
-                        log.error("provider failure streak %d/%d on %s: %s",
-                                  provider_fail_streak, PROVIDER_FAILURE_EXIT_STREAK,
-                                  ch.unique_code, e)
-                        solved, accepted = False, []
-                    except KeyboardInterrupt:
-                        raise
-                    except VpnCheckError as e:
-                        # 运行中 VPN 掉线:按普通 unsolved 记会静默烧 roster,
-                        # 必须走 exit 4 重启通道(与入口预检同语义)。
-                        log.error("VPN failed mid-run on %s: %s", ch.unique_code, e)
-                        sys.exit(4)
-                    except Exception:
-                        log.exception("unexpected error on %s", ch.unique_code)
-                        provider_fail_streak = 0
-                        solved, accepted = False, []
-                    else:
-                        provider_fail_streak = 0
-                    if solved:
-                        solved_ever.add(ch.unique_code)
-                        log.info("=== solved %s (%d flag(s)) ===", ch.unique_code, len(accepted))
-                    if provider_fail_streak >= PROVIDER_FAILURE_EXIT_STREAK:
-                        log.critical(
-                            "%d consecutive challenges ended provider-failure — "
-                            "LLM upstream is down; exiting 3 for container restart",
-                            provider_fail_streak)
-                        sys.exit(3)
-
-                # 一轮全部会话已关 → 回 idle(空 code,同上:不残留 'closing')
-                reporter.set(phase="idle", challenge_code="", error="")
-                log.info("=== pass done: %d pending, %d solved this run, polling in %ds ===",
-                         len(pending), len(solved_ever), CYCLE_SLEEP)
-                await asyncio.sleep(CYCLE_SLEEP)
-    except VpnCheckError as e:
-        # SDK 入口 VPN 预检失败:快速失败;容器 restart 策略在 VPN 恢复后拉起
-        log.error("VPN pre-check failed: %s", e)
-        sys.exit(4)
-
+# ── 装配 ────────────────────────────────────────────────────
 
 def _heartbeat_loop() -> None:
     """独立心跳线程: 30s 刷心跳文件(compose healthcheck 依据);
@@ -432,38 +80,41 @@ def _heartbeat_loop() -> None:
 
 
 def main() -> None:
+    """装配进程并进入竞技场主循环（`orchestrator.main()`，本函数不返回）。
+
+    本层只做三件事：**校验配置**、**起观测面**、**把观测面接到编排上**。
+    求解/调度/提交的一切判定都在 orchestrator 内部 —— 本模块不得新增任何
+    关于"要不要解这道题"的逻辑，否则又会出现两套口径。
+    """
     settings = WorkerSettings.from_env()
-    if getattr(settings, "worker_mode", "legacy") == "assignment":
-        if not settings.platform_url or not settings.platform_worker_token:
-            log.error("PLATFORM_URL and PLATFORM_WORKER_TOKEN must be set in assignment mode")
-            sys.exit(0)
-    elif not settings.benchmark_base_url or not settings.benchmark_token:
-        # 配置错误 = 正常终止:restart:on-failure 会重启一切非零退出,
-        # 只有 exit 0 才能"停一次"——明示错误后停止,不进 restart 闷循环
-        log.error("BENCHMARK_BASE_URL and BENCHMARK_TOKEN must be set")
+    # 凭据校验交给 orchestrator.main()：朋友的语义是"缺 BENCHMARK_* → exit 2"，
+    # 而 exit 2 会被 compose 的 restart:on-failure 拉起（无限重启）。
+    # 这里先拦一道，把配置错收敛成 exit 0（"明示后停止"），与 entrypoint 一致。
+    if not settings.benchmark_base_url or not settings.benchmark_token:
+        log.error("BENCHMARK_BASE_URL / BENCHMARK_TOKEN must be set — 容器停止，"
+                  "补齐后重新 docker compose up -d")
         sys.exit(0)
 
     try:
         cfg = SolverConfig.from_env()
     except ValueError as e:
-        # 裸 SOLVER_MODEL/垃圾 SESSION_SECONDS 等:明示错误后停止(exit 0),
-        # 不进 restart 闷循环(非零退出会被 on-failure 无限重启)
+        # 裸 SOLVER_MODEL / 垃圾 SESSION_SECONDS：非零退出会被 on-failure 无限重启，
+        # 只有 exit 0 能"停一次"并让运维看见原因。
         log.error("bad solver config: %s", e)
         sys.exit(0)
+
     os.makedirs(settings.workdir, exist_ok=True)
     touch_heartbeat()
 
-    # 实时监视:LiveState(原子文件 <workdir>/.live/<worker>.json)+ SSE 广播线程
+    # ── 观测面 ──────────────────────────────────────────────
+    # LiveState(原子文件 <workdir>/.live/<worker>.json)+ LiveBus(SSE 广播)
     live = LiveState(worker_id=settings.worker_id,
                      state_path=os.path.join(settings.workdir, LIVE_DIR,
                                              f"{settings.worker_id}.json"))
     bus = LiveBus()
-    reporter = LiveReporter(live, bus)
-    # 题目总览轮询单实例:localserver 与 relay 共享同一 RosterPoller
-    # (同 worker 只跑一个 60s 轮询,避免双线程双写 /work/.live/roster.json)。
-    # 两边都没启用则不建。obs 是否启用以 OBSERVABILITY_URL 为准(maybe_start_relay 同判)。
-    # 注意:assignment 模式下 poller 只有本地题面(旧 platform/queue 客户端已删,控制面
-    # job 不进 roster)——仪表板挑战列表为空不代表控制面无 job,以 claim 为准。
+    # 题目总览轮询单实例：localserver 与 relay 共享同一 RosterPoller
+    # (同 worker 只跑一个 60s 轮询，避免双线程双写 /work/.live/roster.json)。
+    # 两边都没启用则不建（观测面是可选件，求解不依赖它）。
     roster_poller = None
     if settings.status_port > 0 or settings.observability_url:
         try:
@@ -478,9 +129,21 @@ def main() -> None:
     except Exception:
         log.exception("obs relay start failed (platform ingestion disabled)")
         relay = None
+
+    # ── 观测桥：编排状态 → LiveState/LiveBus ────────────────
+    # 竞技场的 status 字段名与 LiveState 的 18 键几乎全不一样，映射在
+    # observability.StatusBridge 里（那层是唯一的新逻辑，有单测）。
+    # **worker_id 对齐**：relay/LiveState 用 settings.worker_id（展示名），
+    # 编排侧用 ADAPTER_WORKER_ID（序号，写 status/worker-N.json）。两者指同一个
+    # worker，装配层在这里做一次一致性告警 —— 漂移会让 :8080 面板与 status
+    # 文件显示成两个 worker，而两边都不报错。
+    _warn_if_worker_id_drift(settings)
+    orchestrator.set_status_bridge(
+        StatusBridge(live, bus, relay=relay, worker_id=settings.worker_id))
+
     try:
-        # 数据无鉴权 → 默认只绑回环(STATUS_BIND);compose 内编排显式 0.0.0.0(proxy 转发),
-        # 宿主侧再默认收成回环发布 —— 见 docker-compose.yaml 注释
+        # 数据无鉴权 → 默认只绑回环(STATUS_BIND)；compose 内编排显式 0.0.0.0
+        # (docker-proxy 转发需容器全网卡监听)，宿主侧再收成回环发布。
         _serve_local(live, bus, settings.status_port,
                      workdir=settings.workdir, poller=roster_poller,
                      host=settings.status_bind)
@@ -489,10 +152,27 @@ def main() -> None:
 
     threading.Thread(target=_heartbeat_loop, daemon=True, name="heartbeat").start()
 
-    log.info("ghost-worker starting: model=%s base=%s",
+    log.info("ghost-worker starting: role=%s wid=%s model=%s base=%s",
+             settings.adapter_role or "solver", settings.adapter_worker_id,
              cfg.model, settings.benchmark_base_url)
-    asyncio.run(amain(settings, cfg, create_solver(),
-                      reporter=reporter, relay=relay))
+    # 主循环接管（不返回）：热重载走 os._exit(86)，任务终态走 sys.exit(0)。
+    # relay 的收尾由 orchestrator 在退出路径上 flush（见其 `_drain_observability`）。
+    orchestrator.main()
+
+
+def _warn_if_worker_id_drift(settings: WorkerSettings) -> None:
+    """relay 的 WORKER_ID 与编排的 ADAPTER_WORKER_ID 指向不同序号时告警一次。
+
+    两者**不需要**逐字相同（一个是展示名 "worker-1"、一个是序号 1），但尾部
+    数字必须一致 —— 否则 :8080 上看到的是 worker-2 在解题，而 status 文件里
+    写的是 worker-1，两边都不报错（这是静默故障那一族）。
+    """
+    import re as _re
+    m = _re.search(r"(\d+)\s*$", settings.worker_id or "")
+    if m and int(m.group(1)) != settings.adapter_worker_id:
+        log.warning("worker id drift: WORKER_ID=%r (→%s) 与 ADAPTER_WORKER_ID=%s 不一致 — "
+                    "态势台与 status/*.json 会显示成两个 worker",
+                    settings.worker_id, m.group(1), settings.adapter_worker_id)
 
 
 if __name__ == "__main__":

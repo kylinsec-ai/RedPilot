@@ -130,7 +130,6 @@ class ObsRelay:
         self._worker_id = (worker_id or "worker-1").strip() or "worker-1"
         self._fifo = _Fifo()
         self._run: dict | None = None          # {run_id, code, model, path, base, seq, emitted}
-        self._assignment_context: dict[str, str] = {}
         self._file_lock = threading.Lock()     # 序列化文件续读(引擎 tick 与 driver flush 共用)
         self._roster_poller = roster_poller    # 共享 RosterPoller(main() 注入);None → 不推 roster
         self._stop = threading.Event()
@@ -159,35 +158,12 @@ class ObsRelay:
         except Exception:
             log.debug("obs flush failed", exc_info=True)
 
-    def bind_attempt(
-        self,
-        *,
-        evaluation_id: str | None = None,
-        job_id: str | None = None,
-        attempt_id: str | None = None,
-    ) -> None:
-        """把下一次 relay run 绑定到控制面的 assignment。"""
-
-        self._assignment_context = {
-            key: value
-            for key, value in {
-                "run_id": attempt_id,
-                "evaluation_id": evaluation_id,
-                "job_id": job_id,
-                "attempt_id": attempt_id,
-            }.items()
-            if value
-        }
-
-    def clear_attempt(self) -> None:
-        self._assignment_context = {}
-
     def send_accepted_flags(self, flags: list[str]) -> None:
         """把已接受的 flag 明文补给平台(非权威,加性,只补 runs.flags_accepted 一列)。
 
-        为何需要:assignment 模式下 relay **有意跳过** run_close(canonical 拥有生命
-        周期权威),而 flags_accepted 此前只经 run_close 写入 —— 平台主推的模式反而
-        看不到已获得的 flag(/api/challenge 恒返回 [])。
+        为何需要:多段题的**中途**入账（eager 提交）发生在 run 还没收尾的时候,
+        而 flags_accepted 此前只经 run_close 写入 —— 那道题得 flag 的瞬间在
+        Runs 历史里看不到,要等整场结束才补上。
 
         为何走独立窄端点而不是塞进 canonical 事件:canonical 会持久化进 core 的
         platform_events,而 ARCHITECTURE.md §7.1 规定 core 只存 SHA-256 不存明文。
@@ -196,10 +172,9 @@ class ObsRelay:
         """
         if not flags or self._stop.is_set():
             return
-        run_id = ((self._run or {}).get("run_id")
-                  or self._assignment_context.get("run_id"))
+        run_id = (self._run or {}).get("run_id")
         if not run_id:
-            log.debug("accepted flags dropped: no bound run yet")
+            log.debug("accepted flags dropped: no open run yet")
             return
         self._fifo.put({"t": "flags", "run_id": run_id, "flags": list(flags)})
 
@@ -270,7 +245,7 @@ class ObsRelay:
                                               or run.get("closed")):
             self._run = {"run_id": uuid.uuid4().hex, "code": code, "model": "",
                          "path": None, "base": 0, "seq": 0, "emitted": False,
-                         "worker_id": worker, **self._assignment_context}
+                         "worker_id": worker}
             log.info("obs run open: %s code=%s", self._run["run_id"], code)
             return
 
@@ -291,10 +266,10 @@ class ObsRelay:
     def _close_run(self, run: dict, frame: dict, note: str = "") -> None:
         """drain 全部事件(同步续读到 EOF 并入队)后 POST run_close —— FIFO 保证全序。
 
-        assignment 模式(run 绑定 attempt_id):生命周期归 canonical outbox
-        (attempt.completed)所有,此处只排干事件不发 run_close,避免 relay 的
-        乐观 done 抢赢 canonical 的 authoritative interrupted(首写获胜导致
-        仪表板把中断显示成 done)。legacy 模式(无 attempt_id)仍由 relay 关闭。
+        relay 是观测面唯一的知识来源(竞技场主循环不走控制面的 claim/complete),
+        所以 run 的收尾就由这里负责:排干全部事件后 POST run_close。
+        曾经的 assignment 分支(绑定 attempt_id 时把生命周期让给 canonical
+        outbox)随那条链路一起退位 —— 现在没有第二方在写 run 终态。
         """
         run["closed"] = True
         try:
