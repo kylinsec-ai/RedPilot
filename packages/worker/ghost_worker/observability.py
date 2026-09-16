@@ -52,6 +52,7 @@ _PASSTHROUGH_KEYS = (
     "total_earned",
     "challenges_solved",
     "last_event",
+    "transcript_path",
 )
 
 
@@ -187,8 +188,15 @@ class StatusBridge:
         last_log = str(status.get("last_event") or "")
         if last_log:
             fields["last_tool"] = head_text(last_log, OUTPUT_TAIL_MAX)
+        # transcript 路径：竞技场 status 里刻意有这一项（relay 的字节续读全靠它
+        # 锚定"从哪个文件、哪个偏移开始读"）。收尾时清空，否则面板会一直挂着
+        # 上一题的实录。
         if phase == "idle":
             fields["transcript_path"] = ""
+        else:
+            tpath = str(status.get("transcript_path") or "")
+            if tpath:
+                fields["transcript_path"] = tpath
 
         if self._live is not None:
             self._live.update(**fields)

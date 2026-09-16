@@ -90,9 +90,23 @@ class PhaseMappingTests(unittest.TestCase):
         """收尾后 transcript_path 必须清掉，否则面板会一直挂着上一题的实录。"""
         live = LiveState("worker-1")
         b = StatusBridge(live, None, worker_id="worker-1")
-        live.update(transcript_path="/work/f2-05/transcript--s0--x.jsonl")
+        live.update(transcript_path="/work/f2-05/_transcripts/x.jsonl")
         b.push(_status())
         self.assertEqual(live.snapshot()["transcript_path"], "")
+
+    def test_transcript_path_reaches_the_snapshot_while_solving(self):
+        """relay 的字节续读全靠帧里的 transcript_path 锚定起点。
+
+        竞技场一次访问会开**多场**会话，每场一个 `_transcripts/...jsonl` 文件
+        （按 trace_scope 隔离）。路径不跟着 status 走的话，run 就只有生命周期、
+        一条内容行都进不了 obs —— 而且不报错。
+        """
+        live = LiveState("worker-1")
+        b = StatusBridge(live, None, worker_id="worker-1")
+        path = "/work/f2-05/_transcripts/abc--r000000--s000000--x.jsonl"
+        b.push(_status(current_code="f2-05", solving_active=True, session_active=True,
+                       last_event="session start f2-05#0", transcript_path=path))
+        self.assertEqual(live.snapshot()["transcript_path"], path)
 
 
 class ToolGranularityTests(unittest.TestCase):

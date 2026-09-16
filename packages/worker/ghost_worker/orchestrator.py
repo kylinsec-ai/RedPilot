@@ -5154,9 +5154,14 @@ def _solve_one_unlocked(
                 ),
             )
             _eager_thread.start()
+            # transcript_path 进 status 只为**观测**：relay 靠 LiveState 帧里的这个
+            # 值锚定「本轮从哪个文件、哪个偏移开始读」，没有它 run 只有生命周期没有
+            # 内容（一条 transcript 行都进不了 obs）。竞技场自己不用这个字段
+            # —— 它按 trace_scope 直接算路径。
             _update_status(session_active=True, session_started_at=time.time(),
                            last_activity=time.time(),
-                           last_event=f"session start {code}#{session_idx}")
+                           last_event=f"session start {code}#{session_idx}",
+                           transcript_path=tpath)
 
             try:
                 result = solver_backend.solve(
