@@ -758,8 +758,16 @@ _CATEGORY_KEYWORDS = [
     ("forensics", ["取证", "forensic", "流量", "pcap", "内存", "磁盘", "隐写", "stego",
                    "volatility", "tshark", "文件恢复"]),
     # crypto
-    ("crypto", ["rsa", "aes", "des", "加密", "解密", "哈希", "hash", "cipher", "密码学",
-                "crypto", "编码", "base64", "签名"]),
+    # ⚠ 'des' 与 'hash' 这里原本是裸子串，会命中**普通英文词**：
+    #   'des'  ⊂ "description", "describes", "codes", "modes", "nodes", "includes"
+    #   'hash' ⊂ "hashmap"（无害）但同样是子串口径
+    # 实测 `"some totally unknown description here"` 被判成 crypto —— 而 crypto
+    # 属于 _LOCAL_NATIVE_CATEGORIES，会**打开"本地静态产物算证据"这道门**
+    # （见 adapter/verify.py 的 flag_evidence_policy）。也就是说：一个常见的
+    # 题面词就能把证据边界从 remote-only 放宽成允许本地取证。
+    # 这三个短词改为词边界匹配（长词仍走子串，中文不受影响）。
+    ("crypto", ["rsa", "aes", r"\bdes\b", "加密", "解密", "哈希", r"\bhash\b", "cipher",
+                "密码学", "crypto", "编码", "base64", "签名"]),
     # pentest
     ("pentest", ["渗透", "内网", "横向", "提权", "跳板", "隧道", "pivot", "lateral",
                  "privilege", "多阶段"]),
@@ -770,6 +778,18 @@ _CATEGORY_KEYWORDS = [
 
 # 已知分类词汇表（关键词表 + 兜底分类）；用于判断平台显式分类是否可信
 _KNOWN_CATEGORIES = {cat for cat, _kw in _CATEGORY_KEYWORDS} | {"misc", "unknown"}
+
+
+def _keyword_hits(keyword: str, desc: str) -> bool:
+    """关键词命中判定：`\\bxxx\\b` 形式走词边界，其余按子串。
+
+    存在理由见 _CATEGORY_KEYWORDS 里 crypto 一行：'des' 裸子串会命中
+    "description"，而分类结果决定 flag 证据边界（crypto 属
+    _LOCAL_NATIVE_CATEGORIES，会打开本地取证门）。
+    """
+    if keyword.startswith("\\b"):
+        return re.search(keyword, desc) is not None
+    return keyword.lower() in desc
 
 
 def _infer_category(ch: Challenge) -> str:
@@ -792,8 +812,11 @@ def _infer_category(ch: Challenge) -> str:
     desc = (ch.description or "").lower()
 
     # 2) 描述关键词优先
+    #    表里少数几个短英文词写成 `\b...\b`（见 _CATEGORY_KEYWORDS 里 crypto 一行的
+    #    注释）：裸子串会把 description/codes/modes 里的 "des" 当成 DES 加密。
+    #    此处只对形如 `\bxxx\b` 的条目走正则，其余仍是子串，行为不变。
     for cat, keywords in _CATEGORY_KEYWORDS:
-        if any(k.lower() in desc for k in keywords):
+        if any(_keyword_hits(k, desc) for k in keywords):
             return cat
 
     return "unknown"

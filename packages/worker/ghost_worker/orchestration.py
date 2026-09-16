@@ -32,12 +32,21 @@ from ._sdk import (
 #   不在 verify.py),ImportError 被下面的 except 吞掉 → 整层静默失效。降级
 #   必须是**响亮**的:留一条 warning,否则这类事故与"闸门通过了"无法区分。
 try:  # pragma: no cover - 环境相关
-    from adapter.verify import Claim, Verifier, flag_confidence
+    from adapter.verify import Claim, Verifier, flag_confidence, flag_evidence_policy
 except Exception as _policy_import_err:  # pragma: no cover
-    Claim = Verifier = flag_confidence = None  # type: ignore[assignment]
+    Claim = Verifier = flag_confidence = flag_evidence_policy = None  # type: ignore[assignment]
     logging.getLogger("ghost_worker.orchestration").warning(
         "策略层 adapter.verify 不可用(%s) — 回退为平台 submit 单闸门;证据校验关闭",
         _policy_import_err)
+
+# 题目分类单源：朋友 driver 的 _infer_category/_KNOWN_CATEGORIES。
+# 只用来喂 flag_evidence_policy（决定"本地静态产物能否算证据"这道边界），
+# 不参与调度分流 —— 这里 import 的是 6,924 行舰队 driver 里的两个纯函数，
+# 不是把 driver 接进来跑。
+try:  # pragma: no cover - 环境相关
+    from drivers.benchmark_driver import _infer_category as _infer_category_of
+except Exception:  # pragma: no cover
+    _infer_category_of = None  # type: ignore[assignment]
 
 from ghost_contracts.paths import safe_code
 from ghost_contracts.text import (
@@ -83,6 +92,46 @@ def _verifier() -> "Verifier | None":
 
 
 _VERIFIER = None
+
+
+def _evidence_policy_for(task: AgentTask):
+    """按题目元数据构造证据边界(Friend 的策略,喂给下面的闸门)。
+
+    category 走朋友 driver 的 _infer_category —— 平台的 `Challenge` 不带
+    category 字段(SDK 0.1.2 只有 10 个字段,实测),所以从描述推断。
+    该函数按 `ch.category` / `ch.description` 取值,而 AgentTask 只有
+    objective/category,故用一个最小 adapter 喂进去(不复制它的关键词表,
+    否则就是第三次"两处口径漂移")。
+    """
+    if flag_evidence_policy is None:
+        return None
+    try:
+        category = str(getattr(task, "category", "") or "").strip()
+        if not category and _infer_category_of is not None:
+            category = _infer_category_of(_CategoryProbe(task)) or ""
+        return flag_evidence_policy(
+            category,
+            targets=getattr(task, "targets", ()) or (),
+            files=getattr(task, "files", ()) or (),
+            workdir=getattr(task, "workdir", "") or "",
+        )
+    except Exception:
+        log.debug("evidence policy unavailable — falling back to remote-only", exc_info=True)
+        return None
+
+
+class _CategoryProbe:
+    """把 AgentTask 伪装成 driver._infer_category 认的 Challenge（只读两个字段）。
+
+    刻意不 import driver 的 Challenge 类：那是平台模型，不是任务模型；
+    这里只需要 `.category` 与 `.description` 两个属性可读。
+    """
+
+    __slots__ = ("category", "description")
+
+    def __init__(self, task: AgentTask) -> None:
+        self.category = str(getattr(task, "category", "") or "")
+        self.description = str(getattr(task, "objective", "") or "")
 
 
 class ProviderFailure(Exception):
@@ -318,8 +367,16 @@ async def solve_one(
         # 真实工具输出里(flag_confidence 排除 echo/cat 自写后的那条口径)。
         # 原委见 adapter/verify.py 头部:agent 自造的 flag 会进 FLAG 文件,
         # 只靠平台判分会白耗提交机会并污染账簿。
+        # evidence_policy 决定**本地静态产物能否算证据**:有平台声明的附件、
+        # 或无目标的本地原生题(reverse/crypto/forensics/pwn/misc)才开;
+        # Web/内网/云一律 remote-only。没这层,本地文件里抠出来的字符串
+        # 会被当成取证证据放行(朋友的 test_local_evidence_policy 锁的就是它)。
         # **fail-open**:策略层缺失 / 判定抛异常 → 退回"平台即唯一闸门",
         # 宁多交一次也不因监控拖挂求解(与 hallucination.py 同一条安全性质)。
+        _evidence_policy = _evidence_policy_for(task)
+        if _evidence_policy is not None:
+            log.info("flag evidence policy on %s: %s (category=%s)",
+                     code, _evidence_policy.mode, _evidence_policy.category)
         for cand in result.flags:
             if not is_valid_flag(cand):
                 continue
@@ -328,7 +385,8 @@ async def solve_one(
             evidence_note = ""
             if flag_confidence is not None:
                 try:
-                    claim = flag_confidence(cand, "", list(result.tool_outputs or []))
+                    claim = flag_confidence(cand, "", list(result.tool_outputs or []),
+                                            evidence_policy=_evidence_policy)
                     if Verifier is not None:
                         claim = _verifier().verify(claim)
                     if not claim.verified and claim.grounded and claim.confidence >= GROUNDED_SUBMIT_CONF:
