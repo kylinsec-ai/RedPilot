@@ -1,6 +1,6 @@
 /**
- * API 契约类型 —— 字段名逐字对齐 Python(drivers/roster.py / status_server.py /
- * adapter/live/state.py),改键名必须同步后端。
+ * API 契约类型 —— 字段名逐字对齐 Python(ghost_worker/roster.py 的题目总览、
+ * ghost_worker/live/ 的状态快照与 SSE 信封),改键名必须同步后端。
  */
 
 export const ACTIVE_PHASES: readonly string[] = [

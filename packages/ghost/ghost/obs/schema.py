@@ -83,13 +83,13 @@ class AcceptedFlagsIn(BaseModel):
     """已接受 flag 明文:非权威的**加性**观测数据,只补 runs.flags_accepted 一列。
 
     为何单开一条通道而不是塞进 canonical payload:canonical 事件会持久化到 core 的
-    platform_events / outbox_events,而 ARCHITECTURE.md §7.1 明确 core 只存 SHA-256、
-    不存明文 —— 把明文塞进去会破坏该原则,且 worker 的 complete 请求本来也只带
+    platform_events / outbox_events,而 core 的不变量是只存 SHA-256、不存明文 ——
+    把明文塞进去会破坏该原则,且 worker 的 complete 请求本来也只带
     flags_found(计数),明文根本到不了 core。
 
-    为何需要它:assignment 模式下 relay 有意跳过 run_close(canonical 拥有生命周期
-    权威),而 flags_accepted 此前只经 run_close 写入 —— 于是平台主推的 assignment
-    模式反而看不到已获得的 flag(/api/challenge 恒返回 [])。
+    为何需要它:relay 有意跳过 run_close(canonical 拥有生命周期权威),而
+    flags_accepted 此前只经 run_close 写入 —— 于是那条链路里已获得的 flag
+    反而看不到(/api/challenge 恒返回 [])。
     """
 
     run_id: str

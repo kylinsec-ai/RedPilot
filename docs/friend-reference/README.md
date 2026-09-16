@@ -1,5 +1,13 @@
 # TSecBench Agent 舰队
 
+> **历史快照（存档用，不是当前仓库的说明）。** 本目录是朋友那一版的原始配置与文档，
+> 逐字保留以便对照。其中的路径对应**搬迁前的树**：`drivers/`、顶层 `adapter/`、
+> `CHALLENGES_API.md` 等都已不在当前位置（策略层已搬进
+> `packages/worker/ghost_worker/adapter/`，主循环在 `ghost_worker/orchestrator.py`）。
+> 本目录里的 Dockerfile / `docker-compose.yaml` / `entrypoint.sh` **不参与任何构建**，
+> 照它们跑会因源目录不存在而失败。当前用法看仓库根 `README.md` 与
+> `packages/worker/README.md`。
+
 这个仓库保留三个当前可部署组件：
 
 - `worker-1`：舰队监控与 OpenVPN 网络命名空间提供者。
@@ -75,7 +83,8 @@ bash fastapi-console/run.sh start
 .venv/bin/python -m uvicorn 'tsecbench.api:create_app' --factory --host 127.0.0.1 --port 8000
 ```
 
-完整接口规约见 [CHALLENGES_API.md](CHALLENGES_API.md)。
+完整接口规约见当时随树附带的 `CHALLENGES_API.md`（**已不在本仓库**；现行契约以
+`packages/worker/ghost_worker/adapter/platform/tsecbench_http.py` 顶部的接口清单为准）。
 
 ## 验证
 

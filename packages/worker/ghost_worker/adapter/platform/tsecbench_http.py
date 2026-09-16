@@ -1,7 +1,7 @@
 """
 TSecBench 平台 HTTP 适配器
 
-直接调用平台 REST API（CHALLENGES_API.md）：
+直接调用平台 REST API（接口路径与字段见下方清单，实现即契约）：
 - 认证: 请求头 BENCHMARK_TOKEN
 - GET  /openapi/v1/challenges         — 题目列表
 - POST /openapi/v1/challenges/start    — 启动容器
@@ -65,7 +65,7 @@ DEFAULT_VPN_CHECK_URL = "http://10.0.100.58"
 class TSecBenchHTTPBackend(PlatformBackend):
     """
     TSecBench 平台 HTTP API 适配器。
-    严格按 CHALLENGES_API.md 实现，不依赖任何第三方 SDK。
+    严格按平台的 REST 契约实现，不依赖任何第三方 SDK。
     """
 
     name = "tsecbench-http"

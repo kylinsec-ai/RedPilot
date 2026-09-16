@@ -166,7 +166,7 @@ class ObsRelay:
         Runs 历史里看不到,要等整场结束才补上。
 
         为何走独立窄端点而不是塞进 canonical 事件:canonical 会持久化进 core 的
-        platform_events,而 ARCHITECTURE.md §7.1 规定 core 只存 SHA-256 不存明文。
+        platform_events,而 core 有一条不变量——只存 SHA-256 不存明文。
 
         零丢失语义与 events 相同(走无界 put):这是小体量一次性消息,丢了就永久缺一列。
         """
@@ -314,7 +314,7 @@ class ObsRelay:
                  status, f" note={note}" if note else "")
 
     def _read_flags(self, transcript_path: str) -> list[str]:
-        """回退读 FLAG 候选文件(读法单源:drivers.roster.read_flag_lines)。"""
+        """回退读 FLAG 候选文件(读法单源:ghost_worker.roster.read_flag_lines)。"""
         if not transcript_path:
             return []
         from .roster import read_flag_lines

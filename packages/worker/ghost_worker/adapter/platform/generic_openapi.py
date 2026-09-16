@@ -8,7 +8,7 @@
 - 响应字段（支持嵌套取值的点路径）
 - VPN 预检地址（可选）
 
-spec 默认结构对齐 TSecBench（CHALLENGES_API.md），其他平台只需覆盖差异项。
+spec 默认结构对齐 TSecBench（见 tsecbench_http.py 的接口清单），其他平台只需覆盖差异项。
 """
 
 from __future__ import annotations

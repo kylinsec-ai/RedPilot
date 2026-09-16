@@ -1,6 +1,6 @@
 """官方 SDK 导入汇点:tsec_benchmark 的命名兼容层。
 
-背景:本仓库代码与 SDK_API.md 统一使用 Ghost 命名(`Ghostmark` / `GhostmarkAsync`),
+背景:本仓库代码统一使用 Ghost 命名(`Ghostmark` / `GhostmarkAsync`),
 但 PyPI 上 `tsec-benchmark` 截至 0.1.2 导出的仍是 `TSecBenchmark` / `TSecBenchmarkAsync`
 (经查无任何已发布版本提供 Ghost 命名)。两者指向同一实现,差异只是类名。
 
@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-try:  # 新命名(Ghost 品牌,见 SDK_API.md)
+try:  # 新命名(Ghost 品牌)
     from tsec_benchmark import Ghostmark, GhostmarkAsync
 except ImportError:  # PyPI <= 0.1.2:TSec 命名;同一实现,仅类名不同
     from tsec_benchmark import TSecBenchmark as Ghostmark

@@ -24,7 +24,7 @@ fi
 # 以 _API_KEY 结尾是 pi 官方惯例,见 https://pi.dev/docs/latest/providers)。
 have_key=0
 if [[ -n "${SOLVER_API_KEY:-}" ]]; then
-  echo "[adapter] WARNING: SOLVER_API_KEY 已废弃且不会被 pi 读取——请改用 pi 官方 env 名(如 DEEPSEEK_API_KEY,见 README 凭据说明)。" >&2
+  echo "[adapter] WARNING: SOLVER_API_KEY 已废弃且不会被 pi 读取——请改用 pi 官方 env 名(如 DEEPSEEK_API_KEY,见 packages/worker/README.md 凭据说明)。" >&2
 fi
 while IFS= read -r k; do
   case "$k" in
@@ -35,7 +35,7 @@ while IFS= read -r k; do
   esac
 done < <(compgen -e)
 if [[ $have_key -eq 0 && ! -s "${HOME:-/root}/.pi/agent/auth.json" ]]; then
-  echo "[adapter] WARNING: 未检测到 *_API_KEY 凭据且无 ~/.pi/agent/auth.json,pi 可能无法鉴权(见 README 凭据说明)。" >&2
+  echo "[adapter] WARNING: 未检测到 *_API_KEY 凭据且无 ~/.pi/agent/auth.json,pi 可能无法鉴权(见 packages/worker/README.md 凭据说明)。" >&2
 fi
 
 cd /app 2>/dev/null || true

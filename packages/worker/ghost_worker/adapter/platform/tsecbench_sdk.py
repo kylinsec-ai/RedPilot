@@ -1,7 +1,7 @@
 """
 tsec-benchmark 官方 SDK 适配器
 
-将官方 SDK（SDK_API.md）的异常与数据类映射为统一模型。
+将官方 SDK 的异常与数据类映射为统一模型。
 SDK 仅在显式配置 ADAPTER_PLATFORM=tsecbench-sdk 且已安装时使用。
 """
 

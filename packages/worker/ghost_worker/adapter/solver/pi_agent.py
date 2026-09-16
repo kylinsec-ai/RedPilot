@@ -324,9 +324,9 @@ def _write_pi_models(pi_home: str, *, base_url: str, model: str) -> None:
 
 # ── [B57] 子 Agent：把官方 subagent 扩展与框架自有角色装进本题 HOME ──
 _SUBAGENT_PKG_REL = "examples/extensions/subagent"
-# 角色定义放 adapter/ 下（adapter/ 整个挂进容器 → /app/adapter/pi_agents）。
-# 注意别放仓库根：容器只挂 adapter/drivers/skills/vpn/work，`/app` 是镜像自带的，
-# 仓库根的目录在容器里**根本不存在**（B57 首版就栽在这，角色软链静默落空）。
+# 角色定义放 adapter/ 下（构建期 COPY 到 /app/adapter/pi_agents，见 Dockerfile 第 5 步）。
+# 注意别放仓库根：容器里只存在镜像自带的那几棵树，仓库根的目录**根本不在容器里**
+# （B57 首版就栽在这，角色软链静默落空）。
 # 框架自有资产，不含任何题目情报。
 _AGENT_ROLES_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
