@@ -1,0 +1,652 @@
+{% extends "base.html" %}
+{% block title %}Agent 舰队{% endblock %}
+{% block kicker %}FLEET / WORKERS / PI AGENT{% endblock %}
+{% block page_title %}Agent 舰队{% endblock %}
+
+{% block content %}
+<div class="agent-view">
+  <section class="dashboard-hero">
+    <div class="hero-copy">
+      <p class="eyebrow mono">WORKER FLEET / {{ agent_env.BENCHMARK_BASE_URL|default('未配置') }}</p>
+      <h1>Agent 舰队</h1>
+      <p class="hero-subtitle">3 个 Pi Agent worker 并行解题。worker-1 持有 VPN，worker-2/3 共享其网络。每个容器一次解一道题，找到 flag 自动提交。</p>
+    </div>
+    <div class="hero-actions">
+      <button class="quiet" id="btn-refresh">↻ 刷新</button>
+      <button class="primary" id="btn-start">▶ 启动舰队</button>
+      <button class="danger" id="btn-stop">■ 停止舰队</button>
+    </div>
+  </section>
+
+  <div class="dashboard-rule" aria-hidden="true"></div>
+
+  {# [B59] 账号级 API 故障横幅。driver 写 work/.api_fault（余额/Key 恢复后自动撤），
+     这里是它的唯一可视出口。刻意独立于 #agent-notice —— 那个会被启停提示抢用。 #}
+  <div class="api-fault" id="api-fault-banner" style="display:none" role="alert">
+    <span class="api-fault-dot" aria-hidden="true"></span>
+    <strong>账号级 API 故障</strong>
+    <span class="dim mono" id="api-fault-detail"></span>
+  </div>
+
+  <div v-if="0"></div>
+  <section class="metric-strip">
+    <div class="metric-card">
+      <span class="metric-label"><i aria-hidden="true"></i>运行中 Worker</span>
+      <strong id="m-running">—</strong>
+      <span class="metric-note mono">共 <span id="m-total">—</span> 个容器</span>
+    </div>
+    <div class="metric-card">
+      <span class="metric-label"><i class="dot-violet" aria-hidden="true"></i>健康 Worker</span>
+      <strong id="m-healthy">—</strong>
+      <span class="metric-note mono">watchdog 心跳</span>
+    </div>
+    <div class="metric-card">
+      <span class="metric-label"><i class="dot-muted" aria-hidden="true"></i>已找到 flag</span>
+      <strong id="m-flags">—</strong>
+      <span class="metric-note mono">FLAG 文件确证</span>
+    </div>
+    <div class="metric-card">
+      <span class="metric-label"><i class="dot-coral" aria-hidden="true"></i>累计得分</span>
+      <strong id="m-score">—</strong>
+      <span class="metric-note mono">已解 <span id="m-solved">—</span> 题</span>
+    </div>
+  </section>
+
+  <section class="panel" style="margin-top:16px" id="usage-panel">
+    <div class="log-head">
+      <div><p class="eyebrow mono">TOKEN USAGE</p><h2>LLM Token 用量</h2></div>
+      <span class="section-count mono" id="usage-model">—</span>
+    </div>
+    <div class="usage-strip">
+      <div class="usage-card"><span class="metric-label"><i class="dot-violet" aria-hidden="true"></i>总 Tokens</span><strong id="u-total">—</strong><span class="usage-sub mono" id="u-total-raw">—</span></div>
+      <div class="usage-card"><span class="metric-label"><i aria-hidden="true"></i>输入</span><strong id="u-input">—</strong><span class="usage-sub mono">非缓存命中部分</span></div>
+      <div class="usage-card"><span class="metric-label"><i class="dot-coral" aria-hidden="true"></i>输出</span><strong id="u-output">—</strong><span class="usage-sub mono">含推理 token</span></div>
+      <div class="usage-card"><span class="metric-label"><i class="dot-muted" aria-hidden="true"></i>缓存读</span><strong id="u-cacheread">—</strong><span class="usage-sub mono">命中部分</span></div>
+      <div class="usage-card"><span class="metric-label"><i class="dot-muted" aria-hidden="true"></i>缓存写</span><strong id="u-cachewrite">—</strong><span class="usage-sub mono">—</span></div>
+      <div class="usage-card"><span class="metric-label"><i class="dot-violet" aria-hidden="true"></i>缓存命中</span><strong id="u-hit">—</strong><span class="usage-sub mono">读/(读+输入)</span></div>
+      <div class="usage-card"><span class="metric-label"><i aria-hidden="true"></i>API 调用</span><strong id="u-calls">—</strong><span class="usage-sub mono" id="u-sessions">—</span></div>
+    </div>
+    <div class="usage-table-wrap">
+      <table class="usage-table">
+        <thead><tr>
+          <th>题目</th><th>会话</th><th>调用</th><th>输入</th><th>输出</th><th>缓存读</th><th>缓存写</th><th>命中</th><th>总 Tokens</th>
+        </tr></thead>
+        <tbody id="usage-tbody">
+          <tr><td colspan="9" class="dim" style="padding:12px 10px">加载用量数据...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="usage-note">统计口径：全部题目 pi 会话转录（message_end.usage）逐条累计 —— 输入为非缓存命中部分；推理 token 已计入输出（provider 不单列）；缓存命中 = 缓存读 /（缓存读 + 输入）。每 10s 自动刷新。</p>
+  </section>
+
+  <div class="notice" id="agent-notice" style="display:none" role="alert">
+    <strong id="agent-notice-text"></strong>
+  </div>
+
+  <div class="agent-grid" id="worker-grid">
+    <div class="panel agent-loading">加载 worker 状态...</div>
+  </div>
+
+  <section class="panel" style="margin-top:16px" id="single-panel">
+    <div class="log-head">
+      <div><p class="eyebrow mono">TARGETED JOBS</p><h2>定向任务（单独自动解）</h2></div>
+      <span class="section-count mono" id="single-count">0 个</span>
+    </div>
+    <div id="single-grid">
+      <div class="dim" style="padding:12px 0">暂无定向任务。在 Dashboard 点「✦ Agent 解此题」会在这里出现。</div>
+    </div>
+  </section>
+
+  <div class="panel log-panel agent-log" style="margin-top:16px">
+    <div class="log-head">
+      <div><p class="eyebrow mono">WORKER LOGS</p><h2>实时日志</h2></div>
+      <div class="filter-tabs" id="log-tabs">
+        <button class="filter-tab active" data-worker="tsecbench-worker-1">worker-1</button>
+        <button class="filter-tab" data-worker="tsecbench-worker-2">worker-2</button>
+        <button class="filter-tab" data-worker="tsecbench-worker-3">worker-3</button>
+      </div>
+    </div>
+    <div class="log-body" id="agent-log-body" aria-live="polite" style="max-height:380px;font-size:11px">选择 worker 查看日志...</div>
+  </div>
+
+  <div class="panel tr-panel" style="margin-top:16px">
+    <div class="log-head">
+      <div><p class="eyebrow mono">LLM TRANSCRIPTS</p><h2>实时对话流（Agent 正在调什么 / 怎么执行）</h2></div>
+      <div class="hero-actions" style="gap:6px">
+        <button class="quiet" id="tr-refresh">↻ 刷新列表</button>
+        <label class="quiet" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;padding:6px 10px">
+          <input type="checkbox" id="tr-autoscroll" checked style="accent-color:#0e746b"> 自动滚动
+        </label>
+      </div>
+    </div>
+    <div class="transcript-wrap">
+      <aside class="tr-sessions" id="tr-session-list">
+        <div class="dim" style="padding:10px 12px">加载会话列表...</div>
+      </aside>
+      <div class="tr-main">
+        <div class="tr-head">
+          <span class="mono" id="tr-file-label">未选择会话</span>
+          <span class="section-count mono" id="tr-stat">—</span>
+        </div>
+        <div class="tr-body" id="tr-event-body" aria-live="polite">
+          <div class="dim" style="padding:10px 12px">从左侧选择一个 transcript 查看 Agent 对话事件流。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+let LOG_WORKER = 'tsecbench-worker-1';
+let LOG_TIMER = null;
+let FLEET_TIMER = null;
+let USAGE_TIMER = null;
+
+function showNotice(type, text) {
+  const el = document.getElementById('agent-notice');
+  el.style.display = 'flex';
+  el.style.borderColor = type === 'error' ? 'rgba(208,67,58,0.55)' : 'rgba(14,116,107,0.4)';
+  el.style.background = type === 'error' ? 'var(--risk-soft)' : 'var(--accent-soft)';
+  document.getElementById('agent-notice-text').textContent = text;
+}
+
+function esc(s) {
+  const div = document.createElement('div');
+  div.textContent = s == null ? '' : String(s);
+  return div.innerHTML;
+}
+
+// [B59] 故障灯：有故障就亮、恢复就灭。年龄在前端算，服务端只回 since/pauses。
+// 抽成具名函数是为了能被 Node 自测直接调用（B60 的教训：埋在大函数里的逻辑测不到）。
+function renderApiFault(af) {
+  const el = document.getElementById('api-fault-banner');
+  if (!el) return;
+  if (!af) { el.style.display = 'none'; return; }
+  const secs = Math.max(0, Math.floor(Date.now() / 1000) - (af.since || 0));
+  const mins = Math.floor(secs / 60);
+  const age = mins < 60
+    ? mins + ' 分钟'
+    : Math.floor(mins / 60) + ' 小时 ' + (mins % 60) + ' 分钟';
+  el.style.display = 'flex';
+  document.getElementById('api-fault-detail').textContent =
+    '已持续 ' + age + ' · 累计暂停 ' + (af.pauses || 0) + ' 次 — 余额 / API Key 恢复后自动撤下';
+}
+
+function renderWorkers(data) {
+  document.getElementById('m-running').textContent = data.summary.running;
+  document.getElementById('m-healthy').textContent = data.summary.healthy;
+  document.getElementById('m-total').textContent = data.summary.total;
+  document.getElementById('m-flags').textContent = data.summary.flags_found.length;
+  document.getElementById('m-score').textContent = data.summary.total_earned;
+  document.getElementById('m-solved').textContent = data.summary.solved;
+  renderApiFault(data.api_fault);
+  document.getElementById('btn-start').disabled = data.env_configured ? false : true;
+  if (!data.env_configured) {
+    document.getElementById('btn-start').title = '设置页未配置 Agent 引擎';
+  }
+
+  const grid = document.getElementById('worker-grid');
+  grid.innerHTML = data.workers.map(w => {
+    const s = w.state || {};
+    const statusClass = w.running ? (w.health === 'healthy' ? 'ready' : 'warming') : 'quiet';
+    const statusText = !w.running ? ('已退出 (exit ' + (w.exit_code ?? '?') + (w.exit_code === 0 ? '，任务结束优雅退出' : '') + ')') : (w.health === 'healthy' ? '健康运行' : '运行中(未健康)');
+    const cur = s.current_code
+      ? '<div class="queue-row"><span class="queue-label mono">CURRENT</span><span class="queue-good mono">' + esc(s.current_code) + '</span></div>'
+      : '<div class="queue-row"><span class="queue-label mono">CURRENT</span><span class="dim">空闲/调度中</span></div>';
+    return '<div class="panel worker-card">'
+      + '<div class="card-heading"><div><p class="eyebrow mono">' + esc(w.name) + '</p><h2>' + esc(w.name.replace("tsecbench-", "")) + '</h2></div>'
+      + '<span class="badge ' + statusClass + '"><i aria-hidden="true"></i>' + statusText + '</span></div>'
+      + '<div class="queue-list">'
+      + cur
+      + '<div class="queue-row"><span class="queue-label mono">ROUND</span><span class="mono">' + (s.current_round ?? '—') + '</span></div>'
+      + '<div class="queue-row"><span class="queue-label mono">SESSIONS</span><span class="mono">' + (s.sessions ?? '—') + '</span></div>'
+      + '<div class="queue-row"><span class="queue-label mono">FLAGS FOUND</span><span class="queue-good mono">' + (s.flags_found || []).length + '</span></div>'
+      + '<div class="queue-row"><span class="queue-label mono">SUBMITTED</span><span class="mono">' + (s.flags_submitted ?? 0) + ' 次</span></div>'
+      + '<div class="queue-row"><span class="queue-label mono">EARNED</span><span class="queue-good mono">' + (s.total_earned ?? 0) + ' 分</span></div>'
+      + '<div class="queue-row"><span class="queue-label mono">EVENT</span><span class="dim" style="word-break:break-all">' + esc(s.last_event || '—') + '</span></div>'
+      + '</div>'
+      + '<button class="quiet small" data-log="' + w.name + '" onclick="switchLog(this.dataset.log)">查看日志</button>'
+      + '</div>';
+  }).join('');
+}
+
+function switchLog(worker) {
+  LOG_WORKER = worker;
+  document.querySelectorAll('#log-tabs .filter-tab').forEach(b => b.classList.toggle('active', b.dataset.worker === worker));
+  refreshLogs();
+}
+
+// 定向任务（单独自动解）容器展示
+function renderSingles(data) {
+  const singles = data.singles || [];
+  document.getElementById('single-count').textContent = singles.length + ' 个';
+  const box = document.getElementById('single-grid');
+  if (!singles.length) {
+    box.innerHTML = '<div class="dim" style="padding:12px 0">暂无定向任务。在 Dashboard 点「✦ Agent 解此题」会在这里出现。</div>';
+    return;
+  }
+  box.innerHTML = singles.map(sg => {
+    const st = sg.state || {};
+    const cls = sg.running ? 'ready' : 'quiet';
+    const statusText = sg.running ? '运行中' : sg.status;
+    const progress = st.total_earned ? ' | 已提交 ' + (st.flags_submitted || 0) + ' 次 +' + st.total_earned + ' 分' : '';
+    return '<div class="card" style="margin-top:10px">'
+      + '<div class="card-heading"><div><p class="eyebrow mono">' + esc(sg.name) + '</p>'
+      + '<h2>' + esc(sg.code) + '</h2></div>'
+      + '<span class="badge ' + cls + '"><i aria-hidden="true"></i>' + statusText + '</span></div>'
+      + '<div class="queue-list">'
+      + '<div class="queue-row"><span class="queue-label mono">CURRENT</span><span class="' + (st.current_code ? 'queue-good' : 'dim') + ' mono">' + esc(st.current_code || '等待资源槽位') + '</span></div>'
+      + '<div class="queue-row"><span class="queue-label mono">ROUND</span><span class="mono">' + (st.current_round ?? '—') + '</span></div>'
+      + '<div class="queue-row"><span class="queue-label mono">EVENT</span><span class="dim" style="word-break:break-all">' + esc(st.last_event || '—') + '</span></div>'
+      + '<div class="queue-row"><span class="queue-label mono">RESULT</span><span class="mono">' + esc(progress || '尚未得分') + '</span></div>'
+      + '</div></div>';
+  }).join('');
+}
+
+async function refreshFleet() {
+  try {
+    const res = await fetch('/api/v1/agent/status');
+    const data = await res.json();
+    if (!res.ok) throw new Error('[' + data.code + '] ' + data.message);
+    renderWorkers(data);
+    renderSingles(data);
+  } catch (err) {
+    showNotice('error', '获取舰队状态失败: ' + err.message);
+  }
+}
+
+async function refreshLogs() {
+  try {
+    const res = await fetch('/api/v1/agent/logs?worker=' + encodeURIComponent(LOG_WORKER) + '&tail=300');
+    const data = await res.json();
+    if (!res.ok) throw new Error('[' + data.code + '] ' + data.message);
+    const box = document.getElementById('agent-log-body');
+    box.innerHTML = '<div class="log-line"><span class="log-time">—</span>' + esc(data.logs).replace(/\n/g, '<br>') + '</div>';
+    box.scrollTop = box.scrollHeight;
+  } catch (err) {
+    const box = document.getElementById('agent-log-body');
+    box.innerHTML = '<div class="dim">' + esc(err.message) + '</div>';
+  }
+}
+
+document.getElementById('btn-refresh').addEventListener('click', refreshFleet);
+document.getElementById('btn-start').addEventListener('click', async () => {
+  document.getElementById('btn-start').disabled = true;
+  showNotice('info', '启动 Agent 舰队（首次构建镜像可能较慢）...');
+  try {
+    const res = await fetch('/api/v1/agent/start', { method: 'POST', headers: { 'X-CSRFToken': 'csrf' } });
+    const data = await res.json();
+    if (!res.ok) throw new Error('[' + data.code + '] ' + data.message);
+    showNotice('success', '舰队已启动：' + data.summary.running + '/' + data.summary.total + ' worker 运行中');
+    renderWorkers(data);
+  } catch (err) {
+    showNotice('error', '启动失败: ' + err.message);
+    document.getElementById('btn-start').disabled = false;
+  }
+});
+document.getElementById('btn-stop').addEventListener('click', async () => {
+  const res = await fetch('/api/v1/agent/stop', { method: 'POST', headers: { 'X-CSRFToken': 'csrf' } });
+  const data = await res.json();
+  if (!res.ok) { showNotice('error', '停止失败: ' + data.message); return; }
+  showNotice('success', '舰队已停止');
+  renderWorkers(data);
+});
+document.querySelectorAll('#log-tabs .filter-tab').forEach(b => {
+  b.addEventListener('click', () => switchLog(b.dataset.worker));
+});
+
+refreshFleet();
+refreshLogs();
+refreshUsage();
+FLEET_TIMER = setInterval(refreshFleet, 10000);
+LOG_TIMER = setInterval(refreshLogs, 8000);
+USAGE_TIMER = setInterval(refreshUsage, 10000);
+
+// ── LLM Token 用量面板（/api/v1/agent/usage）──────────
+function fmtTok(n) {
+  if (n == null || isNaN(n)) return '—';
+  if (n >= 1e8) return (n / 1e8).toFixed(2) + ' 亿';
+  if (n >= 1e4) return (n / 1e4).toFixed(1) + ' 万';
+  return String(n);
+}
+
+function renderUsage(data) {
+  const s = data.summary || {};
+  document.getElementById('u-total').textContent = fmtTok(s.totalTokens);
+  document.getElementById('u-total-raw').textContent = (s.totalTokens || 0).toLocaleString() + ' tokens';
+  document.getElementById('u-input').textContent = fmtTok(s.input);
+  document.getElementById('u-output').textContent = fmtTok(s.output);
+  document.getElementById('u-cacheread').textContent = fmtTok(s.cacheRead);
+  document.getElementById('u-cachewrite').textContent = fmtTok(s.cacheWrite);
+  document.getElementById('u-hit').textContent = (s.cacheHit != null ? s.cacheHit : '—') + '%';
+  document.getElementById('u-calls').textContent = (s.calls || 0).toLocaleString();
+  document.getElementById('u-sessions').textContent = (s.sessions || 0) + ' 会话 / ' + (s.challenges || 0) + ' 题';
+  document.getElementById('usage-model').textContent = s.model || '—';
+  const tb = document.getElementById('usage-tbody');
+  const rows = data.challenges || [];
+  if (!rows.length) {
+    tb.innerHTML = '<tr><td colspan="9" class="dim" style="padding:12px 10px">暂无用量数据（Agent 开始解题后出现）。</td></tr>';
+    return;
+  }
+  tb.innerHTML = rows.map(r => '<tr>'
+    + '<td class="mono">' + esc(r.code) + '</td>'
+    + '<td>' + (r.sessions || 0) + '</td>'
+    + '<td>' + (r.calls || 0) + '</td>'
+    + '<td title="' + (r.input || 0) + '">' + fmtTok(r.input) + '</td>'
+    + '<td title="' + (r.output || 0) + '">' + fmtTok(r.output) + '</td>'
+    + '<td title="' + (r.cacheRead || 0) + '">' + fmtTok(r.cacheRead) + '</td>'
+    + '<td title="' + (r.cacheWrite || 0) + '">' + fmtTok(r.cacheWrite) + '</td>'
+    + '<td>' + (r.cacheHit != null ? r.cacheHit : '—') + '%</td>'
+    + '<td title="' + (r.totalTokens || 0) + '">' + fmtTok(r.totalTokens) + '</td>'
+    + '</tr>').join('');
+}
+
+async function refreshUsage() {
+  try {
+    const res = await fetch('/api/v1/agent/usage');
+    const data = await res.json();
+    if (!res.ok) throw new Error('[' + data.code + '] ' + data.message);
+    renderUsage(data);
+  } catch (err) {
+    document.getElementById('usage-model').textContent = '用量读取失败';
+  }
+}
+
+// ── 实时对话流（LLM TRANSCRIPTS）— 会话时间线版 ─────
+// 以 message_end 的权威 content 驱动渲染（thinking/text/toolCall 结构块），
+// 不再从 message_update 增量流重建（避免空 TEXT/卡缓冲）。tokens/模型/stopReason 取自 message 元数据。
+let TR_SESSIONS = [];
+let TR_SELECTED = null;   // {file, name}
+let TR_NEXT_LINE = 0;
+let TR_TOTAL_LINES = 0;
+let TR_EVENTS = [];
+let TR_META = { id: '', start: '', cwd: '', model: '', turns: 0, outMsgs: 0, tokens: 0 };
+let TR_TOOLMAP = {};      // toolCallId -> {name, args}
+let TR_TAIL = false;      // 当前是否尾部视图（头部要标出来，事件数也不能冒充全量）
+let TR_FAILS = 0;         // 连续轮询失败次数；到 3 就在流里插一条告警，不再静默
+let TR_LIST_SIG = '';     // 会话列表签名：内容没变就不重绘，否则每 8s 打断滚动
+
+function trFmt(ts) {
+  if (!ts) return '';
+  try { return new Date(ts).toLocaleTimeString('zh-CN', {hour12:false}); }
+  catch (e) { return ''; }
+}
+function trSize(n) {
+  if (n == null) return '0 B';
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n/1024).toFixed(1) + ' KB';
+  return (n/1048576).toFixed(1) + ' MB';
+}
+function trTok(n) { return n == null ? '' : (n >= 1000 ? (n/1000).toFixed(1) + 'k' : String(n)); }
+function trClip(s, n) { s = s == null ? '' : String(s); return s.length > n ? s.slice(0, n) + ' …' : s; }
+// [B60] 轮次徽章只显示 "轮-场"。驱动写出的文件名形如 round0_session3_0911162237.jsonl
+// —— `session<场次>` 后面还挂着启动戳，所以那一段必须显式允许，否则整条文件名
+// 会被原样当成徽章文字（旧正则 ^round(\d+)_.*session(\d+)\.jsonl$ 实测 0/N 命中）。
+function trRoundLabel(name) {
+  const m = /^round(\d+)_session(\d+)(?:_\d+)?\.jsonl$/i.exec(name || '');
+  if (m) return m[1] + '-' + m[2];
+  return String(name || '').replace(/\.jsonl$/i, '');
+}
+
+function trResultText(res) {
+  if (res == null) return '';
+  if (typeof res === 'string') return res;
+  if (res && Array.isArray(res.content)) {
+    return res.content.map(x => (x && typeof x === 'object' && x.text != null) ? x.text : String(x)).join('\n');
+  }
+  try { return JSON.stringify(res); } catch (e) { return ''; }
+}
+function trArgsText(a) {
+  if (a == null) return '';
+  if (typeof a === 'string') return a;
+  if (a.command != null) return a.command;
+  try { return JSON.stringify(a); } catch (e) { return ''; }
+}
+
+// 会话头（一次性渲染）
+function trSessionHeader(tail) {
+  const tok = TR_META.tokens ? ' · ' + trTok(TR_META.tokens) + ' tokens' : '';
+  return '<div class="tr-session-hdr">'
+    + '<div><span class="tr-kind">SESSION</span> id <b class="mono">' + esc(TR_META.id || '—') + '</b> · 开始 <b class="mono">' + esc(TR_META.start || '—') + '</b> · cwd <b class="mono">' + esc(TR_META.cwd || '—') + '</b></div>'
+    + '<div class="mono dim">' + esc(TR_META.model || '') + tok + (tail ? ' · 尾部视图' : '') + '</div>'
+    + '</div>';
+}
+
+// 单事件 → HTML；副作用更新 TR_META/TR_TOOLMAP。message_end 是权威数据源。
+function trEventHtml(ev) {
+  switch (ev.type) {
+    case 'session':
+      TR_META.id = ev.id || TR_META.id;
+      TR_META.start = trFmt(ev.timestamp) || TR_META.start;
+      TR_META.cwd = ev.cwd || TR_META.cwd;
+      return '';
+    case 'agent_start':
+      return '';
+    case 'turn_start':
+      TR_META.turns += 1;
+      return '<div class="tr-line tr-turn"><span class="tr-kind">TURN</span> 第 ' + TR_META.turns + ' 轮</div>';
+    case 'turn_end':
+      if (ev.message && ev.message.model) TR_META.model = ev.message.model;
+      return '';
+    case 'message_start': {
+      const m = ev.message || {};
+      // 只显示 user 的任务输入（提示词）；assistant/toolResult 的 start 是空壳/回显壳
+      if (m.role === 'user') {
+        const txt = Array.isArray(m.content) ? m.content.map(c => (c && c.text != null) ? c.text : '').join(' ') : '';
+        return '<div class="tr-line tr-input"><span class="tr-kind">IN</span> ' + esc(trClip(txt, 900)) + '</div>';
+      }
+      return '';
+    }
+    case 'message_end': {
+      const m = ev.message || {};
+      if (m.role !== 'assistant') return '';   // toolResult 大块回显跳过
+      if (m.model) TR_META.model = m.model;    // [B60] 这个字段以前全文件只读不写，头部永远空
+      TR_META.outMsgs += 1;
+      const u = m.usage || {};
+      if (u.totalTokens) TR_META.tokens += u.totalTokens;
+      const tok = u.totalTokens ? ' · ' + trTok(u.totalTokens) + ' tokens' : '';
+      let html = '<div class="tr-line tr-out-hdr"><span class="tr-kind">OUT</span> ' + TR_META.outMsgs
+        + ' · <b class="mono">' + esc(m.model || '') + '</b>' + tok
+        + ' · <span class="mono">' + esc(m.stopReason || '') + '</span></div>';
+      // [B60] 失败回合：pi 把原因放在 errorMessage（如 "402 Insufficient Balance"），
+      // 此时 content 是空数组。旧代码只渲染上面那行光秃秃的 OUT 头，把原因整个丢掉
+      // —— 402 风暴期间打开这个页面看到的就是"一片空白"，像是 UI 坏了。
+      if (m.errorMessage) {
+        html += '<div class="tr-line tr-tool-err"><span class="tr-kind">✗ ERROR</span> '
+          + esc(m.errorMessage) + '</div>';
+      } else if (m.stopReason === 'error' && !(m.content || []).length) {
+        html += '<div class="tr-line tr-tool-err"><span class="tr-kind">✗ ERROR</span>'
+          + ' 本回合无产出，且 provider 未回报 errorMessage</div>';
+      }
+      for (const c of (m.content || [])) {
+        if (!c || typeof c !== 'object') continue;
+        if (c.type === 'thinking') {
+          html += '<div class="tr-line tr-think"><span class="tr-kind">THINK</span> ' + esc(trClip(c.thinking || c.text || '', 2000)) + '</div>';
+        } else if (c.type === 'text') {
+          html += '<div class="tr-line tr-text"><span class="tr-kind">TEXT</span> ' + esc(trClip(c.text || '', 2000)) + '</div>';
+        } else if (c.type === 'toolCall') {
+          html += '<div class="tr-line tr-tool"><span class="tr-kind">🔧 TOOL</span> <b>' + esc(c.name || '') + '</b><pre>' + esc(trClip(trArgsText(c.arguments), 3000)) + '</pre></div>';
+        }
+      }
+      return html;
+    }
+    case 'tool_execution_start':
+      // 记录 toolCallId -> name/args，供 end 关联展示
+      if (ev.toolCallId) TR_TOOLMAP[ev.toolCallId] = { name: ev.toolName || '', args: ev.args };
+      return '';
+    case 'tool_execution_update':
+      return '';   // 流式 partial 跳过
+    case 'tool_execution_end': {
+      const info = TR_TOOLMAP[ev.toolCallId] || {};
+      const txt = trResultText(ev.result);
+      const err = ev.isError ? ' tr-tool-err' : '';
+      return '<div class="tr-line tr-tool-end' + err + '"><span class="tr-kind">✓ TOOL</span> <b>' + esc(info.name || ev.toolName || '') + '</b> · <span class="mono">' + trSize(txt.length) + '</span> '
+        + '<span class="dim">' + esc(trClip(txt, 1200)) + '</span></div>';
+    }
+    case 'agent_end': {
+      // [B60] 以前落到 default 返回空串 —— 会话正常结束和"卡死不动"在页面上没法区分
+      const n = Array.isArray(ev.messages) ? ev.messages.length : 0;
+      return '<div class="tr-line tr-end"><span class="tr-kind">■ END</span> 会话结束'
+        + (n ? ' · 共 ' + n + ' 条消息' : '') + '</div>';
+    }
+    case 'raw':
+      return '<div class="tr-line tr-dim"><span class="tr-kind">RAW</span> ' + esc(trClip(ev.line || '', 400)) + '</div>';
+    default:
+      return '';
+  }
+}
+
+function trScrollBottom() {
+  const b = document.getElementById('tr-event-body');
+  if (document.getElementById('tr-autoscroll').checked) b.scrollTop = b.scrollHeight;
+}
+function trStat() {
+  const tok = TR_META.tokens ? ' · ' + trTok(TR_META.tokens) + ' tokens' : '';
+  document.getElementById('tr-stat').textContent = TR_EVENTS.length + ' 事件'
+    + (TR_TAIL ? '（尾部）' : '') + ' / 共 ' + TR_TOTAL_LINES + ' 行' + tok;
+}
+
+function trAppendEvents(events) {
+  const tbody = document.getElementById('tr-event-body');
+  let html = '';
+  (events || []).forEach(ev => { html += trEventHtml(ev); });
+  if (html) { tbody.insertAdjacentHTML('beforeend', html); trScrollBottom(); }
+  trStat();
+}
+
+async function trLoadSessions() {
+  try {
+    const res = await fetch('/api/v1/agent/transcripts');
+    const data = await res.json();
+    if (!res.ok) throw new Error('[' + data.code + '] ' + data.message);
+    TR_SESSIONS = data.files || [];
+    const box = document.getElementById('tr-session-list');
+    // 选中项失效要先判：它会把 TR_SELECTED 清掉，进而影响下面的列表签名
+    if (TR_SELECTED && !TR_SESSIONS.some(f => f.file === TR_SELECTED.file)) {
+      TR_SELECTED = null; TR_META = { id: '', start: '', cwd: '', model: '', turns: 0, outMsgs: 0, tokens: 0 }; TR_EVENTS = [];
+      TR_TAIL = false; TR_NEXT_LINE = 0; TR_TOTAL_LINES = 0;
+      document.getElementById('tr-file-label').textContent = '未选择会话';
+      document.getElementById('tr-stat').textContent = '—';
+      document.getElementById('tr-event-body').innerHTML = '<div class="dim" style="padding:10px 12px">所选 transcript 已不存在。</div>';
+    }
+    if (!TR_SESSIONS.length) {
+      if (TR_LIST_SIG !== '') {
+        box.innerHTML = '<div class="dim" style="padding:10px 12px">暂无 transcript 文件（Agent 开始解题后出现）。</div>';
+        TR_LIST_SIG = '';
+      }
+      return;
+    }
+    // [B60] 内容与选中项都没变就不重绘：本函数每 8s 跑一次，无条件 innerHTML=
+    // 会把会话列表的滚动位置打回顶部，会话一多就没法滚下去挑。
+    const sig = (TR_SELECTED ? TR_SELECTED.file : '') + '||'
+      + TR_SESSIONS.map(f => f.file + ':' + f.lines + ':' + f.size).join('|');
+    if (sig === TR_LIST_SIG) return;
+    TR_LIST_SIG = sig;
+    box.innerHTML = TR_SESSIONS.map(f => {
+      const cur = TR_SELECTED && TR_SELECTED.file === f.file;
+      return '<div class="tr-session' + (cur ? ' active' : '') + '" data-file="' + esc(f.file) + '">'
+        + '<div class="tr-sess-head"><b>' + esc(f.code) + '</b><span class="tr-sess-round">r' + esc(trRoundLabel(f.name)) + '</span></div>'
+        + '<div class="tr-sess-meta mono">' + f.lines + ' 行 · ' + trSize(f.size) + '</div>'
+        + '<div class="tr-sess-time mono">' + (new Date(f.mtime * 1000).toLocaleTimeString('zh-CN', {hour12:false})) + '</div>'
+        + '</div>';
+    }).join('');
+  } catch (err) {
+    // 失败信息占用了列表容器：清掉签名，否则下次成功时签名相同会跳过重绘，
+    // 「加载失败」会永久留在面板上
+    TR_LIST_SIG = '';
+    document.getElementById('tr-session-list').innerHTML = '<div class="dim" style="padding:10px 12px">加载失败: ' + esc(err.message) + '</div>';
+  }
+}
+
+// 选择会话：大文件跳尾部看最近活动，小文件从头读
+async function trSelect(file) {
+  TR_SELECTED = { file: file, name: file.split('/').pop() };
+  TR_NEXT_LINE = 0;
+  TR_TOTAL_LINES = 0;
+  TR_EVENTS = [];
+  TR_META = { id: '', start: '', cwd: '', model: '', turns: 0, outMsgs: 0, tokens: 0 };
+  TR_TOOLMAP = {};
+  const meta = TR_SESSIONS.find(f => f.file === file);
+  const startLine = (meta && meta.lines > 500) ? Math.max(0, meta.lines - 500) : 0;
+  TR_TAIL = startLine > 0;
+  TR_FAILS = 0;
+  const box = document.getElementById('tr-event-body');
+  box.innerHTML = '<div class="dim" style="padding:10px 12px">读取 ' + esc(file) + (startLine ? '（尾部）' : '') + ' ...</div>';
+  try {
+    const res = await fetch('/api/v1/agent/transcript?file=' + encodeURIComponent(file) + '&line=' + (startLine || 0) + '&limit=500');
+    const data = await res.json();
+    if (!res.ok) throw new Error('[' + data.code + '] ' + data.message);
+    TR_NEXT_LINE = data.from_line + (data.events || []).length;
+    TR_TOTAL_LINES = data.total_lines;
+    TR_EVENTS = data.events || [];
+    let rows = TR_EVENTS.length ? TR_EVENTS.map(trEventHtml).join('') : '';
+    // [B60] 尾部视图下第 1 行的 session 事件不在读取窗口里 → 会话头 id/开始/cwd
+    // 全是 '—'。单独补读 1 行把元信息捞回来（用户点击才发生，成本可忽略）。
+    if (rows && startLine > 0) {
+      try {
+        const hr = await fetch('/api/v1/agent/transcript?file=' + encodeURIComponent(file) + '&line=1&limit=1');
+        const hd = await hr.json();
+        const h = (hd.events || []).find(e => e.type === 'session');
+        if (h) {
+          TR_META.id = h.id || TR_META.id;
+          TR_META.start = trFmt(h.timestamp) || TR_META.start;
+          TR_META.cwd = h.cwd || TR_META.cwd;
+        }
+      } catch (e) { /* 补不到就保持 '—'，不影响主视图 */ }
+    }
+    document.getElementById('tr-file-label').textContent = file.split('/').pop() + (startLine ? '（尾部）' : '');
+    if (rows) {
+      box.innerHTML = trSessionHeader(startLine > 0) + rows;
+    } else {
+      box.innerHTML = '<div class="dim" style="padding:10px 12px">' + esc(file) + ' 暂无事件。</div>';
+    }
+    trStat();
+    trLoadSessions();
+  } catch (err) {
+    box.innerHTML = '<div class="dim" style="padding:10px 12px">读取失败: ' + esc(err.message) + '</div>';
+  }
+}
+
+// 增量轮询：from_line+consumed 前进，追最新
+async function trPoll() {
+  if (!TR_SELECTED) return;
+  try {
+    const res = await fetch('/api/v1/agent/transcript?file=' + encodeURIComponent(TR_SELECTED.file) + '&line=' + TR_NEXT_LINE + '&limit=500');
+    const data = await res.json();
+    if (!res.ok) throw new Error('[' + data.code + '] ' + data.message);
+    if (data.from_line !== TR_NEXT_LINE) return trSelect(TR_SELECTED.file);
+    TR_FAILS = 0;
+    const newEvents = data.events || [];
+    TR_NEXT_LINE = data.from_line + newEvents.length;
+    TR_TOTAL_LINES = data.total_lines;
+    if (newEvents.length) {
+      TR_EVENTS = TR_EVENTS.concat(newEvents);
+      trAppendEvents(newEvents);
+    }
+  } catch (err) {
+    // [B60] 以前这里纯静默。转录文件被清理 / 后端 404 之后，右栏会永远冻在最后一次
+    // 成功的内容上，看不出已经断流 —— 与 B59「不崩不报警」同一族病灶，补个明示。
+    TR_FAILS += 1;
+    if (TR_FAILS === 3) {
+      const tbody = document.getElementById('tr-event-body');
+      tbody.insertAdjacentHTML('beforeend',
+        '<div class="tr-line tr-tool-err"><span class="tr-kind">⚠ 断流</span> 连续 3 次读取失败：'
+        + esc(err && err.message ? err.message : String(err)) + '（仍在重试；文件可能已被清理）</div>');
+      trScrollBottom();
+    }
+  }
+}
+
+document.getElementById('tr-refresh').addEventListener('click', trLoadSessions);
+// [B60] 绑在容器上、只绑一次：列表重绘不影响点击（旧代码每次重绘都重绑一遍）
+document.getElementById('tr-session-list').onclick = ev => {
+  const el = ev.target.closest('.tr-session');
+  if (el) trSelect(el.dataset.file);
+};
+trLoadSessions();
+setInterval(trPoll, 3000);           // 事件流增量轮询
+setInterval(trLoadSessions, 8000);   // 会话列表刷新
+
+
+{% endblock %}

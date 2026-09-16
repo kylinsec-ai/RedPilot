@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest>=8,<10
+httpx>=0.27,<1
+playwright==1.55.0
+pytest-playwright==0.8.0

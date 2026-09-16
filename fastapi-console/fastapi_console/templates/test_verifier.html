@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>验证器测试</title>
+</head>
+<body>
+    <h1>验证器功能测试</h1>
+    
+    <div>
+        <h2>配置</h2>
+        <label><input type="checkbox" id="skeptic-enabled" checked /> 启用 Skeptic</label><br/>
+        <label>投票数: <input type="number" id="skeptic-votes" value="1" min="1" max="5" /></label><br/>
+        <label><input type="checkbox" id="force-approve-grounded" checked /> 信任 Grounded Flag</label><br/>
+        <button id="btn-save-verifier">保存配置</button>
+        <button id="btn-view-rejected">查看被拒绝的Flag</button>
+    </div>
+    
+    <div id="result" style="margin-top: 20px; padding: 10px; border: 1px solid #ccc;"></div>
+    
+    <script>
+        function showMessage(msg) {
+            document.getElementById('result').innerHTML = msg;
+        }
+        
+        async function loadConfig() {
+            try {
+                const resp = await fetch('/api/v1/verifier/config');
+                const data = await resp.json();
+                document.getElementById('skeptic-enabled').checked = data.skeptic_enabled;
+                document.getElementById('skeptic-votes').value = data.skeptic_votes;
+                document.getElementById('force-approve-grounded').checked = data.force_approve_grounded;
+                showMessage('配置已加载');
+            } catch (e) {
+                showMessage('加载失败: ' + e.message);
+            }
+        }
+        
+        document.getElementById('btn-save-verifier').addEventListener('click', async () => {
+            showMessage('保存中...');
+            try {
+                const resp = await fetch('/api/v1/verifier/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        skeptic_enabled: document.getElementById('skeptic-enabled').checked,
+                        skeptic_votes: parseInt(document.getElementById('skeptic-votes').value),
+                        force_approve_grounded: document.getElementById('force-approve-grounded').checked
+                    })
+                });
+                const data = await resp.json();
+                showMessage(data.ok ? '保存成功！' : '保存失败: ' + data.message);
+            } catch (e) {
+                showMessage('错误: ' + e.message);
+            }
+        });
+        
+        document.getElementById('btn-view-rejected').addEventListener('click', async () => {
+            showMessage('查询中...');
+            try {
+                const resp = await fetch('/api/v1/verifier/rejected-flags');
+                const data = await resp.json();
+                if (data.rejected_flags && data.rejected_flags.length > 0) {
+                    let html = `<h3>找到 ${data.rejected_flags.length} 个被拒绝的flag:</h3><ul>`;
+                    data.rejected_flags.forEach(item => {
+                        html += `<li><b>${item.challenge_code}</b>: ${item.flag}</li>`;
+                    });
+                    html += '</ul>';
+                    showMessage(html);
+                } else {
+                    showMessage('没有被拒绝的flag');
+                }
+            } catch (e) {
+                showMessage('错误: ' + e.message);
+            }
+        });
+        
+        loadConfig();
+    </script>
+</body>
+</html>
