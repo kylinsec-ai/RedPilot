@@ -235,6 +235,12 @@ class FlagSubmissionRegressionTests(unittest.TestCase):
                  reject_reason="", provenance="remote")), \
              patch.object(driver, "_skeptic_check", return_value=""), \
              patch.object(driver, "_update_status"):
+            # 候选表只来自 FLAG 交付文件（_read_stable_flag_delivery_snapshot →
+            # _read_flag_file，benchmark_driver.py:4108）。不写这个文件，循环体里的
+            # `for fc_raw in file_flags:` 一次都不执行，submit_flag 从不被调用 ——
+            # 这正是本用例此前恒为 [] 的原因（兄弟用例 test_eager_submit_* 走的是
+            # patch _read_flag_file / 直接写 FLAG 两条路，本用例两条都没走）。
+            Path(workdir, "FLAG").write_text(candidate + "\n", encoding="utf-8")
             client = Client()
             solved = [False]
             driver._eager_submit_loop(
@@ -481,20 +487,27 @@ class SchedulerRegressionTests(unittest.TestCase):
             self.assertTrue(driver._capability_sharding_enabled())
 
     def test_adaptive_session_limits_by_difficulty(self):
+        # session_idx=1 才对得上难度表：session 0 是第一轮快速探索，单 flag 题一律
+        # 短路到 (20,300,'first-session-quick-explore')（benchmark_driver.py:590-593），
+        # 根本走不到下面的难度分支 —— 传 0 的断言永远看不到表。
         solver = SimpleNamespace(max_turns=60, session_seconds=2400)
         with patch.dict(os.environ, {"ADAPTER_ADAPTIVE_SESSION": "1"}, clear=False):
             easy = driver._adaptive_session_limits(
-                SimpleNamespace(difficulty="easy", flag_count=1), solver, 0, 0, 0)
+                SimpleNamespace(difficulty="easy", flag_count=1), solver, 1, 0, 0)
             medium = driver._adaptive_session_limits(
-                SimpleNamespace(difficulty="medium", flag_count=1), solver, 0, 0, 0)
+                SimpleNamespace(difficulty="medium", flag_count=1), solver, 1, 0, 0)
             hard = driver._adaptive_session_limits(
-                SimpleNamespace(difficulty="hard", flag_count=1), solver, 0, 0, 0)
+                SimpleNamespace(difficulty="hard", flag_count=1), solver, 1, 0, 0)
             multi = driver._adaptive_session_limits(
-                SimpleNamespace(difficulty="easy", flag_count=2), solver, 0, 0, 0)
+                SimpleNamespace(difficulty="easy", flag_count=2), solver, 1, 0, 0)
+            # 首轮快速探索预算：多 flag 题不做这个短路（连续会话），但单 flag 题做。
+            first = driver._adaptive_session_limits(
+                SimpleNamespace(difficulty="hard", flag_count=1), solver, 0, 0, 0)
         self.assertEqual(easy[:2], (36, 900))
         self.assertEqual(medium[:2], (48, 1200))
         self.assertEqual(hard[:2], (60, 2400))
         self.assertEqual(multi[:2], (60, 2400))
+        self.assertEqual(first[:2], (20, 300))
 
     def test_multiflag_turn_limit_extends_only_the_chain_session(self):
         with patch.dict(os.environ, {"ADAPTER_MULTIFLAG_MAX_TURNS": "120"}, clear=False):
@@ -506,12 +519,20 @@ class SchedulerRegressionTests(unittest.TestCase):
                     SimpleNamespace(max_turns=180)), 180)
 
     def test_subagent_policy_scales_with_difficulty(self):
+        """子 Agent 调度策略是**难度无关**的 —— 断言当前契约，不是断言难度阶梯。
+
+        本用例原先断言 '不要调用 subagent' / '最多并行派 2 个'。这两串从未被任何
+        已提交的生产代码产出过（全仓含 1.zip 全域搜索只命中测试文件自身）；
+        生产策略是「先自己做，做不动了再叫人；没有次数限制」（adapter/taskprompt.py:292）。
+        即断言与实现对不上，而不是实现退化。
+        """
         easy = _subagent_scheduling_policy(
             AgentTask(objective="x", difficulty="easy", flag_count=1), 0)
         hard = _subagent_scheduling_policy(
             AgentTask(objective="x", difficulty="hard", flag_count=1), 0)
-        self.assertIn("不要调用 subagent", easy)
-        self.assertIn("最多并行派 2 个", hard)
+        # 当前契约：给预算，不给次数上限；难度不改变策略。
+        self.assertIn("没有次数限制", easy)
+        self.assertEqual(easy, hard)
 
     def test_efficiency_policy_allows_limited_recheck_then_pivots(self):
         task = AgentTask(objective="x", difficulty="medium", flag_count=1,
@@ -534,7 +555,10 @@ class SchedulerRegressionTests(unittest.TestCase):
         prompt = driver.build_task_prompt(task, None)
         self.assertIn("不要使用环境不兼容的 `proxychains4`", prompt)
         self.assertNotIn("proxychains4 nmap", prompt)
-        self.assertIn("禁止用 `>` 覆盖已经找到的 flag", prompt)
+        # 以下断言原本写死 'flag' 字样；生产提示词已把该规则从「flag」推广到
+        # 「答案」（同一句还支持非 flag{} 题面），见 adapter/taskprompt.py:63。
+        # 规则本身未变，只是措辞。断言改为生产里的逐字原文。
+        self.assertIn("禁止用 `>` 覆盖已经找到的答案", prompt)
 
     def test_multiflag_prompt_explains_confirmed_queue_cleanup(self):
         task = AgentTask(objective="内网多阶段渗透", difficulty="medium", flag_count=3,
@@ -542,7 +566,10 @@ class SchedulerRegressionTests(unittest.TestCase):
         prompt = driver.build_task_prompt(task, None, flags_submitted=1)
         self.assertIn("已确认的 flag 可能已从 FLAG 投递队列自动移除", prompt)
         self.assertIn("立即沿当前内网链继续寻找下一条", prompt)
-        self.assertIn("'flag{...}' >> FLAG", prompt)
+        # 追加写法（'答案内容' >> FLAG）见 adapter/taskprompt.py:63/152。
+        # 提示词刻意不出现字面量 'flag{...}' —— 它同时是 flag_format 的默认值，
+        # 出现在正文里会被当成"格式说明"而非"示例"，见 adapter/taskprompt.py:397。
+        self.assertIn("'答案内容' >> FLAG", prompt)
 
     def test_blackboard_goal_moves_past_recon_after_observation(self):
         board = Blackboard()

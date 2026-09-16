@@ -90,9 +90,8 @@ RUN pip3 install --break-system-packages --no-build-isolation --no-cache-dir \
 # (packages/worker 的 [tool.setuptools.packages.find] include = ["ghost_worker*"])，
 # 所以必须显式落到 /app 并让 /app 在 sys.path 上 —— WORKDIR /app 已保证这一点。
 # 朋友的测试(setup 里 sys.path.insert(parents[1]))与 driver 的 `from adapter...`
-# 都依赖这个位置；改动前先跑 `python -m pytest tests/` 确认基线不塌
-# (注意必须用 `python -m`：pytest.ini 的 testpaths=packages 只收三包，
-#  `tests/` 靠 cwd 进 sys.path 才 import 得到 adapter)。
+# 都依赖这个位置；改动前先跑 `.venv/bin/pytest` 确认基线不塌（pytest.ini 的
+# pythonpath=. 已把仓库根加进来，不再依赖 cwd/python -m 的隐含前提）。
 #
 # 不要把顶层 tsecbench/ 也 COPY 进来：它被 .dockerignore 排除，COPY 会直接构建
 # 失败(CopyIgnoredFile)，而且 worker 运行期无人 import 它 —— 它的使用者

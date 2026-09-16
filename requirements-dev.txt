@@ -4,9 +4,11 @@ httpx>=0.27,<1
 playwright==1.55.0
 pytest-playwright==0.8.0
 
-# 朋友的策略层与舰队源码在开发时直接 import（adapter/ drivers/ tsecbench/ 是顶层包，
-# 不进 packages/ 的 editable 安装）。它们只靠「cwd 在 sys.path 上」才 import 得到：
-# pytest.ini 的 testpaths=packages 只收三包，所以根目录的 tests/ 必须显式点名，
-# 而且要带 `python -m`（`pytest tests/` 的 console script 不带 cwd，会
-# ModuleNotFoundError: adapter）。基线命令：
-#     .venv/bin/python -m pytest tests/ packages/
+# 朋友的策略层与舰队源码在开发时直接 import。pytest.ini 已把 tests/ 收进 testpaths
+# 并把仓库根加进 pythonpath，所以裸 pytest 就能收全部用例（334 个）：
+#     .venv/bin/pytest
+# 单跑某一路时才需要点名：
+#     .venv/bin/pytest packages/        # 三包（159 个）
+#     .venv/bin/pytest tests/           # 朋友侧（175 个）
+# （此前必须 `python -m pytest tests/ packages/` —— 靠 cwd 进 sys.path 才 import 得到
+#  adapter/drivers；pythonpath=. 之后这个隐含前提已消除。）
