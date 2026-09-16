@@ -85,6 +85,16 @@ COPY packages/worker /opt/packages/worker
 RUN pip3 install --break-system-packages --no-build-isolation --no-cache-dir \
         -e /opt/packages/contracts -e /opt/packages/ghost -e /opt/packages/worker
 
+# ── 4b. 策略层源码(朋友线合并结果) ──
+# adapter/ 是**顶层包**(`import adapter.verify`)，不会被上面的 editable 安装收进来
+# (packages/worker 的 [tool.setuptools.packages.find] include = ["ghost_worker*"])，
+# 所以必须显式落到 /app 并让 /app 在 sys.path 上 —— WORKDIR /app 已保证这一点。
+# 朋友的测试(setup 里 sys.path.insert(parents[1]))与 driver 的 `from adapter...`
+# 都依赖这个位置；改动前先跑 pytest tests/ 确认 170 passed 不塌。
+COPY adapter /app/adapter
+COPY drivers /app/drivers
+COPY tsecbench /app/tsecbench
+
 # ── 5. 复制题面工具与运行资产 ──
 COPY tools /opt/tools
 COPY skills /root/.pi/agent/skills

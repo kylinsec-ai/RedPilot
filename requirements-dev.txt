@@ -3,3 +3,6 @@ pytest>=8,<10
 httpx>=0.27,<1
 playwright==1.55.0
 pytest-playwright==0.8.0
+
+# 朋友的策略层与舰队源码在开发时直接 import（adapter/ drivers/ tsecbench/ 是顶层包，
+# 不进 packages/ 的 editable 安装）。测试从仓库根跑，根目录会自动进 sys.path。
