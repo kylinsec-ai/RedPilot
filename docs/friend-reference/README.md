@@ -1,12 +1,25 @@
 # TSecBench Agent 舰队
 
-> **历史快照（存档用，不是当前仓库的说明）。** 本目录是朋友那一版的原始配置与文档，
-> 逐字保留以便对照。其中的路径对应**搬迁前的树**：`drivers/`、顶层 `adapter/`、
-> `CHALLENGES_API.md` 等都已不在当前位置（策略层已搬进
-> `packages/worker/ghost_worker/adapter/`，主循环在 `ghost_worker/orchestrator.py`）。
-> 本目录里的 Dockerfile / `docker-compose.yaml` / `entrypoint.sh` **不参与任何构建**，
-> 照它们跑会因源目录不存在而失败。当前用法看仓库根 `README.md` 与
-> `packages/worker/README.md`。
+> **历史快照（存档用，不是当前仓库的说明）。**
+>
+> **本目录存的不是朋友那一版的全量拷贝。** 只有下面三个部署文件与朋友的最终态
+> **逐字节相同**：`Dockerfile`、`docker-compose.yaml`、`entrypoint.sh`。另外五个
+> （`QUICK_REFERENCE.txt`、`start.sh`、`SYSTEM_USER_GUIDE.md`、
+> `tsecbench-frontend-README.md`、以及本文件）来自**更早的一版**，朋友的最终态里
+> 已经没有它们了 —— 所以别把它们当"朋友当时的样子"读。
+>
+> 朋友的**源码**（`adapter/`、`drivers/`、`tests/`、`skills/`、`tsecbench/`、
+> `fastapi-console/`）一份都没存进这里：它们逐文件对照过，去重之后已经全部进了
+> 仓库（策略层搬进 `packages/worker/ghost_worker/adapter/`，主循环在
+> `ghost_worker/orchestrator.py`，`skills/` 与 `tsecbench/` 原样保留）。
+>
+> 内容**真的丢了**的只有一份：`CHALLENGES_API.md`（平台接口规约）。它既不在本目录，
+> 也不在仓库 —— 现行契约以 `packages/worker/ghost_worker/adapter/platform/tsecbench_http.py`
+> 顶部的接口清单为准（架构审查时确认过这是唯一的全损文档）。
+>
+> 上述三个部署文件**不参与任何构建**，照它们跑会因源目录不存在而失败
+> （它们 COPY/挂载的 `adapter/`、`drivers/` 是搬迁前的**顶层**目录）。
+> 当前用法看仓库根 `README.md` 与 `packages/worker/README.md`。
 
 这个仓库保留三个当前可部署组件：
 

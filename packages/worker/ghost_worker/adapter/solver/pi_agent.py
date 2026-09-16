@@ -717,12 +717,14 @@ def _install_skills(pi_home: str) -> int:
     if not skill_agent_enabled():
         return 0
     try:
-        # pi_agent.py 位于 <repo>/adapter/solver/ → 三级上溯即仓库根
-        skills_root = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__)))), "skills")
-        if not os.path.isdir(skills_root):
-            log.debug("[B67] 仓库 skills/ 不存在，跳过")
+        # 定位由 contracts 单源（env → /app/skills → 从本文件上溯）。此前是
+        # "三级上溯即仓库根"：那在朋友的 `adapter/solver/` 布局里对，搬进
+        # `ghost_worker/adapter/solver/` 之后指向不存在的 `packages/worker/skills`
+        # —— pi 的原生技能面静默归零（agent 拿不到任何 SKILL.md）。
+        from ghost_contracts.paths import skills_root as _skills_root
+        skills_root = _skills_root(__file__, extra="/app/skills")
+        if not skills_root:
+            log.debug("[B67] 找不到 skills/ 目录，跳过")
             return 0
         dest = os.path.join(pi_home, ".pi", "agent", "skills")
         os.makedirs(dest, exist_ok=True)

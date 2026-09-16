@@ -22,13 +22,29 @@ fi
 # LLM 凭据由 pi 自行解析(官方 env 名,其次 ~/.pi/agent/auth.json)。
 # 空字符串的 *_API_KEY 视为未设后 unset(避免空值歧义;provider 凭据 env 名
 # 以 _API_KEY 结尾是 pi 官方惯例,见 https://pi.dev/docs/latest/providers)。
-have_key=0
-if [[ -n "${SOLVER_API_KEY:-}" ]]; then
-  echo "[adapter] WARNING: SOLVER_API_KEY 已废弃且不会被 pi 读取——请改用 pi 官方 env 名(如 DEEPSEEK_API_KEY,见 packages/worker/README.md 凭据说明)。" >&2
+
+# ── 旧别名兜底桥接（先于下面的凭据检测）──
+# pi 只认官方 env 名。旧部署沿用朋友的 `SOLVER_API_KEY` / `ANTHROPIC_AUTH_TOKEN` 写
+# .env，只打 WARNING 不桥接的话 pi 会以**无凭据**启动:每题 0-turn 失败、靠熔断才停
+# 下来,日志里看不出是凭据问题（一类很难查的静默失败）。所以这里桥一次 —— 与朋友
+# entrypoint 同序（网关 key 优先），但官方名优先、且明确告警。
+# 官方名一旦设了，下面两条**都不做**（尊重显式配置，也避免把网关 key 误当 deepseek key）。
+if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
+  if [[ -n "${SOLVER_API_KEY:-}" ]]; then
+    export DEEPSEEK_API_KEY="${SOLVER_API_KEY}"
+    echo "[adapter] WARNING: DEEPSEEK_API_KEY 未设,已从旧别名 SOLVER_API_KEY 桥接。" >&2
+    echo "[adapter] WARNING: 该别名已废弃,请改用 pi 官方 env 名(见 packages/worker/README.md 凭据说明)。" >&2
+  elif [[ -z "${ANTHROPIC_API_KEY:-}" && -n "${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
+    export DEEPSEEK_API_KEY="${ANTHROPIC_AUTH_TOKEN}"
+    echo "[adapter] WARNING: DEEPSEEK_API_KEY 未设,已从 ANTHROPIC_AUTH_TOKEN 桥接(朋友的旧部署走网关 key)。" >&2
+    echo "[adapter] WARNING: 仅在默认 provider=deepseek 时成立;换 provider 请显式设其官方 env 名。" >&2
+  fi
 fi
+
+have_key=0
 while IFS= read -r k; do
   case "$k" in
-    # 废弃别名不计入 have_key(上已告警),避免“有旧 key、无真凭据”时误报安全
+    # 废弃别名不计入 have_key(上已告警/已桥接),避免"有旧 key、无真凭据"时误报安全
     SOLVER_API_KEY) ;;
     *_API_KEY)
       if [[ -n "${!k}" ]]; then have_key=1; else unset "$k"; fi ;;

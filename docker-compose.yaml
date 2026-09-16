@@ -46,8 +46,11 @@ x-worker-volumes: &worker-volumes
   - ./packages/ghost:/opt/packages/ghost:ro
   - ./packages/worker:/opt/packages/worker:ro
   - ./tools:/opt/tools:ro
-  # pi skills 自动发现目录（~/.pi/agent/skills）：改 skill 内容免重建镜像，下一题即生效
+  # skills 挂两处（与 Dockerfile 的两处 COPY 对应）：/root 那份是 pi 在 HOME 未改写时
+  # 的默认发现路径；/app/skills 是逐题 HOME 场景下框架两条扫描（top-2 预选 + 软链装载）
+  # 的锚点（ADAPTER_SKILLS_DIR 指向它）。改 skill 内容免重建镜像，下一题即生效。
   - ./skills:/root/.pi/agent/skills:ro
+  - ./skills:/app/skills:ro
   - ./web:/app/web:ro
 
 # ── 三个 worker 共用的环境（凭据 / LLM / 观测 / 运行）──
@@ -70,9 +73,16 @@ x-worker-env: &worker-env
   ADAPTER_PI_THINKING: ${ADAPTER_PI_THINKING:-}
   # ── 平台接入方式：直连 HTTP（无第三方依赖）──
   ADAPTER_PLATFORM: ${ADAPTER_PLATFORM:-tsecbench-http}
+  # 通用 OpenAPI 平台的 spec 文件（adapter/platform/generic_openapi.py 的 spec 来源
+  # 第二优先级：构造参数 > 本变量 > 内置 tsecbench 结构）。接非 tsecbench 平台时必填，
+  # 否则适配器退回内置结构 —— 那是"看起来在跑但语义不对"的一类静默失败。
+  PLATFORM_SPEC_FILE: ${PLATFORM_SPEC_FILE:-}
   ADAPTER_PROVIDER: ${ADAPTER_PROVIDER:-deepseek}
   ADAPTER_SOLVER_MODEL: ${SOLVER_MODEL:-}
-  ADAPTER_SKILLS_DIR: ${ADAPTER_SKILLS_DIR:-}
+  # skills 根目录。**必须设**：逐题 HOME 下 pi 只从 $HOME 内发现技能，而框架两条
+  # 扫描（taskprompt 的 top-2 预选、pi_agent._install_skills 的软链装载）都以此为准。
+  # 不设的话两条都扫到空目录并只打一条 warning —— 技能面静默归零。
+  ADAPTER_SKILLS_DIR: /app/skills
   SOLVER_SESSION_SECONDS: ${SOLVER_SESSION_SECONDS:-1500}
   SOLVER_GATEWAY: ${SOLVER_GATEWAY:-0}
   PI_STALL_TIMEOUT: '900'
@@ -89,6 +99,9 @@ x-worker-env: &worker-env
   ADAPTER_WORKER_COUNT: '3'
   # 能力标签：解题目 worker 同质，不按角色分工 —— 一个变量喂全部
   ADAPTER_CAPABILITIES: ${ADAPTER_CAPABILITIES:-web,cloud,pwn,reverse,forensics,crypto,pentest,evasion,misc}
+  # 兜底能力：全自动派发时把无人认领的类型也接走（orchestrator._load_capabilities）。
+  # 留空 = 只用主能力；无法分类的题另有 _unknown_bucket 哈希分流兜底。
+  ADAPTER_EXTRA_CAPABILITIES: ${ADAPTER_EXTRA_CAPABILITIES:-}
   ADAPTER_MAX_CONCURRENCY: ${ADAPTER_MAX_CONCURRENCY:-3}
   ADAPTER_WORKER_CONCURRENCY: ${ADAPTER_WORKER_CONCURRENCY:-1}
   ADAPTER_OFFLINE_MODE: ${ADAPTER_OFFLINE_MODE:-1}

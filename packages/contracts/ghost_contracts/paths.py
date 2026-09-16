@@ -9,6 +9,7 @@ HEARTBEAT_PATH 此前在 adapter/solver/base.py,同时被 compose healthcheck �
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 
 # ── FLAG 候选文件读法(relay 兜底与 challenge_detail 共用) ──
@@ -36,3 +37,56 @@ TRANSCRIPT_FILENAME = "transcript.jsonl"  # <workdir>/<safe_code>/transcript.jso
 
 # 心跳文件(compose healthcheck 以同一字面量读取 —— 两处必须同步改)
 HEARTBEAT_PATH = "/tmp/driver_heartbeat"
+
+
+# ── skills/ 根目录定位 ──
+
+# 上溯搜索的最大层数。真实布局里 `adapter/solver/pi_agent.py` 距仓库根 4 层
+# （pi_agent → solver → adapter → ghost_worker → packages → 仓库根），留一层余量。
+_SKILLS_WALK_MAX = 6
+
+
+def skills_root(start_file: str, *, extra: str = "") -> str:
+    """从 `start_file` 定位仓库/镜像里的 `skills/` 目录；找不到返回 ""。
+
+    为什么需要这个函数（而不是继续在调用点 `dirname(dirname(__file__))`）：
+    那两处**数固定层数**的写法在朋友的目录布局里是对的，而策略层搬进
+    `packages/worker/ghost_worker/adapter/` 之后**全部指错** —— 指向一个不存在的
+    `packages/worker/skills`，于是技能扫描静默退化成 0 个（打一条 warning 就完事，
+    不报错）。数层数这种写法换一次布局就会再坏一次。
+
+    优先级：
+      1. `ADAPTER_SKILLS_DIR` 环境变量（运维显式指定，compose 里设的就是它）
+      2. `extra`（容器侧传 `/app/skills`：镜像里那条不随 HOME 改写消失的路径）
+      3. 从 `start_file` 逐级上溯找**含 SKILL.md 子目录**的 `skills/`
+         （要求含 SKILL.md 是为了不误命中一个同名的空目录）
+
+    纯 stdlib、无副作用；契约包不得依赖任何第三方（见 tests/test_purity.py）。
+    """
+    candidates: list[str] = []
+    env_dir = (os.environ.get("ADAPTER_SKILLS_DIR") or "").strip()
+    if env_dir:
+        candidates.append(env_dir)
+    if extra:
+        candidates.append(extra)
+    cur = os.path.dirname(os.path.abspath(start_file))
+    for _ in range(_SKILLS_WALK_MAX):
+        candidates.append(os.path.join(cur, "skills"))
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+
+    for cand in candidates:
+        if not os.path.isdir(cand):
+            continue
+        try:
+            has_skill = any(
+                os.path.isfile(os.path.join(cand, e, "SKILL.md"))
+                for e in os.listdir(cand)
+            )
+        except OSError:
+            continue
+        if has_skill:
+            return cand
+    return ""

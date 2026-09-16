@@ -110,8 +110,12 @@ class SkillStore:
     ]
 
     def __init__(self, skills_dir: str = None):
-        self._dir = skills_dir or os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills")
+        # 默认目录由 `ghost_contracts.paths.skills_root` 定位（env → /app/skills →
+        # 从本文件上溯）。此前是 `dirname(dirname(__file__))/skills`：那在朋友的
+        # 目录布局里对，搬进 ghost_worker/adapter/ 之后指向不存在的
+        # `packages/worker/skills` —— 扫描退化成 0 个技能且只打一条 warning。
+        from ghost_contracts.paths import skills_root
+        self._dir = skills_dir or skills_root(__file__, extra="/app/skills")
         self._skills: dict[str, SkillMeta] = {}
         self._scan()
 

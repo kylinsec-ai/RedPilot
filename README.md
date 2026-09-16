@@ -101,6 +101,18 @@ task epoch、eager 提交、交付账本、多段题推进、supervisor 判据�
 
 容器的 entrypoint 与 worker 装配层见 `entrypoint.sh` 与 `packages/worker/ghost_worker/driver.py`。
 
+## 进不了镜像的两个资产
+
+这两个目录都在仓库里、都**不在 worker 镜像里**（`.dockerignore` 排除）、也不被任何服务
+启动。它们不是死代码 —— 但需要手动起，别以为 compose 会带上：
+
+| 目录 | 是什么 | 怎么跑 |
+|---|---|---|
+| `tsecbench/` | **本地靶场 API**（题目/容器/提交/VPN 的完整挑战接口）。对着它就能端到端自测 worker，不需要真的靶场平台 | 自带 `.venv` 起：`.venv/bin/python -m uvicorn 'tsecbench.api:create_app' --factory --port 8000`；注意它和统一 server 抢同一个 8000，同时起要改端口 |
+| `fastapi-console/` | **只读 Web 控制台**（看舰队/任务/运行产物） | `bash fastapi-console/run.sh start`（默认 `:8003`，`FAC_PORT` 可改）。它读仓库根的 `.agent.env` 拿平台凭据与 LLM key —— 该文件被 gitignore，需要自己建 |
+
+两者都只被 `tests/` 引用，所以 `pytest` 会跑到它们、`docker compose` 不会。
+
 ## 文档地图
 
 | 文件 | 内容 |
@@ -108,4 +120,4 @@ task epoch、eager 提交、交付账本、多段题推进、supervisor 判据�
 | `AGENTS.md` | **发给解题 Agent 的指令**（写进每道题的工作目录当 `CLAUDE.md`），不是仓库说明 |
 | `packages/worker/README.md` | worker 的跑法、结构、四条关键约定（状态落点 / 退出码 / 进程回收 / flag 双闸门） |
 | `.env.example` | 全部可调项，按段分组并标注「必须一起改」的联动项 |
-| `docs/friend-reference/` | 朋友那一版的**历史快照**（逐字存档）。其中路径对应搬迁前的树，照它跑构建会失败 |
+| `docs/friend-reference/` | 朋友那一版的部分**历史快照**（只有 3 个部署文件逐字相同，其余是更早的版本；源码一份没存）。照它跑构建会失败 |
