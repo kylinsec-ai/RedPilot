@@ -1,0 +1,9 @@
+interface:
+  display_name: Webapp QA
+  short_description: "Smoke test web apps and exercise critical flows."
+  icon_small: ./assets/icon.svg
+  icon_large: ./assets/icon.png
+  brand_color: '#00B36B'
+  default_prompt: Use $webapp-qa for this workflow.
+policy:
+  allow_implicit_invocation: true

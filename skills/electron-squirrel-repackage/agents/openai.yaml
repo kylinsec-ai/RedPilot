@@ -1,0 +1,9 @@
+interface:
+  display_name: Electron Squirrel Repackage
+  short_description: "Repackage Electron apps with Squirrel delivery."
+  icon_small: ./assets/icon.svg
+  icon_large: ./assets/icon.png
+  brand_color: '#8E92EB'
+  default_prompt: Use $electron-squirrel-repackage for this workflow.
+policy:
+  allow_implicit_invocation: true

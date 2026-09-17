@@ -1,0 +1,9 @@
+interface:
+  display_name: Ghostwriter MCP
+  short_description: "Configure and verify Ghostwriter MCP connections."
+  icon_small: ./assets/icon.svg
+  icon_large: ./assets/icon.png
+  brand_color: '#8E92EB'
+  default_prompt: Use $ghostwriter-mcp for this workflow.
+policy:
+  allow_implicit_invocation: true

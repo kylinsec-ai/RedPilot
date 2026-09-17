@@ -1,0 +1,9 @@
+interface:
+  display_name: Phishing Email HTML
+  short_description: "Render approved phishing pretexts as email HTML."
+  icon_small: ./assets/icon.svg
+  icon_large: ./assets/icon.png
+  brand_color: '#00B36B'
+  default_prompt: Use $phishing-email-html for this workflow.
+policy:
+  allow_implicit_invocation: true

@@ -3,9 +3,9 @@
 #
 # ⚠️ 两个 Dockerfile 真正需要的输入不同，下面每条都注明了在排除谁的什么：
 #    Dockerfile.base   —— kali 基础层，基本不读仓库内容
-#    Dockerfile.redpilot  —— 读 packages/{contracts,redpilot} + web/ + main.py
-#    Dockerfile        —— 读 packages/{contracts,redpilot,worker} + skills/ + tools/ + web/
-#    不要把 packages/ 或 web/ 排除掉。
+#    Dockerfile.redpilot  —— 读 redpilot/ + pyproject.toml + web/ + main.py
+#    Dockerfile        —— 读 redpilot/ + pyproject.toml + skills/ + tools/ + web/
+#    不要把 redpilot/、pyproject.toml 或 web/ 排除掉。
 # ══════════════════════════════════════════════════════════════
 
 # ── 运行期产物：含各题 FLAG / MEMORY / SOURCE / _events.jsonl / _transcripts
@@ -30,13 +30,11 @@ frontend/src/
 
 # ── 上一轮镜像构建写进 src 的轮子缓存：**不排掉会被连带复制进镜像**，
 #    而它含编译后的 .pyc —— 实测让"删掉的模块"继续可 import
-#    （stale 缓存比"文件不存在"难排查得多）。三个包目录各一。
-packages/*/build/
-packages/*/dist/
-packages/*/.venv/
-packages/redpilot/redpilot.egg-info/
-packages/contracts/redpilot_contracts.egg-info/
-packages/worker/redpilot_worker.egg-info/
+#    （stale 缓存比"文件不存在"难排查得多）。单发行版后源就是 redpilot/。
+redpilot/build/
+redpilot/dist/
+redpilot/.venv/
+*.egg-info/
 
 # ── 分叉归档：58MB，且内含活凭据
 1.zip

@@ -10,9 +10,9 @@ from __future__ import annotations
 import base64
 import unittest
 
-from redpilot_worker.adapter.task import AgentTask
-from redpilot_worker.adapter.taskprompt import build_task_prompt
-from redpilot_worker.adapter.verify import (
+from redpilot.worker.adapter.task import AgentTask
+from redpilot.worker.adapter.taskprompt import build_task_prompt
+from redpilot.worker.adapter.verify import (
     Verifier,
     flag_confidence,
     flag_evidence_policy,

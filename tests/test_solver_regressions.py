@@ -15,16 +15,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from redpilot_worker.adapter.solver.base import extract_flags
-from redpilot_worker.adapter.solver.pi_agent import _merge_partial_output, _slim_line, _stop_process_tree
-from redpilot_worker.adapter.config import SolverConfig
-from redpilot_worker.adapter.stoploss import StopLoss
-from redpilot_worker.adapter.blackboard import Blackboard, Fact, goals_for_category
-from redpilot_worker.adapter.task import AgentTask
-from redpilot_worker.adapter.taskprompt import _subagent_scheduling_policy
-from redpilot_worker.adapter.verify import Claim, Verifier, flag_submission_key
-from redpilot_worker.adapter import observability as obs
-from redpilot_worker import orchestrator as driver
+from redpilot.worker.adapter.solver.base import extract_flags
+from redpilot.worker.adapter.solver.pi_agent import _merge_partial_output, _slim_line, _stop_process_tree
+from redpilot.worker.adapter.config import SolverConfig
+from redpilot.worker.adapter.stoploss import StopLoss
+from redpilot.worker.adapter.blackboard import Blackboard, Fact, goals_for_category
+from redpilot.worker.adapter.task import AgentTask
+from redpilot.worker.adapter.taskprompt import _subagent_scheduling_policy
+from redpilot.worker.adapter.verify import Claim, Verifier, flag_submission_key
+from redpilot.worker.adapter import observability as obs
+from redpilot.worker import orchestrator as driver
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fastapi-console"))
 from fastapi_console import agent as console_agent
@@ -340,7 +340,7 @@ class FlagSubmissionRegressionTests(unittest.TestCase):
                  patch.object(driver, "_hallu", None), \
                  patch.object(driver, "flag_confidence", return_value=Claim(
                      flag=candidate, grounded=True, confidence=0.95)), \
-                 patch("redpilot_worker.adapter.solver.pi_agent.cleanup_instance_processes", return_value=0):
+                 patch("redpilot.worker.adapter.solver.pi_agent.cleanup_instance_processes", return_value=0):
                 result = driver._solve_one_unlocked(
                     client, challenge, 120, 0, solver=solver,
                     ctrl=SimpleNamespace(workdir=workdir), verifier=Verifier(),

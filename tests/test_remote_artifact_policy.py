@@ -16,7 +16,7 @@ from __future__ import annotations
 import base64
 import unittest
 
-from redpilot_worker.adapter.verify import (
+from redpilot.worker.adapter.verify import (
     Verifier,
     derived_target_artifacts,
     downloaded_target_artifacts,

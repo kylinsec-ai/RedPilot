@@ -1,0 +1,9 @@
+interface:
+  display_name: C2 BOF Development
+  short_description: "Create, port, and debug Beacon Object Files."
+  icon_small: ./assets/icon.svg
+  icon_large: ./assets/icon.png
+  brand_color: '#2C2677'
+  default_prompt: Use $c2-bof-development for this workflow.
+policy:
+  allow_implicit_invocation: true

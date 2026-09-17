@@ -7,8 +7,8 @@ import threading
 import unittest
 from pathlib import Path
 
-from redpilot_worker.adapter import hallucination
-from redpilot_worker import orchestrator as driver
+from redpilot.worker.adapter import hallucination
+from redpilot.worker import orchestrator as driver
 
 
 class DeliveryLedgerRegressionTests(unittest.TestCase):
@@ -58,7 +58,7 @@ class DeliveryLedgerRegressionTests(unittest.TestCase):
                              f"{later_stage}\n")
 
     def test_blackboard_input_excludes_unconfirmed_candidate_but_keeps_facts(self):
-        from redpilot_worker.adapter.blackboard import Blackboard
+        from redpilot.worker.adapter.blackboard import Blackboard
 
         candidate = "flag{NoFalseProgress_9281}"
         with tempfile.TemporaryDirectory() as workdir:
@@ -75,7 +75,7 @@ class DeliveryLedgerRegressionTests(unittest.TestCase):
                 encoding="utf-8"))
 
     def test_blackboard_never_persists_a_flag_candidate_directly(self):
-        from redpilot_worker.adapter.blackboard import Blackboard
+        from redpilot.worker.adapter.blackboard import Blackboard
 
         candidate = "flag{DirectCandidate_9281}"
         with tempfile.TemporaryDirectory() as workdir:

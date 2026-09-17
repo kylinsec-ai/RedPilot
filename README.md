@@ -3,20 +3,22 @@
 > 面向 **TSecBench** 靶场的自主安全测试 Agent：连上靶场 VPN，自主解题、提交 flag，
 > 并把全过程实时推到观测平台。
 
-RedPilot 是一个三包 Python monorepo。一个**求解 worker**（竞技场编排 + Pi Agent 引擎）、
-一个**统一服务端**（控制面 + 观测平台，同一个 FastAPI `:8000`）、一份**零依赖契约包**。
-
-> 内部包名与对外项目名统一为 **RedPilot**：`redpilot-contracts` / `redpilot` / `redpilot-worker`。
-> 下文出现 `redpilot_*` 都是指这些包。
+RedPilot 是一个**单发行版、模块化单体**应用：一个**求解 worker**（竞技场编排 + Pi Agent 引擎）、
+一个**统一服务端**（控制面 + 观测平台，同一个 FastAPI `:8000`）、共享一份**零依赖内核**。
+四个模块同住一个包、同版本发布，用两个进程角色（server / worker）部署：
 
 ```
-packages/contracts   redpilot-contracts   零依赖契约：状态快照 schema、词汇表、redact/text/fsio、paths
-packages/redpilot       redpilot          控制面（challenges/调度/VPN）+ 观测平台（摄取/读端/SSE/SPA）
-packages/worker      redpilot-worker      求解 worker：竞技场编排 + Pi Agent 引擎 + 观测中继
+redpilot/contracts   共享内核：状态快照 schema、词汇表、redact/text/fsio、paths（零第三方依赖）
+redpilot/control     控制面：challenges / 调度 / VPN / 评测
+redpilot/obs         观测平台：摄取 / 读端 / SSE / SPA
+redpilot/worker      求解 worker：竞技场编排 + Pi Agent 引擎 + 观测中继 + 本地态势台
+redpilot/app.py      平台进程装配根（唯一同时 import control 与 obs 的地方）
 ```
 
-**依赖方向是红线**：`contracts ← redpilot/worker`，反向一律不许
-（`packages/contracts/tests/test_purity.py` 把这条钉住了）。改契约先改 `contracts`。
+**依赖方向是红线**：`contracts ←（control/obs/worker）`，worker ↛ control/obs，control ↮ obs ——
+执行点是 [`tests/architecture/`](tests/architecture/)（AST 边界测试 + 运行时 import 足迹），
+不再依赖发行版拆分。设计全文见
+[`docs/modular-monolith-design.md`](docs/modular-monolith-design.md)。
 
 ---
 
@@ -38,9 +40,9 @@ packages/worker      redpilot-worker      求解 worker：竞技场编排 + Pi A
                                               靶场 VPN ─┴─ 目标靶标
 ```
 
-worker 的主循环是**竞技场**（`redpilot_worker/orchestrator.py`）：多轮时间盒、多会话重访、
+worker 的主循环是**竞技场**（`redpilot/worker/orchestrator.py`）：多轮时间盒、多会话重访、
 多维止损、eager 即时提交、能力分片、跨场续接、舰队监督与协作式热重载。
-求解引擎是 **Pi Agent**（`redpilot_worker/adapter/solver/`）。**没有第二套编排** ——
+求解引擎是 **Pi Agent**（`redpilot/worker/adapter/solver/`）。**没有第二套编排** ——
 框架早期那套（`orchestration.solve_one` / assignment claim 链路）已退位删除。
 
 ---
@@ -61,7 +63,7 @@ docker compose up -d      # server + 三容器 worker 舰队
 
 一个靶场 VPN 只应有一条隧道，三个容器各起一条会互相抢路由 —— 所以 VPN 由 worker-1 独占。
 代价是它必须常驻（它一停另两个就断网，由 netns 看门狗兜底）。舰队拓扑的取舍与排障见
-[`packages/worker/README.md`](packages/worker/README.md)。
+[`docs/worker.md`](docs/worker.md)。
 
 **单体形态**（一个容器自己持 VPN 自己解题，方便对照与排障）点它的名字起：
 
@@ -109,7 +111,7 @@ Pi Agent 用两种传输之一驱动，开关 `ADAPTER_PI_TRANSPORT`：
 
 未登记的 provider 自动归为 `<PROVIDER>_API_KEY` + OpenAI 兼容 —— **换网关不用改仓库代码**。
 完整 provider→凭据 env 对照表见
-[`packages/worker/README.md`](packages/worker/README.md#provider-与模型都可配)。
+[`docs/worker.md`](docs/worker.md#provider-与模型都可配)。
 
 ---
 
@@ -146,7 +148,7 @@ Agent 按题目分析自行 `read` 全文；框架另有 top-2 关键词预选�
 
 worker 容器与 compose 的 `restart: on-failure` 靠一组退出码配套（`0` 正常终止 / `86`
 协作式热重载 / `4` VPN 层 / `3` 被孤立的解题 worker）。**完整表在
-[`packages/worker/README.md`](packages/worker/README.md)** —— 那是唯一权威，这里不抄一份。
+[`docs/worker.md`](docs/worker.md)** —— 那是唯一权威，这里不抄一份。
 
 ⚠️ 一条运维铁律：**配置错误绝不能非零退出**。`on-failure` 会重启一切非零退出，用 exit 1
 表达「环境变量没填」= 无限重启闷循环，真因被日志淹没。这也是 `driver.py` 与
@@ -174,16 +176,21 @@ worker 容器与 compose 的 `restart: on-failure` 靠一组退出码配套（`0
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q              # 全仓 387
-.venv/bin/python -m pytest -q packages/    # 三包 212
-.venv/bin/python -m pytest -q tests/       # 竞技场与策略层回归 175
+.venv/bin/python -m pytest -q                      # 全仓 404
+.venv/bin/python -m pytest -q tests/architecture   # 边界执行点 17
+.venv/bin/python -m pytest -q tests/               # 架构 + 模块 + 竞技场回归
 ```
 
-`pytest.ini` 已把 `packages/`、`tests/` 收进 `testpaths`，并把三包与仓库根加进 `pythonpath`，
-所以裸 `pytest` 就能收全部用例。仓库根 `tests/` 里是 175 条竞技场行为的回归用例（止损、
-task epoch、eager 提交、交付账本、多段题推进、supervisor 判据）。
+`pytest.ini` 已把 `tests/` 收进 `testpaths`，并把仓库根加进 `pythonpath`，
+所以裸 `pytest` 就能收全部用例。其中：
 
-容器的 entrypoint 与 worker 装配层见 `entrypoint.sh` 与 `packages/worker/redpilot_worker/driver.py`。
+| 目录 | 内容 |
+|---|---|
+| `tests/architecture/` | 17 条边界执行点：禁边、façade、运行时 import 足迹、数据所有权、单一来源 |
+| `tests/contracts/` `tests/control/` `tests/obs/` `tests/worker/` `tests/app/` | 各模块单测（由原 `packages/*/tests/` 迁入） |
+| `tests/*.py` | 175 条竞技场行为回归（止损、task epoch、eager 提交、交付账本、多段题推进、supervisor 判据） |
+
+容器的 entrypoint 与 worker 装配层见 `entrypoint.sh` 与 `redpilot/worker/driver.py`。
 
 ---
 
@@ -205,12 +212,15 @@ task epoch、eager 提交、交付账本、多段题推进、supervisor 判据�
 
 | 文件 | 内容 |
 |---|---|
-| [`packages/worker/README.md`](packages/worker/README.md) | worker 的跑法、结构、provider/模型配置、四条关键约定（状态落点 / 退出码 / 进程回收 / flag 双闸门） |
+| [`docs/architecture.md`](docs/architecture.md) | **系统级总体架构**：目标与不变量、运行时拓扑、四模块、竞技场/求解/判分/记忆设计、数据与线格式、退化矩阵、演进路线 |
+| [`docs/modular-monolith-design.md`](docs/modular-monolith-design.md) | **单发行版四模块（模块化单体）** 的架构设计、红线 R1–R8 与迁移记录 |
+| [`docs/worker.md`](docs/worker.md) | worker 的跑法、结构、provider/模型配置、四条关键约定（状态落点 / 退出码 / 进程回收 / flag 双闸门） |
 | [`AGENTS.md`](AGENTS.md) | **发给解题 Agent 的指令**（写进每道题的工作目录当 `CLAUDE.md`），不是仓库说明 |
 | [`.env.example`](.env.example) | 全部可调项，按段分组并标注「必须一起改」的联动项 |
 | [`docs/pi-rpc-migration-research.md`](docs/pi-rpc-migration-research.md) | 从 `--print` 换到 RPC 的调研、实测与失败模式 |
 | [`docs/graph-engineering-design.md`](docs/graph-engineering-design.md) | 证据图设计（把黑板 / Heimdall / 证据出身连成一张可追溯的图） |
 | [`docs/deterministic-recon-design.md`](docs/deterministic-recon-design.md) | 确定性侦察与事实编译（先跑工具、再对事实做上下文工程） |
+| [`docs/solver-isolation-design.md`](docs/solver-isolation-design.md) | 求解面隔离与预算执行（补 D3/D4/D5：Pi 降权、控制面状态搬家、会话内 surface 预算、work 保留）—— **M1–M4 已实施**，容器内真降权待探针 |
 | [`docs/autonomous-offensive-agent-comparison.md`](docs/autonomous-offensive-agent-comparison.md) | 自主进攻性安全 Agent 架构谱系与本仓库对照 |
 | [`docs/top10-offensive-agents-deep-dive.md`](docs/top10-offensive-agents-deep-dive.md) | 开源前十名 Agent 的源码级深潜 |
 | [`docs/specterops-skills-evaluation.md`](docs/specterops-skills-evaluation.md) | skills 替换决策的评估与取舍 |

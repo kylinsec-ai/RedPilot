@@ -15,11 +15,11 @@ RUN printf '[global]\nindex-url = https://mirrors.bfsu.edu.cn/pypi/web/simple\ne
 
 WORKDIR /app
 
-# Install redpilot unified package + contracts
-# [platform] extra:完整控制面 + 观测 API 需要 fastapi/uvicorn/pydantic/dotenv/httpx。
-COPY packages/contracts /opt/packages/contracts
-COPY packages/redpilot /opt/packages/redpilot
-RUN pip install --no-cache-dir /opt/packages/contracts "/opt/packages/redpilot[platform]"
+# 单发行版: [platform] extra 带完整控制面 + 观测 API 所需依赖
+# (fastapi/uvicorn/pydantic/dotenv; httpx 在基线里)。
+COPY pyproject.toml /opt/redpilot/pyproject.toml
+COPY redpilot /opt/redpilot/redpilot
+RUN pip install --no-cache-dir "/opt/redpilot[platform]"
 
 # Data and SPA provided by compose bind-mounts: ./data:/app/data  ./web:/app/web:ro
 ENV REDPILOT_DB_PATH=/app/data/redpilot.sqlite3 \

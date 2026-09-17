@@ -1,0 +1,9 @@
+interface:
+  display_name: Phishing Campaign Builder
+  short_description: "Build approved phishing campaigns from research to email."
+  icon_small: ./assets/icon.svg
+  icon_large: ./assets/icon.png
+  brand_color: '#00B36B'
+  default_prompt: Use $phishing-campaign-builder for this workflow.
+policy:
+  allow_implicit_invocation: true

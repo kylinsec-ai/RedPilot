@@ -11,8 +11,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from redpilot_worker.adapter.stoploss import StopLoss
-from redpilot_worker import orchestrator as driver
+from redpilot.worker.adapter.stoploss import StopLoss
+from redpilot.worker import orchestrator as driver
 
 
 class SchedulerStopLossBackoffTests(unittest.TestCase):
@@ -33,6 +33,9 @@ class SchedulerStopLossBackoffTests(unittest.TestCase):
             self.assertTrue(stoploss.should_stop(code)[0])
 
             code_dir = os.path.join(workdir, driver._safe_code(code))
+            # 预算状态不再落在题目目录（M2）：这里显式建目录，模拟 driver 在
+            # visit 开始时的 `os.makedirs(workdir)`。
+            os.makedirs(code_dir, exist_ok=True)
             with open(driver._workdir_epoch_path(code_dir), "w", encoding="utf-8") as fh:
                 json.dump({"task_epoch": "old-task"}, fh)
 

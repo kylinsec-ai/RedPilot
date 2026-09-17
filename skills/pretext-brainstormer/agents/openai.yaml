@@ -1,0 +1,9 @@
+interface:
+  display_name: Pretext Brainstormer
+  short_description: "Brainstorm approved pretexts from public events."
+  icon_small: ./assets/icon.svg
+  icon_large: ./assets/icon.png
+  brand_color: '#00B36B'
+  default_prompt: Use $pretext-brainstormer for this workflow.
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,9 @@
+interface:
+  display_name: Vishing Pretext
+  short_description: "Research and draft approved vishing pretexts."
+  icon_small: ./assets/icon.svg
+  icon_large: ./assets/icon.png
+  brand_color: '#00B36B'
+  default_prompt: Use $vishing-pretext for this workflow.
+policy:
+  allow_implicit_invocation: true

@@ -11,11 +11,11 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from redpilot_worker.adapter.platform.base import Challenge
-from redpilot_worker.adapter.platform.generic_openapi import GenericOpenAPIBackend
-from redpilot_worker.adapter.platform.tsecbench_http import TSecBenchHTTPBackend
-from redpilot_worker.adapter.platform.tsecbench_sdk import TSecBenchSDKBackend
-from redpilot_worker.orchestrator import build_task
+from redpilot.worker.adapter.platform.base import Challenge
+from redpilot.worker.adapter.platform.generic_openapi import GenericOpenAPIBackend
+from redpilot.worker.adapter.platform.tsecbench_http import TSecBenchHTTPBackend
+from redpilot.worker.adapter.platform.tsecbench_sdk import TSecBenchSDKBackend
+from redpilot.worker.orchestrator import build_task
 
 
 class _Response:

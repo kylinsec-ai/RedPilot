@@ -1,0 +1,9 @@
+interface:
+  display_name: Readme Generation
+  short_description: "Generate project README documentation."
+  icon_small: ./assets/icon.svg
+  icon_large: ./assets/icon.png
+  brand_color: '#00B36B'
+  default_prompt: Use $readme-generation for this workflow.
+policy:
+  allow_implicit_invocation: true

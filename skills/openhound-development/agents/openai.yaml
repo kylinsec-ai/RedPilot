@@ -1,0 +1,9 @@
+interface:
+  display_name: OpenHound Development
+  short_description: "Build and validate OpenHound collectors."
+  icon_small: ./assets/icon.svg
+  icon_large: ./assets/icon.png
+  brand_color: '#8E92EB'
+  default_prompt: Use $openhound-development for OpenHound collector and OpenGraph extension development workflows.
+policy:
+  allow_implicit_invocation: true

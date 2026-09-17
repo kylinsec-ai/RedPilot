@@ -21,7 +21,7 @@
 # 另两个就断网（这条由 netns 看门狗兜底：worker-2/3 检测到被孤立会退出重启）。
 #
 # 为什么 worker-1 不做题：它是 netns 提供者，重启它会同时打断两个解题 worker。
-# 所以它的能力被架构限死为"只请求对方热重载"，见 redpilot_worker/supervisor.py。
+# 所以它的能力被架构限死为"只请求对方热重载"，见 redpilot/worker/supervisor.py。
 # ══════════════════════════════════════════════════════════
 
 x-worker-build: &worker-build
@@ -41,10 +41,9 @@ x-worker-healthcheck: &worker-healthcheck
 x-worker-volumes: &worker-volumes
   - ./work:/work
   - ./vpn:/vpn:ro
-  # 挂载宿主最新包源（免重建镜像；editable 安装指向 /opt/packages/*，热补丁即生效）
-  - ./packages/contracts:/opt/packages/contracts:ro
-  - ./packages/redpilot:/opt/packages/redpilot:ro
-  - ./packages/worker:/opt/packages/worker:ro
+  # 挂载宿主最新包源（免重建镜像；editable 安装锚在 /opt/redpilot，热补丁即生效）
+  - ./redpilot:/opt/redpilot/redpilot:ro
+  - ./pyproject.toml:/opt/redpilot/pyproject.toml:ro
   - ./tools:/opt/tools:ro
   # skills 挂两处（与 Dockerfile 的两处 COPY 对应）：/root 那份是 pi 在 HOME 未改写时
   # 的默认发现路径；/app/skills 是逐题 HOME 场景下框架两条扫描（top-2 预选 + 软链装载）
@@ -152,7 +151,7 @@ x-worker-env: &worker-env
 x-worker-runtime: &worker-runtime
   image: redpilot-adapter:latest
   # restart 语义与 worker 的退出码契约对齐 —— **完整表在
-  # packages/worker/README.md**，这里只说本文件关心的一半：
+  # docs/worker.md**，这里只说本文件关心的一半：
   #   exit 0  任务终态 / 配置错（明示后停止）= 正常终止，**不重启**；
   #   非零    86 热重载 / 4 VPN 层 / 3 netns 被孤立 / 其他崩溃 = 拉起重试。
   #   注意：on-failure 会重启一切非零退出 —— 配置错误绝不能用 1/2 退出
@@ -231,8 +230,8 @@ services:
       - ./data:/app/data
       - ./web:/app/web:ro
       # 热补丁挂载（开发用）：免重建镜像直接生效代码修改
-      - ./packages/contracts:/opt/packages/contracts:ro
-      - ./packages/redpilot:/opt/packages/redpilot:ro
+      - ./redpilot:/opt/redpilot/redpilot:ro
+      - ./pyproject.toml:/opt/redpilot/pyproject.toml:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=3)"]
       interval: 30s

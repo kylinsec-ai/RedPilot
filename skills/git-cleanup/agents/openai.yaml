@@ -1,0 +1,9 @@
+interface:
+  display_name: Git Cleanup
+  short_description: "Clean branches and assess repository health."
+  icon_small: ./assets/icon.svg
+  icon_large: ./assets/icon.png
+  brand_color: '#00B36B'
+  default_prompt: Use $git-cleanup for this workflow.
+policy:
+  allow_implicit_invocation: true
