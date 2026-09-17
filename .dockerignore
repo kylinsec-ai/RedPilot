@@ -20,13 +20,15 @@ data/
 vpn/
 
 # ── 非构建输入的大目录（.git/.venv/前端源码 合计 50M+），纯拖慢构建
+#    前端**源码与依赖**都不进上下文（构建输入是产物 web/，它不在这里排）
+#    —— 用通配而非逐个点名：前端目录改过名（frontend → frontend-vue），
+#    旧写法没跟上，整棵前端源码又回到了上下文里。
 .git/
 .venv/
 legacy/
 tsecbench/
 tests/
-frontend/node_modules/
-frontend/src/
+frontend*/
 
 # ── 上一轮镜像构建写进 src 的轮子缓存：**不排掉会被连带复制进镜像**，
 #    而它含编译后的 .pyc —— 实测让"删掉的模块"继续可 import

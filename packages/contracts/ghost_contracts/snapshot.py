@@ -14,7 +14,7 @@ class LiveSnapshot(TypedDict, total=False):
     """LiveState 快照(total=False:字段随求解阶段渐进填充)。
 
     18 键,键名与 worker LiveState._data 逐字对齐 —— 改名必须同步
-    adapter(→worker)LiveState 与前端 types.ts。
+    adapter(→worker)LiveState 与前端 frontend-vue/src/types/index.ts。
     """
     worker_id: str
     phase: str

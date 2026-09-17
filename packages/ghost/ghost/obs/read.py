@@ -80,7 +80,7 @@ def index(request: Request) -> Response:
             return _no_store(f.read(), "text/html; charset=utf-8")
     except OSError:
         raise HTTPException(
-            404, "web/index.html not baked (run `cd frontend && npm run build`; commit web/)")
+            404, "web/index.html not baked (run `cd frontend-vue && npm run build`; commit web/)")
 
 
 @public.get("/assets/{name:path}", include_in_schema=False)
@@ -100,7 +100,7 @@ def asset(name: str, request: Request) -> Response:
     except OSError:
         raise HTTPException(
             404, "web/assets/" + name
-            + " not baked (run `cd frontend && npm run build`; commit web/)")
+            + " not baked (run `cd frontend-vue && npm run build`; commit web/)")
     # vite 产物名带内容 hash → 不可变缓存;只有 index.html 保持 no-store(开发期热更)
     return Response(content=body, media_type=_ASSET_TYPES[ext],
                     headers={"Cache-Control": "public, max-age=31536000, immutable"})

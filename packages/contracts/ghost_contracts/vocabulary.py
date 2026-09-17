@@ -2,8 +2,8 @@
 
 worker(驱动与中继)与 obs(摄取/读端/仪表板协议)的共同取值集合:
 此前分散在 benchmark_driver/_FLUSH_KINDS、status_server、obs_relay 状态机、
-obs/schema.py 与前端 types.ts(手工镜像)等多处;此处为唯一权威源。
-前端 types.ts 仍为手工镜像(本期不接包),改动此处须同步 types.ts。
+obs/schema.py 与前端 frontend-vue/src/types/index.ts(手工镜像)等多处;此处为唯一权威源。
+前端那份仍为手工镜像(本期不接包),改动此处须同步 frontend-vue/src/types/index.ts。
 """
 
 from __future__ import annotations

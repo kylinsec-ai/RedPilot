@@ -47,7 +47,7 @@ x-worker-volumes: &worker-volumes
   - ./packages/worker:/opt/packages/worker:ro
   - ./tools:/opt/tools:ro
   # skills 挂两处（与 Dockerfile 的两处 COPY 对应）：/root 那份是 pi 在 HOME 未改写时
-  # 的默认发现路径；/app/skills 是逐题 HOME 场景下框架两条扫描（top-2 预选 + 软链装载）
+  # 的默认发现路径；/app/skills 是逐题 HOME 场景下框架两条扫描（名录扫描 + 软链装载）
   # 的锚点（ADAPTER_SKILLS_DIR 指向它）。改 skill 内容免重建镜像，下一题即生效。
   - ./skills:/root/.pi/agent/skills:ro
   - ./skills:/app/skills:ro
@@ -80,7 +80,7 @@ x-worker-env: &worker-env
   ADAPTER_PROVIDER: ${ADAPTER_PROVIDER:-deepseek}
   ADAPTER_SOLVER_MODEL: ${SOLVER_MODEL:-}
   # skills 根目录。**必须设**：逐题 HOME 下 pi 只从 $HOME 内发现技能，而框架两条
-  # 扫描（taskprompt 的 top-2 预选、pi_agent._install_skills 的软链装载）都以此为准。
+  # 扫描（skill_loader 的名录扫描、pi_agent._install_skills 的软链装载）都以此为准。
   # 不设的话两条都扫到空目录并只打一条 warning —— 技能面静默归零。
   ADAPTER_SKILLS_DIR: /app/skills
   SOLVER_SESSION_SECONDS: ${SOLVER_SESSION_SECONDS:-1500}

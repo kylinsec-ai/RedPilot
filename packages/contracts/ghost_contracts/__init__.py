@@ -9,7 +9,8 @@ from .assets import ASSET_RX, ASSET_TYPES, asset_content_type
 from .digest import ENTRY_CAP, TEXT_ENTRY_MAX, TEXT_FLUSH, FoldState, fold_rows
 from .fsio import atomic_write_json, ensure_dir
 from .paths import (DIGESTS_DIR, FLAG_FILES, FLAG_MAX_LINES, HEARTBEAT_PATH,
-                    LIVE_DIR, ROSTER_FILENAME, TRANSCRIPT_FILENAME, safe_code)
+                    LIVE_DIR, ROSTER_FILENAME, TRANSCRIPT_FILENAME, is_skill_dir,
+                    safe_code)
 from .platform import (ATTEMPT_STATES, CANONICAL_EVENT_TYPES,
                        CANONICAL_TERMINAL_STATUSES, EVALUATION_STATES,
                        JOB_STATES, WORKER_STATES, EventEnvelope,
@@ -37,7 +38,7 @@ __all__ = [
     "atomic_write_json", "ensure_dir",
     # paths
     "FLAG_FILES", "FLAG_MAX_LINES", "safe_code", "LIVE_DIR", "DIGESTS_DIR",
-    "ROSTER_FILENAME", "TRANSCRIPT_FILENAME", "HEARTBEAT_PATH",
+    "ROSTER_FILENAME", "TRANSCRIPT_FILENAME", "HEARTBEAT_PATH", "is_skill_dir",
     # vocabulary
     "PHASES", "Phase", "ACTIVE_PHASES", "RUN_STATUSES", "RUN_CLOSE_STATUSES",
     "CLOSABLE_STATUSES", "RUN_ID_RX", "LIVE_EVENT_KINDS", "FLUSH_KINDS",

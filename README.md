@@ -118,6 +118,8 @@ task epoch、eager 提交、交付账本、多段题推进、supervisor 判据�
 | 文件 | 内容 |
 |---|---|
 | `AGENTS.md` | **发给解题 Agent 的指令**（写进每道题的工作目录当 `CLAUDE.md`），不是仓库说明 |
+| `skills/` | **解题技能库** —— 上游 [`yaklang/hack-skills`](https://github.com/yaklang/hack-skills) 的内联副本（103 个技能，三层路由）。溯源、同步方法与两处依赖见 `skills/PROVENANCE.md` |
 | `packages/worker/README.md` | worker 的跑法、结构、四条关键约定（状态落点 / 退出码 / 进程回收 / flag 双闸门） |
+| `docs/architecture/TARGET_ARCHITECTURE.md` | **目标架构** —— 把《智能体工程最佳实践研究报告》的十二条结论逐条对齐到本仓（六处已做对 / 三处方向相反 / 一处缺失），六面架构与 ROI 排序的差距清单。**只做设计，不含代码改动** |
 | `.env.example` | 全部可调项，按段分组并标注「必须一起改」的联动项 |
 | `docs/friend-reference/` | 朋友那一版的部分**历史快照**（只有 3 个部署文件逐字相同，其余是更早的版本；源码一份没存）。照它跑构建会失败 |

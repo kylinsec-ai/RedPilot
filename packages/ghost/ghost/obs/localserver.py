@@ -292,7 +292,7 @@ def _make_handler(live, bus, workdir: str, web_dir: str, poller=None, digest=Non
                 mtime = os.path.getmtime(p)
             except OSError:
                 self.send_error(404, "web/assets/" + name
-                                + " not baked (run `cd frontend && npm run build`; commit web/)")
+                                + " not baked (run `cd frontend-vue && npm run build`; commit web/)")
                 return
             entry = assets_cache.get(p)
             if entry is None or entry["mtime"] != mtime:

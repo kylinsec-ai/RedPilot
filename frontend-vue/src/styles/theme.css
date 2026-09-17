@@ -1,0 +1,311 @@
+/**
+ * 主题 token 与基座样式。
+ *
+ * 调色板自旧 web/index.html 的 :root 逐值移植(Svelte 版把它放在 Tailwind 的
+ * @theme 里,这里换成等价的原生 CSS 自定义属性)。明度递进刻意保留:
+ * 侧栏(rail) < 画布(bg) < 面板(panel) < 面板2(panel2)。
+ *
+ * Element Plus 的 --el-* 只覆盖**表面/文字/边框/圆角**,不覆盖
+ * --el-color-primary-* 系列 —— EP 的 dark/css-vars.css 已把 light-N 重定义为
+ * 深色混合值,手工盖成浅色会把暗色填充弄坏。
+ */
+:root {
+  --bg: #0d1220;
+  --rail: #0a0e1a;
+  --panel: #131a2b;
+  --panel2: #182136;
+  --line: #223052;
+  --line2: #2c3c63;
+  --ink: #e6ebf5;
+  --mut: #8b98b3;
+  --dim: #5d6b87;
+  --amber: #e8a33d;
+  --green: #35c07a;
+  --red: #e5534b;
+  --blue: #5aa2ff;
+  --cyan: #4ec9c2;
+  /* 旧派生浅色文本(横幅/chip 前景) */
+  --amberlight: #f2c879;
+  --redlight: #f0928c;
+
+  --font-sans: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, -apple-system,
+    sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+}
+
+html.dark {
+  /* 让 Element 组件的表面/文字接到本产品调色板 */
+  --el-bg-color: var(--bg);
+  --el-bg-color-page: var(--bg);
+  --el-bg-color-overlay: var(--panel);
+  --el-text-color-primary: var(--ink);
+  --el-text-color-regular: var(--mut);
+  --el-text-color-secondary: var(--dim);
+  --el-text-color-placeholder: var(--dim);
+  --el-text-color-disabled: var(--dim);
+  --el-border-color: var(--line);
+  --el-border-color-light: var(--line);
+  --el-border-color-lighter: var(--line2);
+  --el-border-color-extra-light: var(--line2);
+  --el-border-color-dark: var(--line);
+  --el-fill-color: var(--panel2);
+  --el-fill-color-light: var(--panel2);
+  --el-fill-color-lighter: var(--panel);
+  --el-fill-color-blank: var(--panel);
+  --el-mask-color: rgba(0, 0, 0, 0.6);
+  --el-border-radius-base: 8px;
+  --el-font-size-base: 13.5px;
+  --el-component-size-small: 28px;
+}
+
+/* ── 基座(对齐旧 base 样式) ──
+   scroll 模型:html/body 锁定,侧栏 nav 与 main 各为独立滚动容器(左右布局壳) */
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+body {
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.55 var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── 内区细滚动条(侧栏 nav / main) ── */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line2) transparent;
+}
+.scroll-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: var(--line2);
+  border-radius: 4px;
+}
+.scroll-thin::-webkit-scrollbar-thumb:hover {
+  background: var(--line);
+}
+
+/* ── 极简工具类(替代 Svelte 版里 Tailwind 的任意值写法) ── */
+.mono {
+  font-family: var(--font-mono);
+}
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+.dim {
+  color: var(--dim);
+}
+.mut {
+  color: var(--mut);
+}
+.c-ink {
+  color: var(--ink);
+}
+.c-green {
+  color: var(--green);
+}
+.c-amber {
+  color: var(--amber);
+}
+.c-red {
+  color: var(--red);
+}
+
+/* ── 视图共用的零碎(旧版各视图逐份拷贝,收在这里) ── */
+.loading {
+  padding: 26px 0;
+  text-align: center;
+  font-size: 13.5px;
+  color: var(--dim);
+}
+.backlink {
+  display: inline-block;
+  margin: 4px 0 12px;
+  font-size: 13px;
+}
+/* 详情页的"标签 / 值"两行组(题目详情与 run 详情同款) */
+.mlabel {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.mval {
+  margin-top: 1px;
+  font-size: 13.5px;
+}
+/* 标题右侧的次要说明(如 "· 3 个会话 · 42 条摘要") */
+.sub {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--dim);
+}
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 14px 18px;
+  margin-bottom: 14px;
+}
+.panel > h2 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.page-title {
+  margin: 0 0 4px;
+  font-size: 18px;
+  font-weight: 700;
+}
+.page-sub {
+  margin: 0 0 14px;
+  font-size: 13px;
+  color: var(--dim);
+}
+.grid-metrics {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+a {
+  color: var(--blue);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+/* ── 求解中相位呼吸圈 ── */
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(232, 163, 61, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(232, 163, 61, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(232, 163, 61, 0);
+  }
+}
+.pulse-ring {
+  animation: pulse-ring 2.2s infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulse-ring {
+    animation: none;
+  }
+}
+
+/* 状态圆点的基调色。两个调用点(侧栏 LiveChip / 窄屏顶条 AppShell)各自定尺寸,
+   配色共用一份 —— 语义必须一致:"绿=正常、红=要凭据、琥珀=求解中"。 */
+.dot-green {
+  background: var(--green);
+}
+.dot-red {
+  background: var(--red);
+}
+.dot-amber {
+  background: var(--amber);
+}
+.dot-dim {
+  background: var(--dim);
+}
+
+/* Element 表格:保住旧版的信息密度(EP 默认行高比旧表格高一档) */
+.el-table .cell {
+  line-height: 1.45;
+}
+.el-table th.el-table__cell {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dim);
+}
+.el-alert {
+  margin-bottom: 12px;
+}
+.el-alert__title {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* 小徽标:结构用 EP tag,配色沿用旧版六基调的语义色。
+   `.chip` 与 `.st-tag` 只是两个调用点的类名,几何规则共用一份 */
+.el-tag.chip,
+.el-tag.st-tag {
+  display: inline-flex;
+  border-radius: 4px;
+  padding: 0 7px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 17px;
+  height: auto;
+}
+.el-tag.chip-flag {
+  color: var(--green);
+  border-color: rgba(53, 192, 122, 0.5);
+}
+.el-tag.chip-crash {
+  color: var(--red);
+  border-color: rgba(229, 83, 75, 0.55);
+}
+.el-tag.chip-sess {
+  color: var(--cyan);
+  border-color: rgba(78, 201, 194, 0.45);
+}
+.el-tag.chip-art {
+  color: var(--blue);
+  border-color: rgba(90, 162, 255, 0.45);
+}
+.el-tag.chip-live {
+  color: var(--amberlight);
+  border-color: rgba(232, 163, 61, 0.5);
+}
+.el-tag.chip-plain {
+  color: var(--mut);
+  border-color: var(--line2);
+}
+
+/* run 状态徽标:配色沿用旧版 RUN_STATUS 的语义色(EP 的 type 取值对不上) */
+.el-tag.st-running {
+  color: var(--amberlight);
+  border-color: rgba(232, 163, 61, 0.5);
+}
+.el-tag.st-solved {
+  color: var(--green);
+  border-color: rgba(53, 192, 122, 0.5);
+}
+.el-tag.st-done {
+  color: var(--ink);
+  border-color: var(--line2);
+}
+.el-tag.st-failed {
+  color: var(--red);
+  border-color: rgba(229, 83, 75, 0.55);
+}
+.el-tag.st-interrupted {
+  color: var(--dim);
+  border-color: var(--line2);
+}
+.el-tag.st-other {
+  color: var(--mut);
+  border-color: var(--line2);
+}
+
+/* 原始事件折叠面板:去掉 EP 自己的分隔线,保住旧版详情流的密度 */
+.evcoll {
+  --el-collapse-border-color: var(--line);
+  --el-collapse-header-bg-color: transparent;
+  --el-collapse-content-bg-color: transparent;
+  --el-collapse-header-height: 34px;
+}

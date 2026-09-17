@@ -38,7 +38,6 @@ __pycache__/
 
 # ── Node ──
 node_modules/
-frontend/node_modules/
 dist/
 
 # ── 系统 / 编辑器 ──

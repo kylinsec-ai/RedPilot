@@ -706,7 +706,7 @@ def _install_subagents(pi_home: str) -> bool:
 # 软链而非复制：改技能/补正则即时生效，无需镜像重建或 compose 改动。
 # pi 的原生机制（渐进披露）：系统提示只放 <available_skills>（名字+描述+路径），
 # Agent 按自己对题目的分析用 read 主动加载 SKILL.md 全文——即「Agent 自我决策
-# 调哪个 skill」；框架的 top-2 注入（taskprompt）保留当先验。
+# 调哪个 skill」；taskprompt 只补一段自主调用指引，框架不再预选正文。
 def _install_skills(pi_home: str) -> int:
     """[B67] 把仓库 skills/ 软链进本题 HOME，返回已装载的技能数。
 
@@ -721,7 +721,7 @@ def _install_skills(pi_home: str) -> int:
         # "三级上溯即仓库根"：那在朋友的 `adapter/solver/` 布局里对，搬进
         # `ghost_worker/adapter/solver/` 之后指向不存在的 `packages/worker/skills`
         # —— pi 的原生技能面静默归零（agent 拿不到任何 SKILL.md）。
-        from ghost_contracts.paths import skills_root as _skills_root
+        from ghost_contracts.paths import is_skill_dir, skills_root as _skills_root
         skills_root = _skills_root(__file__, extra="/app/skills")
         if not skills_root:
             log.debug("[B67] 找不到 skills/ 目录，跳过")
@@ -731,9 +731,8 @@ def _install_skills(pi_home: str) -> int:
         installed = 0
         for entry in sorted(os.listdir(skills_root)):
             src = os.path.join(skills_root, entry)
-            # pi 的发现规则：含 SKILL.md 的目录才算技能
-            if not os.path.isdir(src) or not os.path.isfile(
-                    os.path.join(src, "SKILL.md")):
+            # pi 的发现规则：含 SKILL.md 的目录才算技能（判据单源，与 SkillStore._scan 同）
+            if not os.path.isdir(src) or not is_skill_dir(src):
                 continue
             link = os.path.join(dest, entry)
             if os.path.islink(link):

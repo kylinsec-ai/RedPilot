@@ -3097,7 +3097,9 @@ def skill_agent_enabled() -> bool:
     开：pi_agent 把仓库 skills/ 软链进每题 HOME（pi 原生渐进披露——系统提示
     只放 <available_skills> 名单+描述+路径，Agent 按自己的题目分析用 read 主动
     加载 SKILL.md 全文），taskprompt 附带自主调用指引。
-    关：行为与本补丁前**逐字一致**——只有框架关键词 top-2 正文注入与 XML 兜底。
+    关：技能面完全交给框架兜底——taskprompt 注入完整名录 XML（名字+描述+路径），
+    pi 侧不装技能。2026-09-16 起**没有**"框架 keyword 挑 top-2 正文注入"这条路了
+    （技能库换成上游 hack-skills，路由交还 Agent，见 skill_loader 模块 docstring）。
     """
     return str(os.environ.get("ADAPTER_SKILL_AGENT", "1") or "1").strip() != "0"
 

@@ -101,8 +101,8 @@ COPY tools /opt/tools
 # skills 复制到**两个**位置，各有各的读者，缺一不可：
 #   /root/.pi/agent/skills —— pi 在 HOME 未被改写时的默认发现路径；
 #   /app/skills            —— 逐题 HOME 场景（pi_agent 把 HOME 指向 <work>/<code>/.pi-home）
-#     下 pi 只认 $HOME 内的 skills/，且框架两条扫描（skill_loader.SkillStore 的 top-2
-#     预选、pi_agent._install_skills 的软链装载）都从 ADAPTER_SKILLS_DIR / /app/skills
+#     下 pi 只认 $HOME 内的 skills/，且框架两条扫描（skill_loader.SkillStore 的名录扫描、
+#     pi_agent._install_skills 的软链装载）都从 ADAPTER_SKILLS_DIR / /app/skills
 #     起算 —— 只留 /root 那份的话它们全都扫到空目录，静默退化成 0 个技能。
 #     两者由 ghost_contracts.paths.skills_root 统一解析（见其 docstring）。
 COPY skills /root/.pi/agent/skills

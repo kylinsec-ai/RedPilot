@@ -1,7 +1,7 @@
 """platform/store.py — 全部 SQL:摄取幂等写入 + 只读查询。
 
 单写者纪律:worker 经 HTTP 进入本进程,进程内唯一连接 + threading.RLock 串行化;
-多语句写走 BEGIN IMMEDIATE 事务(_tx)。行字段与 frontend types.ts 逐字对齐,
+多语句写走 BEGIN IMMEDIATE 事务(_tx)。行字段与 frontend-vue src/types/index.ts 逐字对齐,
 改键名必须同步。读方法也持锁(与写共享同一连接)。
 """
 

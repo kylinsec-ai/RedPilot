@@ -15,7 +15,7 @@
 
 from .config import SolverConfig
 from .task import AgentTask
-from .taskprompt import build_task_prompt, write_context_md
+from .adapter.taskprompt import build_task_prompt, write_context_md
 from .flags import extract_flags, is_valid_flag
 from .transcripts import compress_transcript
 from .live import LiveBus, LiveState, head_text, summarize_args, tail_text

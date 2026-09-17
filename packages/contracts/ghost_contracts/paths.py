@@ -41,9 +41,15 @@ HEARTBEAT_PATH = "/tmp/driver_heartbeat"
 
 # ── skills/ 根目录定位 ──
 
-# 上溯搜索的最大层数。真实布局里 `adapter/solver/pi_agent.py` 距仓库根 4 层
-# （pi_agent → solver → adapter → ghost_worker → packages → 仓库根），留一层余量。
-_SKILLS_WALK_MAX = 6
+
+def is_skill_dir(path: str) -> bool:
+    """目录是否算一个技能：**含 SKILL.md**。全仓唯一判据。
+
+    两个消费者必须同判据，否则会出现"名录里有、pi 发现不了"的静默错位：
+      - `ghost_worker/adapter/skill_loader.py` 的 `SkillStore._scan`（名录）
+      - `ghost_worker/adapter/solver/pi_agent.py` 的 `_install_skills`（软链装载）
+    """
+    return os.path.isfile(os.path.join(path, "SKILL.md"))
 
 
 def skills_root(start_file: str, *, extra: str = "") -> str:
@@ -61,6 +67,10 @@ def skills_root(start_file: str, *, extra: str = "") -> str:
       3. 从 `start_file` 逐级上溯找**含 SKILL.md 子目录**的 `skills/`
          （要求含 SKILL.md 是为了不误命中一个同名的空目录）
 
+    上溯**走到文件系统根为止**，不设层数上限：此前是定死的 6 层，而最深的调用方
+    （`adapter/solver/pi_agent.py`）恰好用满第 6 层——再多一层包目录就静默归零，
+    正是这个函数当初要修的那类故障。层数上限换个布局就要再调一次，索性去掉。
+
     纯 stdlib、无副作用；契约包不得依赖任何第三方（见 tests/test_purity.py）。
     """
     candidates: list[str] = []
@@ -70,7 +80,7 @@ def skills_root(start_file: str, *, extra: str = "") -> str:
     if extra:
         candidates.append(extra)
     cur = os.path.dirname(os.path.abspath(start_file))
-    for _ in range(_SKILLS_WALK_MAX):
+    while True:
         candidates.append(os.path.join(cur, "skills"))
         parent = os.path.dirname(cur)
         if parent == cur:
@@ -82,8 +92,7 @@ def skills_root(start_file: str, *, extra: str = "") -> str:
             continue
         try:
             has_skill = any(
-                os.path.isfile(os.path.join(cand, e, "SKILL.md"))
-                for e in os.listdir(cand)
+                is_skill_dir(os.path.join(cand, e)) for e in os.listdir(cand)
             )
         except OSError:
             continue

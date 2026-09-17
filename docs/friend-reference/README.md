@@ -11,7 +11,12 @@
 > 朋友的**源码**（`adapter/`、`drivers/`、`tests/`、`skills/`、`tsecbench/`、
 > `fastapi-console/`）一份都没存进这里：它们逐文件对照过，去重之后已经全部进了
 > 仓库（策略层搬进 `packages/worker/ghost_worker/adapter/`，主循环在
-> `ghost_worker/orchestrator.py`，`skills/` 与 `tsecbench/` 原样保留）。
+> `ghost_worker/orchestrator.py`，`tsecbench/` 原样保留）。
+>
+> ⚠️ 唯一的例外是 `skills/`：它当时原样保留，但 **2026-09-16 已整体换成上游
+> [yaklang/hack-skills](https://github.com/yaklang/hack-skills) 的技能库**
+> （见 `skills/PROVENANCE.md`）—— 也就是说这里读到的"朋友那版 skills"与仓库
+> 现行的那份不是同一批文件了。
 >
 > 内容**真的丢了**的只有一份：`CHALLENGES_API.md`（平台接口规约）。它既不在本目录，
 > 也不在仓库 —— 现行契约以 `packages/worker/ghost_worker/adapter/platform/tsecbench_http.py`
@@ -112,7 +117,8 @@ docker compose config -q
 
 - `adapter/`：调度、求解、验证、止损和运行观测。
 - `drivers/`：三舰队运行入口。
-- `skills/`：按题型注入的解题技能。
+- `skills/`：解题技能（**已换成上游 `yaklang/hack-skills` 的技能库**，非朋友那版；
+  路由交还 pi 原生渐进披露，见 `skills/PROVENANCE.md`）。
 - `fastapi-console/`：现用 Web 控制台。
 - `tsecbench/`：本地题目 API 和持久化实现。
 - `work/`：运行产物，不进镜像和 Git。

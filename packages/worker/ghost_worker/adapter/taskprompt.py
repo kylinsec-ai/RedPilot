@@ -3,12 +3,12 @@
 
 核心思路（与 hxbai 的关键区别）：
 - hxbai: 11 类战术全量硬编码注入 prompt
-- 我们: Skill 渐进式披露，只注入匹配的 skill 正文 + 模板展开
+- 我们: 技能不注入 prompt —— 路由交给 pi 原生渐进披露（Agent 按题目 read）
 
 组装流程:
-1. 写入 CLAUDE.md (工具清单) 到工作目录
-2. 通过 SkillStore 匹配最相关的 1-2 个 skill，按需加载正文
-3. 拼接: 角色 + 任务信息 + 匹配 skill 正文 + 已知事实 + 续接块 + 指令
+1. 写入 CLAUDE.md (硬规则) 到工作目录
+2. 拼装任务信息 + 约束 + 已知事实 + 续接块
+3. 技能面只放名录/自主调用指引，正文留在磁盘上由 Agent 自取
 """
 
 from __future__ import annotations
@@ -39,12 +39,15 @@ def _get_skill_store():
 
 # [B67] 技能自主调用指引（开关 verify.skill_agent_enabled）。pi 原生技能
 # 渐进披露：pi 自己的文档也提醒「模型不总会主动读——用提示推一把」。
+# 2026-09-16 起框架不再做正文预选（技能库换成上游 yaklang/hack-skills，
+# 带自带三层路由）—— 这段是技能面**唯一**的框架侧输入，措辞必须是"从清单里自己挑"，
+# 不能说"预选"。
 _SKILL_SELF_SERVE_NOTE = (
-    "\n\n**技能自主调用（你的分析优先）**：系统提示的 <available_skills> 里有全部"
-    "技能的名字、一句话描述与文件路径。框架的预选（若有）只是关键词先验给的起点；"
-    "你对题目的实际分析才是主判据——发现预选不对口、多域交织（尤其多 flag 内网"
-    "渗透）、或推进中换了攻击面时，直接 read 对口技能的 SKILL.md 全文再动手，"
-    "不限于预选的那几个。"
+    "**技能自主调用（你的分析优先）**：系统的 `<available_skills>` 清单里有全部"
+    "技能的名字、一句话描述与 SKILL.md 路径（技能库分三层：总入口 `hack` → 六个分类"
+    "入口 → 各深度题面技能）。**路由完全由你的题目分析决定**——先判断攻击面，"
+    "拿不准就先 read `hack` 让它给你路由，再逐层下钻到对口技能，读全文后按其中的"
+    "命令范式行动。推进中换了攻击面、或发现原方向不对口时，随时换读别的技能。"
 )
 
 
@@ -81,6 +84,13 @@ _CLAUDE_MD = """\
 - **Forensics**: tshark, binwalk, foremost, exiftool, steghide
 - **Network**: nc/netcat, socat, chisel, hydra
 - **Database**: mysql, psql, redis-cli
+
+## 技能库（动手前先读）
+本环境已挂载技能库（`~/` 下的 `.pi/agent/skills/`），分三层：
+总入口 `hack`（全局路由与作业纪律）/ 分类入口 / 各深度题面技能。
+**动手前先 read 对口技能的 SKILL.md** —— 拿不准攻击面时先 read `hack`，由它路由；
+分类入口再逐层下钻，读全文后按其中的命令范式行动。同目录的 SCENARIOS.md /
+*_MATRIX.md 是该技能的配套材料，正文里指到了再读。清单以 `<available_skills>` 为准。
 
 ## 内网横向移动
 - 入口权限后先看本机网段: `ip addr` / `ip route`
@@ -346,16 +356,14 @@ def build_task_prompt(
     **kwargs,
 ) -> str:
     """
-    组装完整 prompt — 渐进式披露版
+    组装完整 prompt
 
-    关键创新点：不是把所有战术都灌进去，而是：
-    1. 只把 skill 名称和描述作为 XML 摘要放在上下文
-    2. 把最匹配的 1-2 个 skill 的完整正文加载进来
-    3. 其余 skill 的详细内容留在磁盘上，节省 token
+    技能面**不注入正文**（2026-09-16 起）：路由归 pi 的原生渐进披露
+    （`_install_skills` 把 skills/ 软链进每题 HOME，系统提示自带
+    `<available_skills>` 名录），这里只补一段"从清单里自己挑"的自主调用指引。
+    仅当开关关闭（pi 侧不装技能）时才退回完整名录 XML 兜底。
     """
     sections = []
-    store = _get_skill_store()
-
     # ── 角色 ──
     sections.append(
         "你是一个自主安全测试 Agent。你已获得明确授权对以下靶场目标进行安全评估。\n"
@@ -447,33 +455,19 @@ def build_task_prompt(
     if task.flag_count > 1:
         sections.append(_INTRANET_ORCHESTRATION)
 
-    # ── 渐进式 Skill 注入（核心差异点）──
-    # [B67] pi 原生技能清单（<available_skills>，名字+描述+路径）已在系统提示里
-    # （pi_agent._install_skills 软链进每题 HOME），Agent 按自己的题目分析随时
-    # read 任意 SKILL.md 全文。框架 top-2 正文注入保留当先验；XML 兜底与原生
-    # 清单重复，开关开启时不再注入。
-    matched = store.match_skills(
-        task.objective,
-        targets=task.targets,
-        files=task.files,
-    )
-    if matched:
-        skill_section = ["## 攻击参考（按相关度自动匹配）"]
-        for m in matched[:2]:  # 最多注入 2 个 skill 正文
-            body = store.load_skill(m["name"])
-            if body:
-                skill_section.append(f"\n### [{m['name']}] (相关度: {m['score']:.1f})\n")
-                skill_section.append(body)
-        if _skill_agent_on():
-            skill_section.append(_SKILL_SELF_SERVE_NOTE)
-        sections.append("\n".join(skill_section))
-    elif not _skill_agent_on():
-        # 兜底：至少告诉 Agent 有哪些 skill 可用
-        # （[B67] 原生技能开启时由 pi 系统提示的 <available_skills> 承担）
-        sections.append(store.skill_summary_xml())
+    # ── Skill 名录（路由交给 Agent）──
+    # 2026-09-16 技能库换成上游 yaklang/hack-skills（103 个技能，自带
+    # hack → 分类入口 → 深度题面 三层路由）。框架不再用关键词表挑 top-2 正文
+    # 注入——那张表覆盖不了题面、且每次同步技能库都要手改。路由归还给 pi 的
+    # 原生渐进披露：_install_skills 把 skills/ 软链进每题 HOME，pi 的系统提示
+    # 自己就带 <available_skills>（名字+描述+路径），Agent 按题目分析 read 全文。
+    # 这里只在原生面缺席时兜底（ADAPTER_SKILL_AGENT=0，prompt 语料冻结那条路径）。
+    if _skill_agent_on():
+        sections.append(_SKILL_SELF_SERVE_NOTE)
     else:
-        sections.append("## 攻击参考\n\n" + _SKILL_SELF_SERVE_NOTE.strip())
-
+        # 兜底：至少告诉 Agent 有哪些 skill 可用、正文在哪读
+        # （仅此路径需要名录——懒构造，别让默认路径白扫一遍技能目录）
+        sections.append("## 可用技能\n\n" + _get_skill_store().skill_summary_xml())
     # ── 附加信息 ──
     if slots_note:
         sections.append(slots_note.strip())
