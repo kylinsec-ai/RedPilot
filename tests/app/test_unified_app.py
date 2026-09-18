@@ -5,7 +5,7 @@
      Starlette 不会执行未挂载子应用的 lifespan,投递任务因此从未创建;
   2. `app.state.store` 命名冲突 —— 被赋为控制面 Store,而观测读端读同一个名字,
      导致 /api/status、/api/roster、/api/runs 全部 500、SPA 404;
-  3. web_dir/control_url 被无必要地加 `obs_` 前缀,读端读不到。
+  3. web_dir 被无必要地加 `obs_` 前缀,读端读不到。
 
 注:合并期间的 obs 测试构造的是 `redpilot.obs.app.create_app`(独立工厂),它设置的是
 **旧**名字,所以上述缺陷在测试里全绿却线上全废 —— 本文件专门针对统一 app 装配断言。

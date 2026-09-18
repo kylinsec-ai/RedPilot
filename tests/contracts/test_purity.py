@@ -1,42 +1,24 @@
-"""契约纯度与常量守卫:contracts 零第三方依赖 / 路径常量与 compose 对齐 / 词汇一致性。"""
+"""契约常量守卫：路径常量与 compose 对齐 / 词汇一致性 / 信封剥离语义。
+
+R1（contracts 零第三方依赖）不在本文件 —— 它是 `tests/architecture/test_layers.py`
+的执行点，本文件曾有的第二份实现已于 2026-09 死码清扫删除（见下方沿革注）。"""
 
 from __future__ import annotations
 
-import ast
-import os
 import re
-import sys
 from pathlib import Path
 
 from redpilot.contracts.paths import HEARTBEAT_PATH
 from redpilot.contracts.vocabulary import (ACTIVE_PHASES, FLUSH_KINDS, PHASES,
                                             strip_for_snapshot, strip_out_of_band)
 
-_CONTRACTS_DIR = Path(__file__).resolve().parents[2] / "redpilot" / "contracts"
 
-_ALLOWED_STDLIB = set(sys.stdlib_module_names)
-
-
-def _iter_imports(path: Path):
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for a in node.names:
-                yield a.name
-        elif isinstance(node, ast.ImportFrom):
-            if node.level > 0:
-                continue  # 包内相对 import,必为自身
-            if node.module:
-                yield node.module
-
-
-def test_contracts_is_stdlib_only():
-    """contracts 源码只允许 stdlib 与自身 import(零依赖承诺的执行点)。"""
-    for py in _CONTRACTS_DIR.rglob("*.py"):
-        for mod in _iter_imports(py):
-            root = mod.split(".")[0]
-            assert root in _ALLOWED_STDLIB or root == "redpilot.contracts", \
-                f"{py.name}: non-stdlib import {mod!r}"
+# 沿革（2026-09 死码清扫）：此处原有 `test_contracts_is_stdlib_only`，即 R1
+# （contracts 零第三方依赖）的**第二份实现**。同一条不变量在
+# `tests/architecture/test_layers.py` 里有一份基于共享 `_archlib` 的版本。
+# 实测过两者等价：往 contracts 里塞一行 `import requests`，**两条都变红**。
+# 本仓对同型的处置有先例（`tests/architecture/test_archlib.py` 的模块 docstring：
+# "同一套边，两份实现会漂移"），故删这份、留架构那份（它是 R1–R8 的权威落点）。
 
 
 def test_heartbeat_path_matches_compose():

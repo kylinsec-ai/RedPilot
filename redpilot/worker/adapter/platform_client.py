@@ -36,8 +36,6 @@ class PlatformClient:
     其余行为与旧版一致。
     """
 
-    MAX_CONCURRENT = 3  # 平台限制同时启动 3 道题
-
     def __init__(self, base_url: str, token: str, *,
                  timeout: int = 30, mode: Optional[str] = None,
                  spec: Optional[dict] = None):

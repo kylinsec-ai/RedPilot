@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 import sqlite3
 from threading import RLock
-import time
 from typing import Any, Iterator
 
 from redpilot.control.models import ChallengeDefinition, FlagDefinition, TaskDefinition, flags_json
@@ -259,13 +258,13 @@ class Store:
                 return False
         return True
 
-    def stop_task(self, token: str) -> bool:
-        with self._transaction() as connection:
-            cursor = connection.execute(
-                "UPDATE tasks SET state = 'stopped', updated_at = ? WHERE token = ?",
-                (datetime.now(timezone.utc).isoformat(), token),
-            )
-        return cursor.rowcount == 1
+    # 沿革（2026-09 死码清扫）：此处原有 `stop_task` —— 它是
+    # `ChallengeService → Service → Store` 三层链的末端，而链的入口零调用点
+    # （连测试都没有），三层一并删除。同批删的还有本类的
+    # `active_container_count` / `delete_challenge` / `task_tokens` —— 四个方法
+    # 全仓都只有自己的定义，没有任何读者。
+    # 注：`delete_challenge` 是可级联删除提交记录的能力，删它等于撤掉一个
+    # （本就无人可达的）运维入口；需要时从 git 取回（最后存在于 bd4cb2f）。
 
     @staticmethod
     def _decode_addresses(value: str) -> tuple[str, ...]:
@@ -316,17 +315,6 @@ class Store:
                 (token,),
             ).fetchall()
         return tuple(self._challenge_from_row(row) for row in rows)
-
-    def active_container_count(self, token: str) -> int:
-        with self._lock:
-            row = self._connection.execute(
-                """
-                SELECT COUNT(*) AS count FROM challenges
-                 WHERE task_token = ? AND container_status IN ('pending', 'available')
-                """,
-                (token,),
-            ).fetchone()
-        return int(row["count"])
 
     def reserve_container(self, token: str, unique_code: str, max_active: int) -> str:
         """Reserve a stopped challenge without exceeding the task limit.
@@ -412,15 +400,6 @@ class Store:
                 (token, unique_code),
             )
 
-    def delete_challenge(self, token: str, unique_code: str) -> bool:
-        """删除题目行（提交记录随外键 ON DELETE CASCADE 级联删除）"""
-        with self._lock:
-            cur = self._connection.execute(
-                "DELETE FROM challenges WHERE task_token = ? AND unique_code = ?",
-                (token, unique_code),
-            )
-        return cur.rowcount > 0
-
     def submissions(self, token: str, unique_code: str) -> tuple[SubmissionRow, ...]:
         with self._lock:
             rows = self._connection.execute(
@@ -444,11 +423,6 @@ class Store:
                 )
         except sqlite3.IntegrityError as exc:
             raise DuplicateSubmission from exc
-
-    def task_tokens(self) -> tuple[str, ...]:
-        with self._lock:
-            rows = self._connection.execute("SELECT token FROM tasks ORDER BY created_at").fetchall()
-        return tuple(str(row["token"]) for row in rows)
 
 
 

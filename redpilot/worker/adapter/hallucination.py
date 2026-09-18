@@ -64,7 +64,12 @@ DERIVATION_REASONS = frozenset({
 STATE_NAME = ".hallucination.json"
 _MAX_MARKS = 200        # 指纹集合上限，防长命题目状态文件无界增长
 
-# flag{...} 完整信封。只取 body、统一小写 —— 与 verify.normalize_flag_body 同口径。
+# flag{...} 完整信封。只取 body、统一小写 —— **指纹口径**，与提交口径刻意不同：
+# 指纹要的是"同一个答案的多种写法归一到一处"，故大小写不敏感；而提交给平台的值
+# 必须保留原始大小写（平台精确判题，小写化会误拉黑正确的大写答案，见
+# `orchestrator._normalize_flag_body` 的 docstring）。
+# 沿革：本条原写「与 verify.normalize_flag_body 同口径」—— 那个函数是已被推翻的
+# 小写化实现，2026-09 死码清扫随其零调用点一并删除。
 _ENVELOPE_RX = re.compile(r"flag\{([^}\s]{1,200})\}", re.IGNORECASE)
 
 

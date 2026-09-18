@@ -46,5 +46,5 @@ class ChallengeFacade:
     def close(self, token: str, unique_code: str) -> dict:
         return self._service.close(token, unique_code)
 
-    def stop_task(self, token: str) -> bool:
-        return self._service.stop_task(token)
+    # 沿革（2026-09 死码清扫）：此处原有 `stop_task`，是 `ChallengeService → Service
+    # → Store` 三层链的入口，零调用点（连测试都没有），三层一并删除。

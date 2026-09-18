@@ -32,7 +32,8 @@ _SOLVER_PRESETS = {
         "base_url": "https://api.deepseek.com",
         # 默认求解模型（2026-09 起）：MiMo V2.5。
         # 容器内 provider 名是网关的 "deepseek"（见 _write_pi_models），
-        # 故完整形式为 deepseek/mimo-v2.5；model id 由 strip_provider 后透传。
+        # 故完整形式为 deepseek/mimo-v2.5；写 pi 的 models.json 时由
+        # `pi_agent.split_model()` 拆成 provider 与 model id 两段。
         "model": "mimo-v2.5",
         "small_fast_model": "deepseek-v4-flash",
     },
@@ -261,7 +262,10 @@ class ControllerConfig:
     total_seconds: int
     secs_per_turn: float
     keepalive_max: int
-    platform_mode: str = "tsecbench-http"   # 平台接入模式: tsecbench-http / tsecbench-sdk / generic
+    # 沿革（2026-09 死码清扫）：此处原有 `platform_mode` 字段（由 `ADAPTER_PLATFORM`
+    # 解析而来），零读者 —— 真正选后端的地方直接读环境变量
+    # （`platform_client.py` 读 `ADAPTER_PLATFORM` 交给 `platform.factory`）。
+    # 删字段但**保留环境变量**：它才是活的入口。
     timebox_easy: int = 3600  # 1小时
     timebox_medium: int = 3600  # 1小时
     timebox_hard: int = 3600  # 1小时
@@ -291,7 +295,6 @@ class ControllerConfig:
             total_seconds=int(_env("ADAPTER_TOTAL_SECONDS", "21300") or "21300"),
             secs_per_turn=float(_env("ADAPTER_SECS_PER_TURN", "5") or "5"),
             keepalive_max=max(0, int(_env("ADAPTER_KEEPALIVE_MAX", "2") or "2")),
-            platform_mode=_env("ADAPTER_PLATFORM", "tsecbench-http") or "tsecbench-http",
             timebox_easy=int(_env("ADAPTER_TIMEBOX_EASY", str(_DEFAULT_TIMEBOX["easy"])) or _DEFAULT_TIMEBOX["easy"]),
             timebox_medium=int(_env("ADAPTER_TIMEBOX_MEDIUM", str(_DEFAULT_TIMEBOX["medium"])) or _DEFAULT_TIMEBOX["medium"]),
             timebox_hard=int(_env("ADAPTER_TIMEBOX_HARD", str(_DEFAULT_TIMEBOX["hard"])) or _DEFAULT_TIMEBOX["hard"]),

@@ -46,8 +46,8 @@ def _web_dir(request: Request) -> str | None:
     return getattr(request.app.state, "web_dir", None)
 
 
-# NOTE:控制面反向代理已移至 obs.control_proxy(可选插件,默认不挂载);
-# 本模块只保留纯读端(观测 API),不再转发 /api/v1/*。
+# NOTE:本模块只保留纯读端(观测 API)。这里原有一条通向同源控制面代理
+# (obs.control_proxy)的转发通道,2026-09 死码清扫随该模块一并删除。
 #
 # 鉴权分层(见 ingest_common.check_read_token):
 #   公开 —— `/`、`/assets/*`(SPA 外壳,不含数据;否则登录界面本身无法渲染)

@@ -54,5 +54,3 @@ def resource_unavailable(message: str = "Challenge resources are unavailable") -
     return APIError(503, "resource_unavailable", message)
 
 
-def internal_error() -> APIError:
-    return APIError(500, "internal_error", "Internal server error")

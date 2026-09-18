@@ -188,11 +188,19 @@ class ToolGranularityTests(unittest.TestCase):
 
         编排层注入的是 `orchestrator._NULL_BRIDGE` 而不是 None，所以这里锁的是
         "那个占位对象真的什么都不做"——它一旦不小心带了状态，热路径会被拖慢。
+
+        断言刻意**结构性**而非逐次调用检查：`__slots__ = ()` 是"不可能带状态"
+        的构造性保证（比"调完 `__dict__` 还是空的"更强 —— 后者要靠每次调用后回看）。
+        方法返回值与不抛异常另测，两者合起来才是"廉价空操作"的完整定义。
         """
-        from redpilot.worker.orchestrator import _NULL_BRIDGE
-        _NULL_BRIDGE.push({"current_code": "x"})
-        _NULL_BRIDGE.tool_call("nmap", {}, "x")
-        _NULL_BRIDGE.flags_submitted(["flag{a}"])
+        from redpilot.worker.orchestrator import _NullBridge, _NULL_BRIDGE
+
+        assert _NullBridge.__slots__ == (), (
+            "占位桥有 __slots__ 之外的状态槽 —— 热路径上的空操作不再廉价"
+        )
+        assert _NULL_BRIDGE.push({"current_code": "x"}) is None
+        assert _NULL_BRIDGE.tool_call("nmap", {}, "x") is None
+        assert _NULL_BRIDGE.flags_submitted(["flag{a}"]) is None
 
     def test_hooks_never_raise(self):
         class Boom:

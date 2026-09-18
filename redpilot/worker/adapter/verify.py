@@ -957,17 +957,9 @@ _LOCAL_SETUP_RX = re.compile(
     r"(?:[A-Za-z_][\w]*=\S+\s*)+)\s*$",
     re.IGNORECASE,
 )
-_LOCAL_WRITE_TARGET_RX = re.compile(
-    r"(?:>{1,2}|\btee\b(?:\s+-[A-Za-z]+)*)\s*"
-    r"(?:['\"](?P<quoted>[^'\"]+)['\"]|(?P<bare>(?!&)[^\s;|&<>]+))",
-    re.IGNORECASE,
-)
-_LOCAL_MUTATED_SCRIPT_RX = re.compile(
-    r"(?<![A-Za-z0-9_.-])(?P<path>(?:\.{1,2}/|/)?"
-    r"(?:[\w@+.-]+/)*[\w@+.-]+\.(?:py|sh|pl|rb|js|php))"
-    r"(?![A-Za-z0-9_.-])",
-    re.IGNORECASE,
-)
+# 沿革（2026-09 死码清扫）：此处原有 `_LOCAL_WRITE_TARGET_RX` 与
+# `_LOCAL_MUTATED_SCRIPT_RX` 两条正则，零读者 —— 写入目标与脚本路径的识别
+# 后来都改走了 AST/分词路径（`_shell_redirection_targets` 等），正则被架空。
 _LOCAL_PY_WRITE_PATH_RX = re.compile(
     r"\b(?:open|Path)\s*\(\s*['\"](?P<path>[^'\"]+)['\"]"
     # ``r+b`` / ``rb+`` are in-place binary writes too.  Treating only
@@ -1972,22 +1964,6 @@ def _python_node_string_values(node: ast.AST | None,
     return set()
 
 
-def _python_open_mode(call: ast.Call,
-                      bindings: dict[str, set[str]]) -> tuple[set[str], set[str], bool]:
-    """Return literal ``open`` path/mode values and whether the mode is opaque."""
-    path_values = _python_node_string_values(call.args[0], bindings) if call.args else set()
-    mode_node: ast.AST | None = call.args[1] if len(call.args) >= 2 else None
-    for keyword in call.keywords:
-        if keyword.arg == "mode":
-            mode_node = keyword.value
-    # Python's default mode is read-only.  A dynamic explicit mode is unsafe
-    # whenever this call may address a tracked artifact.
-    if mode_node is None:
-        return path_values, {"r"}, False
-    modes = _python_node_string_values(mode_node, bindings)
-    return path_values, modes, not bool(modes)
-
-
 def _python_copy_aliases(tree: ast.AST) -> set[str]:
     """Return the module/function aliases that can invoke shutil copy helpers."""
     aliases: set[str] = set()
@@ -2023,127 +1999,6 @@ def _python_copy_call_values(call: ast.Call, aliases: set[str],
         _python_node_string_values(call.args[0], bindings),
         _python_node_string_values(call.args[1], bindings),
     )
-
-
-def _python_noncopy_write_paths(code: str) -> tuple[set[str], bool]:
-    """Return literal Python write targets plus an opaque-write bit.
-
-    ``shutil.copy`` is intentionally reported as a write target too: a later
-    copy over an already-derived path must taint it.  The caller decides when
-    the one source->destination copy that *creates* a new derived artifact is
-    allowed.  Unknown file handles, dynamic write modes, subprocesses and
-    mmap are opaque mutations; if they mention a tracked artifact the caller
-    must reject rather than assume the write hit some other file.
-    """
-    try:
-        tree = ast.parse(str(code or ""))
-    except (SyntaxError, TypeError, ValueError):
-        return set(), True
-    bindings = _python_string_bindings(tree)
-    aliases = _python_copy_aliases(tree)
-    paths: set[str] = set()
-    opaque = False
-    handle_paths: dict[str, tuple[set[str], set[str]]] = {}
-
-    # Bind file handles from simple assignments and with-statements so a
-    # ``with open(p, 'r+b') as f: f.write(...)`` is attributed to p.
-    for node in ast.walk(tree):
-        call: ast.Call | None = None
-        name = ""
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
-            if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-                call, name = node.value, node.targets[0].id
-        elif isinstance(node, ast.With):
-            for item in node.items:
-                if (isinstance(item.context_expr, ast.Call)
-                        and isinstance(item.optional_vars, ast.Name)):
-                    call, name = item.context_expr, item.optional_vars.id
-                    if isinstance(call.func, ast.Name) and call.func.id == "open":
-                        handle_paths[name] = _python_open_mode(call, bindings)[:2]
-                    call, name = None, ""
-        if call is not None and isinstance(call.func, ast.Name) and call.func.id == "open":
-            handle_paths[name] = _python_open_mode(call, bindings)[:2]
-
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        attr = func.attr.lower() if isinstance(func, ast.Attribute) else ""
-        name = func.id.lower() if isinstance(func, ast.Name) else ""
-
-        pair = _python_copy_call_values(node, aliases, bindings)
-        if pair is not None:
-            _src, destinations = pair
-            if destinations:
-                paths.update(destinations)
-            else:
-                opaque = True
-            continue
-        # A copy-looking invocation that cannot be resolved must not evade
-        # the derived-artifact mutation check.
-        if attr in _PY_COPY_FUNCS or name in _PY_COPY_FUNCS:
-            opaque = True
-            continue
-
-        if name == "open":
-            file_paths, modes, mode_opaque = _python_open_mode(node, bindings)
-            if mode_opaque:
-                opaque = True
-            elif any(("+" in mode or any(ch in mode.lower() for ch in "wax"))
-                     for mode in modes):
-                if file_paths:
-                    paths.update(file_paths)
-                else:
-                    opaque = True
-            continue
-
-        if attr in {"write_text", "write_bytes", "truncate", "unlink", "rename", "replace"}:
-            target_paths = _python_node_string_values(
-                func.value if isinstance(func, ast.Attribute) else None, bindings)
-            if target_paths:
-                paths.update(target_paths)
-            else:
-                opaque = True
-            continue
-
-        if attr in {"write", "writelines", "truncate"}:
-            if isinstance(func.value, ast.Name) and func.value.id in handle_paths:
-                target_paths, modes = handle_paths[func.value.id]
-                if any(("+" in mode or any(ch in mode.lower() for ch in "wax"))
-                       for mode in modes):
-                    if target_paths:
-                        paths.update(target_paths)
-                    else:
-                        opaque = True
-            else:
-                opaque = True
-            continue
-
-        if ((isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
-             and func.value.id in {"os", "subprocess"}
-             and attr in {"write", "pwrite", "system", "run", "call", "check_call", "popen"})
-                or (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
-                    and func.value.id == "mmap" and attr == "mmap")):
-            opaque = True
-    return paths, opaque
-
-
-def _python_mutated_artifacts(cmd: str, policy: FlagEvidencePolicy,
-                              artifacts: set[str]) -> set[str]:
-    """Find tracked artifact paths written by Python heredoc/inline code."""
-    known = {os.path.normpath(str(path)) for path in artifacts or () if path}
-    if not known:
-        return set()
-    tainted: set[str] = set()
-    for code, cwd in _python_heredoc_blocks(str(cmd or ""), policy):
-        raw_paths, opaque = _python_noncopy_write_paths(code)
-        resolved = {_trace_path(path, cwd) for path in raw_paths}
-        tainted.update(path for path in known if path in resolved)
-        if opaque:
-            # An unresolved/dynamic writer may still target the artifact.  Do
-            # not bless it merely because its exact path could not be parsed.
-            tainted.update(path for path in known if _command_mentions_path(cmd, {path}))
-    return tainted
 
 
 def _shell_copy_is_readonly(cmd: str, policy: FlagEvidencePolicy,
@@ -3102,11 +2957,14 @@ def skill_agent_enabled() -> bool:
     return str(os.environ.get("ADAPTER_SKILL_AGENT", "1") or "1").strip() != "0"
 
 
-def normalize_flag_body(flag: str) -> str:
-    """标准化 flag 用于去重"""
-    m = re.match(r"flag\{(.+)\}", flag, re.IGNORECASE)
-    body = m.group(1) if m else flag
-    return body.strip().lower()
+# 沿革（2026-09 死码清扫）：此处原有 `normalize_flag_body(flag)`，**零调用点**，
+# 且它的语义是**已被推翻的那个**：把外壳与 body 统一小写。平台按原始提交值精确
+# 判题，小写化会让错误的小写提交把后续发现的正确大写答案一并拉黑 ——
+# 编排侧 `orchestrator._normalize_flag_body` 的 docstring 记了这起事故，并已改成
+# 保留大小写的精确提交键（`flag_submission_key`）。
+# 删它的另一个理由：`adapter/hallucination.py` 的注释曾以「与
+# verify.normalize_flag_body 同口径」为据，等于把一个**有害的旧口径**当成标准引用。
+# 现在那条注释改成了自述规则，不再指向这里。
 
 
 def flag_submission_key(flag: str) -> str:

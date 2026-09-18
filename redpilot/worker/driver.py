@@ -29,7 +29,7 @@ from redpilot.worker.dashboard import serve_forever_in_thread as _serve_local
 from redpilot.contracts.paths import LIVE_DIR
 
 from . import orchestrator
-from .adapter import isolation, observability as obs
+from .adapter import isolation
 from .adapter.config import IsolationConfig
 from .config import SolverConfig
 from .live import LiveBus, LiveState

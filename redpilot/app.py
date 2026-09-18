@@ -25,7 +25,6 @@ from .control.api import create_app as create_control_app
 from .control.config import Settings as ControlSettings
 from .obs.bus import LiveBus
 from .obs.config import Settings as ObsSettings
-from .obs.control_proxy import router as control_proxy_router
 from .obs.ingest import router as ingest_router
 from .obs.maintenance import housekeep
 from .obs.read import router as read_router
@@ -47,8 +46,6 @@ def create_app(
     obs_db_path: str | None = None,
     obs_web_dir: str | None = None,
     obs_token: str | None = None,
-    control_url: str | None = None,
-    enable_control_proxy: bool | None = None,
 ) -> FastAPI:
     """Create unified RedPilot application with control + obs routes.
 
@@ -62,8 +59,6 @@ def create_app(
         obs_db_path: Override obs DB path
         obs_web_dir: Override SPA web directory
         obs_token: Override observability token
-        control_url: Override control URL for proxy
-        enable_control_proxy: Override control proxy enable flag
 
     Returns:
         Unified FastAPI application
@@ -78,13 +73,12 @@ def create_app(
         obs_settings.web_dir = obs_web_dir
     if obs_token is not None:
         obs_settings.obs_token = obs_token
-    if control_url is not None:
-        obs_settings.control_url = control_url
-    if enable_control_proxy is not None:
-        obs_settings.control_proxy_enabled = bool(enable_control_proxy)
-    # Explicit URL injection + no explicit proxy flag → follow production rule
-    if control_url is not None and enable_control_proxy is None:
-        obs_settings.control_proxy_enabled = bool(obs_settings.control_url)
+    # 沿革（2026-09 死码清扫）：此处原有的 `control_url` / `enable_control_proxy`
+    # 两个注入参数与配套的 `obs.control_proxy` 路由一并删除 —— 理由是两个独立的
+    # 死因：① 打开它的环境变量 `OBS_CONTROL_URL` **不在任何部署文件里**
+    # （.env.example / compose / entrypoint / Dockerfile 全无），恒为关闭；
+    # ② 即便打开也转发到 `/api/v1/*`，而那条前缀的路由已随派发控制面于 `fb96614`
+    # 拆除（现存的只有 `/openapi/v1/*`）—— 按构造就不可能工作。
 
     # 控制面先于 lifespan 构造:路由闭包持有其 store。
     control_app = create_control_app(
@@ -114,7 +108,6 @@ def create_app(
         app.state.obs_token = obs_settings.obs_token
         app.state.read_token = obs_settings.effective_read_token()
         app.state.web_dir = obs_settings.web_dir
-        app.state.control_url = obs_settings.control_url
         app.state.bus = LiveBus()
 
         # Start obs housekeeper
@@ -158,16 +151,6 @@ def create_app(
     # Include obs routes
     app.include_router(ingest_router)
     app.include_router(read_router)
-
-    # Optionally include control proxy
-    if obs_settings.control_proxy_enabled and obs_settings.control_url:
-        app.include_router(control_proxy_router)
-    else:
-        log.info(
-            "control proxy disabled (control_url=%s enabled=%s)",
-            bool(obs_settings.control_url),
-            obs_settings.control_proxy_enabled,
-        )
 
     return app
 

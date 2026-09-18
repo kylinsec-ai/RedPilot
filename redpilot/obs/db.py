@@ -114,8 +114,8 @@ _MIGRATION_3 = [
 # 那条通道随 control 侧派发协议一并拆除，列不再有意义。
 # 对**已存在**的旧库这无害：`migrate()` 用 `MIGRATIONS[version:]`，旧库停在
 # user_version=4 时切片为空、直接 no-op，多出的列留着不影响任何读写。
-_MIGRATION_4_REMOVED = True
-
+# 沿革（2026-09 死码清扫）：此处原有 `_MIGRATION_4_REMOVED = True` 这个只剩
+# 说明作用的标记常量，已删 —— 它要说的就是上面那段注释（MIGRATIONS 里没有第四条）。
 MIGRATIONS: list[list[str]] = [_MIGRATION_1, _MIGRATION_2, _MIGRATION_3]
 
 

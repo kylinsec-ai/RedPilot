@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, Optional
+from typing import Callable
 
 log = logging.getLogger("adapter.scheduler")
 

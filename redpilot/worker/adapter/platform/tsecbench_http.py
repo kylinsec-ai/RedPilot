@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 import re as _re
-from typing import Optional
 
 import requests
 
@@ -69,8 +68,6 @@ class TSecBenchHTTPBackend(PlatformBackend):
     """
 
     name = "tsecbench-http"
-    MAX_CONCURRENT = 3  # 平台限制同时启动 3 道题
-
     def __init__(self, base_url: str, token: str, *,
                  timeout: int = 30,
                  vpn_check_url: str = DEFAULT_VPN_CHECK_URL):

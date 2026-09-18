@@ -45,12 +45,13 @@ class ChallengeService:
                         "original values. Use a new task token or re-seed the DB.",
                         task.token, "; ".join(drift))
 
-    def create_task(self, task: TaskDefinition) -> None:
-        self.store.insert_task(task)
-
-    def stop_task(self, token: str) -> bool:
-        with self._lock:
-            return self.store.stop_task(token)
+    # 沿革（2026-09 死码清扫）：这里原有 `create_task` 与 `stop_task` 两个方法，
+    # 零调用点（`create_task` 的重名命中全是 `asyncio.create_task`；`stop_task`
+    # 是一条 `ChallengeService → Service → Store` 三层链，入口无人调用）。
+    # 一并删掉了 `ChallengeService.stop_task`、`Store.stop_task` 与 `Store` 的
+    # `active_container_count` / `delete_challenge` / `task_tokens` —— 全是同一种形态。
+    # 注：`delete_challenge` 是可级联删除提交记录的能力，删它等于撤掉一个（本就
+    # 无人可达的）运维入口；需要时从 git 取回。
 
     def authenticate(self, token: str | None) -> str:
         if not token or not self.store.has_task(token):

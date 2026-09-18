@@ -335,12 +335,10 @@ def cleanup_instance_processes(workdir: str, *, grace_seconds: float = 2.0) -> i
     return len(pids)
 
 
-def strip_provider(model: str) -> str:
-    """去掉模型名里的 provider 前缀（deepseek/xxx → xxx）。"""
-    m = (model or "").strip()
-    if "/" in m:
-        m = m.rsplit("/", 1)[1]
-    return m
+# 沿革（2026-09 死码清扫）：此处原有 `strip_provider(model)`，零调用点。
+# 实际拆前缀的是 `split_model(model, provider)`（返回 provider 与 model id 两段，
+# `_write_pi_models` 用它）。`adapter/config.py` 里那句「model id 由 strip_provider
+# 后透传」是句空话，一并改掉了。
 
 
 def _slim_line(raw: str) -> str:
@@ -775,7 +773,6 @@ def _install_subagents(pi_home: str, provider: str = "") -> bool:
              or os.environ.get("ADAPTER_SOLVER_MODEL", "")
              or "mimo-v2.5"), provider)
         if os.path.isdir(_AGENT_ROLES_DIR):
-            import copy as _copy
             for _role_md in ("worker.md", "scout.md", "checker.md"):
                 _src_md = os.path.join(_AGENT_ROLES_DIR, _role_md)
                 _dst_md = os.path.join(agent_dir, _role_md)

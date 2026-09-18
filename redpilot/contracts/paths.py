@@ -30,7 +30,8 @@ def safe_code(code: str) -> str:
 # ── /work 布局 ──
 
 LIVE_DIR = ".live"                    # workdir 下实时状态目录
-LIVE_STATE_FMT = "{worker_id}.json"    # .live/<worker_id>.json
+# 沿革（2026-09 死码清扫）：此处原有 `LIVE_STATE_FMT = "{worker_id}.json"`，
+# 零读者 —— 快照路径由 `driver.py` 直接 `os.path.join(workdir, LIVE_DIR, ...)` 拼。
 ROSTER_FILENAME = "roster.json"        # .live/roster.json
 DIGESTS_DIR = "digests"                # .live/digests/<code>.json
 TRANSCRIPT_FILENAME = "transcript.jsonl"  # <workdir>/<safe_code>/transcript.jsonl

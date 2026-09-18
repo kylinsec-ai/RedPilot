@@ -676,10 +676,6 @@ class StopLoss:
 
         return self._mutate(code, update)
 
-    def flags_banked(self, code: str) -> int:
-        """返回本 worker 新确认入账的 flag 数（不含平台历史基线）。"""
-        return self._read_state(code).flags_found
-
     def should_stop(self, code: str) -> tuple[bool, str]:
         """
         判断是否应停止该题。

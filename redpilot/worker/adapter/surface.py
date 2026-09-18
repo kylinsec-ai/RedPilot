@@ -29,7 +29,7 @@ import os
 import re
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .blackboard import Blackboard
 from redpilot.contracts.paths import HARNESS_DIR
@@ -80,11 +80,8 @@ _PATH_RX = re.compile(
     r"pem|key|crt|conf|pyc|jar|class)", re.I)
 
 _SHELL_SPLIT = re.compile(r"(?:&&|\|\||;|\|)")
-_FLAGS_WITH_ARG = {
-    "-p", "--ports", "-o", "-oX", "-oN", "-oG", "-u", "-U", "-w", "-username",
-    "-l", "-pass", "-P", "-d", "-D", "--url", "--data", "-b", "--cookie",
-    "-H", "--header", "-X", "--request", "-t", "-T", "--threads", "-s",
-}
+# 沿革（2026-09 死码清扫）：此处原有 `_FLAGS_WITH_ARG`（带参数的选项名集合），
+# 零读者 —— 面的键改为按命令内容（target+tactic）推导后，那份表被架空。
 
 
 def _command_of(args) -> str:
