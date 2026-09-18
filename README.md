@@ -185,7 +185,7 @@ worker 容器与 compose 的 `restart: on-failure` 靠一组退出码配套（`0
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q                      # 全仓 325（passed；另有 2 skipped）
+.venv/bin/python -m pytest -q                      # 全仓 324（passed；另有 2 skipped）
 .venv/bin/python -m pytest -q tests/architecture   # 边界执行点 25
 .venv/bin/python -m pytest -q tests/               # 架构 + 模块 + 竞技场回归
 ```
@@ -277,6 +277,11 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 | `contracts/paths.py` 的 `harness_dir()` / `harness_subdir()` | `.harness/` 路径拼装 helper | 真正的消费方都 import 常量 `HARNESS_DIR` 自己 join |
 | `worker/adapter/taskprompt.py` 的 `write_memory()` | 框架侧 MEMORY.md 写入口 | 被 import 却从未被调用；MEMORY.md 实际由 agent 自己写、由 `_merge_memory` 合并。**框架侧那条写入路径从来没接上** |
 | `ControllerConfig.round_timeboxes` + `ADAPTER_ROUND_TIMEBOXES` | "各轮单题访问时长"旋钮 | 零读者。真正的算法是 `timebox_for_difficulty(难度) × round_factors[轮次]`；两者默认值还对不上（旧 `[480,820,1500,2000]` vs 新 `3600×[1.0,1.7,3.0,4.0]`） |
+| `adapter/verify.py` 的 `_python_mutated_artifacts` → `_python_noncopy_write_paths` → `_python_open_mode` | 一条 136 行的互调链 | **链根无人调用**。⚠️ 三者不连续（中间夹着两个**有**活调用点的函数），按行号一刀切会连坐删错的 |
+| `adapter/verify.py` 的 `normalize_flag_body` | flag 归一化工具 | 零调用点，且语义是**已被推翻的那个**（统一小写 —— 会让错误的小写提交把正确的大写答案拉黑）。`adapter/hallucination.py` 的注释曾以「与它同口径」为据，等于把有害旧口径当标准引用，已改为自述规则 |
+| `control/` 的 `stop_task` 三层链 + `active_container_count` / `delete_challenge` / `task_tokens` / `create_task` / `internal_error` | 控制面零散方法 | 链的**入口**零调用点（连测试都没有），其余各只有自己的定义。`delete_challenge` 是可级联删除提交记录的能力 —— 删它等于撤掉一个本就无人可达的运维入口，需要时从 git 取回 |
+| `obs/control_proxy.py`（整模块 71 行） | 同源控制面代理 | **两个独立死因**：① 打开它的 `OBS_CONTROL_URL` 不在任何部署文件里，恒为关闭；② 即便打开也转发到 `/api/v1/*`，而那条前缀已随 `fb96614` 拆除（存活的只有 `/openapi/v1/*`）—— 按构造不可能工作 |
+| `flags_banked` / `_FLAGS_WITH_ARG` / `LIVE_STATE_FMT` / `_MIGRATION_4_REMOVED` / `platform_mode` / `strip_provider` / `MAX_CONCURRENT`×2 | 零散符号 | 各自全仓只有自己的定义。注：删 `ControllerConfig.platform_mode` **字段**但保留 `ADAPTER_PLATFORM` **环境变量** —— 后者才是活入口 |
 | 前端 `ctl` / `ADMIN_HEADER` / `adminToken` / `adminAuth` / `setAdminToken` | 控制面 `/api/v1/*` 的 axios 实例与凭据存储 | **上次拆除的漏网**：`fb96614` 删了整页控制台与全部 `/api/v1/*` 路由，却把服务它的底层管线留在了原地 |
 | 28 处未使用 import 中的 10 处 | — | pyflakes；余下 18 处是 `platform_client` / `obs.schema` 的**有意再导出**，已核实保留 |
 
@@ -297,8 +302,21 @@ Agent 可随时重读，且**子 Agent 进程也会加载它**，而父会话的
 > 需要先决定"接进 pi"还是"删掉 preset"，故留给 P1 上下文面一并处理。
 > 详见 `TARGET_ARCHITECTURE.md` §2.1。
 
-**覆盖损失记账**：删 `provider_failure` 三条用例（-3），新增提示面单源守卫三条（+3），
-全仓 325 passed / 2 skipped 不变。
+**覆盖损失记账**：第一轮删 `provider_failure` 三条用例（-3）、新增提示面单源守卫三条（+3）；
+第二轮删 R1 守卫的重复实现一条（-1）—— 它有不变量相同的另一份实现仍在跑（实测两向都验过）。
+合计 **324 passed / 2 skipped**。
+
+**四件"看着该删、复核后留下"的事**（记录在案，免得下一轮再查一遍）：
+
+| 对象 | 为什么留 |
+|---|---|
+| `adapter/heimdall.py`（515 行，默认关、**零测试**） | 它端到端接着（gate / init / produce / consume 四处齐全，`heimdall_map=` 注入 prompt）。默认关是**设计**（"新链路先默认不参与，观察够了再打开"）。真正的缺口是**零测试**，不是死码 |
+| `contracts/vocabulary.py` 的 10 个事件类型常量 | 不是死码，是**未接线的单一来源** —— `digest.py` 用字面量比较同样的 kind。删声明会让字面量成为唯一来源，与单源原则**反向**；正解是把 `digest.py` 接上去（一次跨 4 文件的改动） |
+| `tests/control/test_smoke.py`（断言重言） | 它是**唯一**以 env 默认路径构造 `create_app()` 的用例（其余全传显式 settings）。断言重言，但那个**调用**就是覆盖 |
+| 6 个证据溯源测试文件（~1200 行） | "闸门已撤、断言不再检查所宣称属性"**不成立**：`claim.verified` 仍被提交路径读（`orchestrator.py:4298/4308/5498`），`claim.provenance` 仍被 grounding 判据读（`:1808`） |
+
+另有一条**应做而未做**：`contracts/vocabulary.py` 的 10 个常量与 `digest.py`
+的字面量应当收敛成一处（单源原则）。它是重构不是删除，故留待专门的改动。
 
 ---
 
