@@ -185,8 +185,8 @@ worker 容器与 compose 的 `restart: on-failure` 靠一组退出码配套（`0
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q                      # 全仓 513
-.venv/bin/python -m pytest -q tests/architecture   # 边界执行点 24
+.venv/bin/python -m pytest -q                      # 全仓 325
+.venv/bin/python -m pytest -q tests/architecture   # 边界执行点 25
 .venv/bin/python -m pytest -q tests/               # 架构 + 模块 + 竞技场回归
 ```
 
@@ -195,9 +195,9 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 
 | 目录 | 内容 |
 |---|---|
-| `tests/architecture/` | 24 条边界执行点：禁边、façade、运行时 import 足迹、数据所有权、单一来源，以及守卫自检 |
+| `tests/architecture/` | 25 条边界执行点：禁边、façade、运行时 import 足迹、数据所有权、单一来源，以及守卫自检 |
 | `tests/contracts/` `tests/control/` `tests/obs/` `tests/worker/` `tests/app/` | 各模块单测（由原 `packages/*/tests/` 迁入） |
-| `tests/*.py` | 99 条竞技场行为回归（止损、task epoch、eager 提交、交付账本、多段题推进、supervisor 判据） |
+| `tests/*.py` | 89 条竞技场行为回归（止损、task epoch、eager 提交、交付账本、多段题推进、supervisor 判据） |
 
 容器的 entrypoint 与 worker 装配层见 `entrypoint.sh` 与 `redpilot/worker/driver.py`。
 
@@ -227,6 +227,41 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 > 需要时从 git 历史取回（最后一次存在于 `edfd569`）。
 
 **代价**：失去"不连真靶场就能端到端自测 worker"的能力。以后 E2E 验证只对真靶场平台做。
+
+---
+
+## 评估与轨迹面已移除
+
+2026-09 死代码清扫删除了评估与轨迹面（`redpilot/eval/` 与判据桥 `adapter/eval_bridge.py`），
+共 1637 行 Python（另 264 行数据集 JSON）。判据是**生产消费者为零**：`app.py`、`main.py`、compose、两个 Dockerfile 与
+`entrypoint.sh` 均不引用它，`redpilot/` 内也没有任何文件 import `redpilot.eval`。
+
+| 已删 | 曾经是什么 | 为什么删 |
+|---|---|---|
+| `redpilot/eval/` | 评估与轨迹面：回放(`replay`) / 任务卡(`dataset`，含 `datasets/skill_routing.json` 20 张卡) / 判据(`graders`) / 报告(`report`，pass^k、触发率、成本) / 落库(`store`) | 生产侧零消费者。它是 `docs/architecture/TARGET_ARCHITECTURE.md` 的 P3「首切片」，**已实现但从未接线**到任何运行时入口 —— 只有测试在跑它 |
+| `redpilot/worker/adapter/eval_bridge.py` | 判据桥：把 `taskprompt._OFFLINE_CONSTRAINT` 点名的行为编译成 7 条 `EGRESS_RULES` 正则，按 `Predicates` 协议注入，以免 `redpilot.eval` 反向 import `redpilot.worker` | 它的存在理由就是给评估面供判据；评估面既去，桥随之失去消费方。**注意**：被编译的那条约束本身仍在 `taskprompt.py`，且仍在注入 prompt |
+
+连带删除的 6 个测试文件（152 条）：
+
+| 文件 | 条数 | 依赖 |
+|---|---|---|
+| `tests/eval/test_dataset.py` | 54 | `redpilot.eval.dataset` |
+| `tests/eval/test_graders.py` | 30 | `redpilot.eval.graders` |
+| `tests/worker/test_eval_bridge.py` | 22 | `adapter/eval_bridge` |
+| `tests/eval/test_replay.py` | 20 | `redpilot.eval.replay` |
+| `tests/eval/test_report.py` | 16 | `redpilot.eval.report` |
+| `tests/test_eval_end_to_end.py` | 10 | 两包跨接：评估面 + 判据桥 |
+
+> ⚠️ 记一笔覆盖损失：这 152 条与被删的两个离线外围资产那次不同 —— 那回 90 条里
+> 有 55 条是被文件级 import **连坐**的（其实在测竞技场）。这次 6 个文件**没有一条连坐**，
+> 全部直接测被删的面本身。
+> 但 `test_eval_end_to_end.py` 值得单独记一笔：它的 docstring 写明自己回答的是
+> "判据注入这条路**走得通吗**？还是说『注入协议』只是个说法、真接的时候接不上？"
+> —— 删掉它，等于把"这套注入设计至少被验证过一次"这一点也一并删掉了。
+> 需要时从 git 取回（最后存在于 `a3ea29c`）。
+
+**代价**：失去"把轨迹离线跑判据、量化每次改动"的能力。`TARGET_ARCHITECTURE` 的 P3
+退回未落地，其缺口清单第 1 项（"无评估面，一切改动无法量化"）复现。
 
 ---
 

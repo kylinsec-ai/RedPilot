@@ -3,8 +3,11 @@
 > **输入**：《智能体工程最佳实践研究报告》（仓库根 `智能体工程最佳实践研究报告.md`）
 > 与 `skills/` 技能库。
 > 每条断言都带本仓证据（`file:line`）或可复跑的实测数字。
-> **更新（2026-09-17）**：本文原为纯设计。P3 评估面的**第一段已落地**，
-> §3.3 附落地状态与三处被现实修正的设计；其余五面仍是设计。
+> **沿革（2026-09-18）**：本文原为纯设计；2026-09-17 曾记录「P3 评估面第一段已落地」。
+> 那次落地（`redpilot/eval/` 与判据桥 `adapter/eval_bridge.py`）**从未接线到任何运行时
+> 入口** —— 生产消费者为零、唯一调用方是测试，2026-09 死代码清扫已将其整体拆除
+> （见 `README.md`「评估与轨迹面已移除」）。故 **P3 退回未落地**：§3.3 只保留设计描述，
+> 不再附落地状态；其余五面仍是设计。
 >
 > **姊妹文档**：`AGENT_ARCHITECTURE_SELECTION.md` —— 把 35 个公开智能体架构
 > （`docs/reference/all-agentic-architectures`，只读参考库）按本仓任务形状逐个裁决，
@@ -15,11 +18,17 @@
 
 | 简写 | 实际路径 |
 |---|---|
-| `adapter/…` | `packages/worker/ghost_worker/adapter/…` |
-| `pi_agent.py` | `packages/worker/ghost_worker/adapter/solver/pi_agent.py` |
-| `orchestrator.py` / `supervisor.py` / `observability.py` | `packages/worker/ghost_worker/…` |
-| `obs/…` | `packages/ghost/ghost/obs/…`（`store.py` 即 `packages/ghost/ghost/obs/store.py`） |
-| `contracts/…` | `packages/contracts/ghost_contracts/…`（`contracts/digest.py` 即 `packages/contracts/ghost_contracts/digest.py`） |
+| `adapter/…` | `redpilot/worker/adapter/…` |
+| `pi_agent.py` | `redpilot/worker/adapter/solver/pi_agent.py` |
+| `orchestrator.py` / `supervisor.py` / `observability.py` | `redpilot/worker/…` |
+| `obs/…` | `redpilot/obs/…`（`store.py` 即 `redpilot/obs/store.py`） |
+| `contracts/…` | `redpilot/contracts/…`（`contracts/digest.py` 即 `redpilot/contracts/digest.py`） |
+
+> **沿革（2026-09）**：本表原映射到多包布局 `packages/<pkg>/ghost_…/…`。仓库后来改名单发行版
+> 单体（见 `docs/modular-monolith-design.md`），`packages/` 已不存在 —— 上表随之更新，
+> 文中所有 `adapter/…` / `obs/…` 简写因此重新可解析。正文里同批的
+> `ghost_worker/xxx.py`、`packages/ghost/ghost/eval/`、`test_ghost_purity.py` 之类
+> 旧前缀/旧名已一并改到现址。
 
 ---
 
@@ -33,7 +42,7 @@
    安全边界写在提示词里而不是动作上；技能面平铺 103 条、没有路由层。
 3. **一处曾整个缺失**：评估面。轨迹底座（`runs` + `events` + `transcript` +
    事件折叠器）当时就已存在 —— 这是它能成为首切片的直接原因：纯读侧消费，
-   零侵入求解链路。**首段已落地**（§3.3）。
+   零侵入求解链路。**首段曾落地、2026-09 因零消费者拆除**（见文首沿革）。
 
 ### 对齐表
 
@@ -42,16 +51,16 @@
 
 | # | 报告结论 | 判定 | 本仓证据 |
 |---|---|---|---|
-| 1 | 上下文工程 > 提示词工程 | **相反** | 静态段落 8709 字符且重复注入，见 §2.1 |
-| 2 | 默认单智能体，多智能体需论证 | 做到 | `adapter/taskprompt.py:216` 三角色按条件派发，非常驻；`ADAPTER_SUBAGENT` 可整体关闭 |
+| 1 | 上下文工程 > 提示词工程 | **相反** | 静态段落 8706 字符且重复注入，见 §2.1 |
+| 2 | 默认单智能体，多智能体需论证 | 做到 | `adapter/taskprompt.py:221` 三角色按条件派发，非常驻；`ADAPTER_SUBAGENT` 可整体关闭 |
 | 3 | 上下文是有限资源（context rot / 注意力预算） | **缺失** | 全仓无 token 预算、无上下文构成计量 |
 | 4 | 少即是多（四组规则迁移） | **相反** | `_EFFICIENCY_POLICY` / `_CHALLENGE_PREFLIGHT` 是规则清单，见 §2.1 |
 | 5 | 渐进式披露是第一设计原则 | **部分** | `adapter/skill_loader.py:90` + `pi_agent.py:710`；但 103 条平铺广告、无 L3，见 §2.3 |
 | 6 | 工具设计是 ROI 最高的单点改进 | **部分** | 工具体是 pi 内置，框架侧唯一改造点是 `pi_ext/bash_guard.js`；无风险分级、无描述调优 |
 | 7 | 长任务 = 压缩 + 记忆 + 隔离 + **一次 reset** | **做到且更进一步** | 竞技场多会话 + 三段式续接块，见 §1.1 |
 | 8 | 多智能体收益来自并行与隔离 | **部分** | 隔离有了（独立进程、8 分钟预算、角色模型）；**写入纪律未编码**，见 §3.5 |
-| 9 | 评估是可观测性的下半场 | **部分**（首段已落地） | 确定性判据 / 数据集 / pass^k 已有（§3.3）；模型 grader 与 macro 聚类未做 |
-| 10 | 评估对象是轨迹而非答案 | **做到** | 轨迹底座 `obs/store.py:501` + `contracts/digest.py:242`；评估面已在 `ghost/eval/` 落地 |
+| 9 | 评估是可观测性的下半场 | **缺失** | 首段曾落地（确定性判据 / 数据集 / pass^k），2026-09 因生产消费者为零拆除；模型 grader 与 macro 聚类从未做（§3.3） |
+| 10 | 评估对象是轨迹而非答案 | **做到** | 轨迹底座 `obs/store.py:458 events_for_run()` + `contracts/digest.py:242`（这一层是观测面自己的，与已拆的评估面无关） |
 | 11 | 安全是硬约束，边界放在**动作**上 | **相反** | 边界几乎全在提示词里，见 §2.2 |
 | 12 | 协议三层：MCP 接工具 / A2A 接 agent / Skills 装流程 | 做到且克制 | 只用 Skills（`pi_agent.py:710`），未引 MCP / A2A —— 与报告 §9.2 "同进程内别用 A2A" 一致 |
 
@@ -59,7 +68,7 @@
 
 - 要判断"这个仓库现在能不能改"→ §1（哪些不能动）。
 - 要判断"该改什么"→ §2（三处方向相反）与 §4（ROI 排序）。
-- 要开工 → §3.3（P3 评估面，首切片）与 §5（路线图）。
+- 要开工 → §3.3（P3 评估面，已退回未落地）与 §5（路线图）。
 
 ---
 
@@ -70,7 +79,7 @@
 报告 §3.5 的判断是：compaction 保留连续性但给不了干净起点，模型的"上下文焦虑"仍在，
 所以 Anthropic 转向 **context reset + 结构化交接**。
 
-本仓的主循环（`ghost_worker/orchestrator.py`，7079 行）就是这么跑的：单题拆成多场
+本仓的主循环（`redpilot/worker/orchestrator.py`，7079 行）就是这么跑的：单题拆成多场
 时间盒会话，每场是一个全新的 pi 进程（干净窗口），场间靠三类外部状态交接 ——
 `MEMORY.md`、黑板 `_blackboard.json`（`orchestrator.py:816`）、以及 `AGENTS.md`
 规定的三段式续接块，由 `extract_handoff()` 回捞（调用点 `orchestrator.py:5793-5805`）。
@@ -154,8 +163,8 @@ docstring 记录了上一版的教训 —— 框架曾经有一张 `_DOMAIN_SIGN
 | 层 | 本仓实现 |
 |---|---|
 | 原始事件流 | pi 原生 transcript：`work/<safe_code>/transcript.jsonl`（`contracts/paths.py:TRANSCRIPT_FILENAME`） |
-| 平台侧事件表 | `obs/store.py:141` `append_events()` 按 `run_id` 落库；读端 `:501` `events_for_run()`、`:635` `run_events(after, limit)` |
-| run 生命周期 | `obs/store.py:209` `close_run()`，状态词表见 `contracts/vocabulary.py:RUN_STATUSES` |
+| 平台侧事件表 | `obs/store.py:140` `append_events()` 按 `run_id` 落库；读端 `:458` `events_for_run()`、`:590` `run_events(after, limit)` |
+| run 生命周期 | `obs/store.py:206` `close_run()`，状态词表见 `contracts/vocabulary.py:RUN_STATUSES` |
 | **紧凑时间线** | **`contracts/digest.py:242` `fold_rows()`** —— 把原始事件折叠成 `{seq, kind, t, turn, tool, cmd, out, err, text, note, stop, tokens}`，单 code 上限 20000 条（`ENTRY_CAP`） |
 
 `fold_rows` 是关键：报告 §7.2 的 macro-eval 要求"把每条 trace 压成紧凑文档，再做
@@ -166,8 +175,15 @@ docstring 记录了上一版的教训 —— 框架曾经有一张 `_DOMAIN_SIGN
 
 报告引用 Anthropic 数据：探索类 subagent 路由到小模型，调优前就能让探索成本降约 5 倍。
 
-本仓 `pi_agent._inject_role_model` 已把 subagent 角色接到独立模型配置，`VERIFIER_MODEL`
-与 heimdall 侧模型可独立设置（`.env.example` 模型段）。方向一致。
+本仓 `pi_agent._inject_role_model`（`adapter/solver/pi_agent.py:700`）已把 subagent 角色接到
+独立模型配置；verifier 侧模型也可独立设置 —— 经 `LLM_MODEL` / `LLM_PROVIDER` /
+`LLM_BASE_URL` 等 `LLM_*` 键（`adapter/config.py:204 build_verifier_config`，消费方
+`orchestrator.py:6882`）。方向一致。
+
+> 沿革（2026-09）：此处原写「`VERIFIER_MODEL` 与 heimdall 侧模型可独立设置
+> （`.env.example` 模型段）」—— 死代码清扫时修正：`VERIFIER_MODEL` 全仓无人读取，
+> verifier 真正的入口是 `LLM_*`（配置面与缺省见 `docs/worker.md`）。
+> 原句是**文档与代码脱节**的一例。
 
 ---
 
@@ -187,23 +203,31 @@ docstring 记录了上一版的教训 —— 框架曾经有一张 `_DOMAIN_SIGN
 
 **实测数字**（单位：字符；复跑命令见附录 A）：
 
-| 常量 | 行 | 字符 |
-|---|---|---|
-| `_CLAUDE_MD` | `adapter/taskprompt.py:75` | 3475 |
-| `_ISOLATION_CONSTRAINT` | `:187` | 1837 |
-| `_INTRANET_ORCHESTRATION` | `:56` | 1085 |
-| `_SUBAGENT_GUIDE` | `:216` | 917 |
-| `_OFFLINE_CONSTRAINT` | `:178` | 450 |
-| `_EFFICIENCY_POLICY` | `:314` | 444 |
-| `_CHALLENGE_PREFLIGHT` | `:325` | 282 |
-| `_SKILL_SELF_SERVE_NOTE` | `:45` | 219 |
-| **模块常量和** | | **8709** |
+| 常量（均在 `adapter/taskprompt.py`） | 字符 |
+|---|---|
+| `_CLAUDE_MD` | 3475 |
+| `_ISOLATION_CONSTRAINT` | 1834 |
+| `_INTRANET_ORCHESTRATION` | 1085 |
+| `_SUBAGENT_GUIDE` | 917 |
+| `_OFFLINE_CONSTRAINT` | 450 |
+| `_EFFICIENCY_POLICY` | 444 |
+| `_CHALLENGE_PREFLIGHT` | 282 |
+| `_SKILL_SELF_SERVE_NOTE` | 219 |
+| **模块常量和** | **8706** |
 
-这段常量 **48.2% 是中文**（8709 字符里 4200 个汉字）。按中文 ~0.6 token/字、ASCII
+> 沿革（2026-09）：本节数字较首版各**减 3**（`_ISOLATION_CONSTRAINT` 1837→1834、
+> 常量和 8709→8706）—— 死代码清扫把 `_ISOLATION_CONSTRAINT` 第 2 条里列着的
+> `fastapi-console/` 换成了现存的 `/opt/redpilot`（前者目录已删）。汉字数 4200 不变，
+> 故占比仍是 48.2%。
+>
+> **本表原有一列「行」（`:187` 之类），已删。** 理由：该列在一个会话内被编辑带偏过
+> 三次，每次都要回改五六个数字；而常量名是稳定的、行号不是。要定位就按上面的名字搜。
+
+这段常量 **48.2% 是中文**（8706 字符里 4200 个汉字）。按中文 ~0.6 token/字、ASCII
 ~0.25 token/字符加权粗估 ≈ **3600 token**（**字符数是实测，token 数是估算** —— 本仓
 未装 tiktoken，故不假装精确）。
 
-且这**尚未计入**任务卡、已知事实、前次记忆（上限 4000 字符，`:335`）、已判错候选指纹、
+且这**尚未计入**任务卡、已知事实、前次记忆（上限 4000 字符，`:340 _PRIOR_MEMORY_MAX`）、已判错候选指纹、
 黑板、Heimdall 图。真正进上下文的量比这个数字大。
 
 **已确认的两处重复注入**（同一份内容走两条路进同一个上下文）：
@@ -322,7 +346,7 @@ L3 `references/` `scripts/`」，但这份技能库里**零个技能有子目录
 行为"）。
 
 命名沿用本仓惯例：**面（plane）之间不新增包** —— 三包结构（`contracts` / `ghost` /
-`worker`）是 README 明写的地基，依赖方向由 `packages/contracts/tests/test_purity.py`
+`worker`）是 README 明写的地基，依赖方向由 `tests/contracts/test_purity.py`
 钉住。下面每个"落点"都是包内新增模块或对既有模块的改造。
 
 ---
@@ -331,7 +355,7 @@ L3 `references/` `scripts/`」，但这份技能库里**零个技能有子目录
 
 | | |
 |---|---|
-| **现状** | `adapter/taskprompt.py` 711 行拼装器；静态段落 8709 字符；两处确认重复注入；无预算、无计量 |
+| **现状** | `adapter/taskprompt.py` 拼装器；静态段落 8706 字符；两处确认重复注入；无预算、无计量 |
 | **目标** | 规则单源化 + 四层结构 + 组装时声明并累计 token 预算 |
 | **落点** | `adapter/taskprompt.py` 重构为分层组装器；不变量常量单源化 |
 | **验收** | 静态段落 token 下降 ≥40%，**且 P3 度量行为不劣化** |
@@ -340,7 +364,7 @@ L3 `references/` `scripts/`」，但这份技能库里**零个技能有子目录
 
 | 层 | 内容 | 预算（目标） | 现状 |
 |---|---|---|---|
-| L0 不变量 | 授权边界、写入边界（只写本题目录）、答案格式 | ≤ 300 token | 现在散在 `_ISOLATION_CONSTRAINT`(1837) + `_OFFLINE_CONSTRAINT`(450) 两段 |
+| L0 不变量 | 授权边界、写入边界（只写本题目录）、答案格式 | ≤ 300 token | 现在散在 `_ISOLATION_CONSTRAINT`(1834) + `_OFFLINE_CONSTRAINT`(450) 两段 |
 | L1 任务卡 | 目标/地址/flag 数/难度/取证模式/预读要求 | ≤ 400 token | 已有，形态正确 |
 | L2 知识面 | 技能名录与路由指引 | ≤ 800 token | 见 §3.2 |
 | L3 状态 | MEMORY / 黑板 / 续接块 / 镜像 / 判错账本 | 现上限 4000 字符 | 已有，需纳入统一核算 |
@@ -429,13 +453,22 @@ recon-for-sec / api-sec / auth-sec / injection-checking / file-access-vuln / bus
 
 ---
 
-### 3.3 P3 评估与轨迹面（首切片）
+### 3.3 P3 评估与轨迹面（设计；首切片已拆除）
+
+> **沿革（2026-09-18）**：本节曾以「首切片」记录过一次真实落地，但那次落地从未接线到
+> 任何运行时入口（生产消费者为零、唯一调用方是测试），2026-09 死代码清扫已整体拆除 ——
+> 完整记录（组成、行数、测试数、恢复引用）见 `README.md`「评估与轨迹面已移除」，
+> 此处不复述，以免两处计数各自漂移。
+>
+> **故本节自此恢复为纯设计** —— 下面的落点、组成、布局与验收标准描述的都是
+> **应当是什么**，不是**现在有什么**。若重做，注意 `eval_bridge` 那份
+> `EGRESS_RULES` 需重建而不能再"搬迁复用"。
 
 | | |
 |---|---|
-| **现状** | 零。全仓无 grader / rubric / dataset / pass^k |
+| **现状** | 零。全仓无 grader / rubric / dataset / pass^k —— 拆除首切片后回到本节初稿状态 |
 | **底座** | `obs/store.py` 的 runs+events、`work/<code>/transcript.jsonl`、`contracts/digest.fold_rows()` |
-| **落点** | `packages/ghost/ghost/eval/`（**不新增包**：三包结构是地基；且评估是读侧消费者） |
+| **落点** | `redpilot/eval/`（**不新增顶层包**：单发行版已定型；且评估是读侧消费者） |
 | **数据** | 先回放已有轨迹，再接实跑（已定） |
 | **红线** | **只读**；绝不回写控制面，评估结果与 `runs` 分表存放 |
 
@@ -443,10 +476,10 @@ recon-for-sec / api-sec / auth-sec / injection-checking / file-access-vuln / bus
 
 | 需要什么 | 从哪来 |
 |---|---|
-| 一次执行的 run 元信息 | `ObsStore.run_row(run_id)` / `list_runs(status=…, worker=…)`（`obs/store.py:624` / `:518`） |
-| 该 run 的原始事件 | `ObsStore.run_events(run_id, after, limit)`（`obs/store.py:635`） |
+| 一次执行的 run 元信息 | `ObsStore.run_row(run_id)` / `list_runs(status=…, worker=…)`（`obs/store.py:580` / `:475`） |
+| 该 run 的原始事件 | `ObsStore.run_events(run_id, after, limit)`（`obs/store.py:590`） |
 | 该 run 的**紧凑时间线** | `ghost_contracts.digest.fold_rows(rows, after=, live=False)`（`contracts/digest.py:242`） |
-| 会话边界与提交结果 | 折叠时间线的 `kind=session` / `kind=attempt` 条目；`attach_accepted_flags`（`obs/store.py:543`） |
+| 会话边界与提交结果 | 折叠时间线的 `kind=session` / `kind=attempt` 条目；`attach_accepted_flags`（`obs/store.py:499`） |
 | 成本 | 折叠时间线的 `kind=turn` 条目带 `tokens` 字段（`contracts/digest.py` 条目 schema 已含） |
 
 **这四样今天就能拿到，不需要动 worker 一行。** 这是首切片可行的全部理由。
@@ -454,7 +487,7 @@ recon-for-sec / api-sec / auth-sec / injection-checking / file-access-vuln / bus
 #### 组成
 
 ```
-packages/ghost/ghost/eval/
+redpilot/eval/
   __init__.py
   dataset.py       任务卡装载（YAML/JSON），含四类用例
   replay.py        run_id → events → fold_rows → 判据输入（唯一数据入口）
@@ -471,7 +504,7 @@ packages/ghost/ghost/eval/
 `FlagEvidencePolicy` / `is_remote_command` / `is_task_remote_command` 已经在回答
 "这条命令是不是在碰目标、是不是在联网下载"——评估面要做的是把同一批判据**离线**跑在
 折叠时间线的 `cmd` 字段上，而不是另写一套正则。判据分叉是这类系统最典型的静默失败
-（本仓已有先例：同名双份的 prompt 组装器，见 `packages/worker/tests/test_taskprompt_single_source.py`）。
+（本仓已有先例：`tests/architecture/test_single_source.py` 就断言 `build_task_prompt` 全仓只有一份定义）。
 
 **rubric grader 的输出 schema**（报告 §5.5 要求的"可存储、可对比、可聚合"）：
 
@@ -505,27 +538,30 @@ packages/ghost/ghost/eval/
 
 | 期 | 内容 | 状态 |
 |---|---|---|
-| 第一段 | 回放式：`replay.py` + 确定性 grader + 20 条任务卡。**零 LLM 成本，可进 CI** | **已落地**（见下） |
+| 第一段 | 回放式：`replay.py` + 确定性 grader + 20 条任务卡。**零 LLM 成本，可进 CI** | 曾落地（2026-09-17），2026-09 因零消费者**拆除**（见下） |
 | 第二段 | 模型 grader（`graders/rubric.py`）+ macro 聚类（`macro.py`） | 未开始 |
 | 第三段 | 接实跑：`tsecbench/`（注意它与统一 server 抢 8000 端口，`README.md` 已记） | 未开始 |
 
-#### 落地状态（第一段，2026-09-17）
+#### 首切片落地状态（2026-09-17 落地；2026-09-18 拆除）
+
+> 下面记录的是**已拆除**的首切片当时长什么样，以及它换来的三处设计修正。
+> 布局块是历史记录，其中的路径今日已不存在（最后存在于 `a3ea29c`）；
+> **但「三处设计修正」仍然有效** —— 它们是重做 P3 时必须避开的坑，故原样保留。
+
+组件本身同上表，此处只列上表没有的**卫星件**：
 
 ```
-packages/ghost/ghost/eval/
-  replay.py              回放：run_id → 事件 → fold_rows → Trace（唯一数据入口）
-  dataset.py             任务卡与评估集装载（含 ratio_budget/budget 的单位分离）
-  datasets/skill_routing.json   20 张卡，explicit/implicit/noisy/negative 各 5
-  graders/deterministic.py      六条确定性判据 + Predicates 注入协议
-  report.py              pass^k / 触发率 / 成本 / 判据覆盖率
-  store.py               EvalStore：eval_* 表，独立的 ./data/eval.sqlite3
-packages/ghost/tests/    评估面单测 + test_ghost_purity.py（两条依赖方向红线）
-packages/worker/ghost_worker/adapter/eval_bridge.py   判据桥（唯一注入点）
-packages/worker/tests/test_eval_bridge.py             判据桥的行为契约
-tests/test_eval_end_to_end.py                         跨包端到端
+redpilot/eval/datasets/skill_routing.json   20 张卡，explicit/implicit/noisy/negative 各 5
+redpilot/worker/adapter/eval_bridge.py      判据桥（唯一注入点，免 eval→worker 反向 import）
+tests/worker/test_eval_bridge.py            判据桥的行为契约
+tests/eval/ + tests/test_eval_end_to_end.py 评估面单测与跨包端到端，共 152 条
 ```
 
-落地过程中被现实修正的**两处设计**（都写进了代码注释，此处留索引）：
+几处与上表设计的差异：`deterministic.py` 落成为六条判据 + `Predicates` 注入协议；
+`report.py` 多了判据覆盖率；`store.py` 落在独立的 `./data/eval.sqlite3`；
+`dataset.py` 含 `ratio_budget`/`budget` 的单位分离。`rubric.py` 与 `macro.py`（第二段）从未建。
+
+落地过程中被现实修正的**三处设计**（都写进了代码注释，此处留索引）：
 
 1. **§3.3 里"复用 `adapter/verify.py` 的判据"这条不成立。** `is_task_remote_command`
    是**提交溯源判据**，要求命令行里出现规格完整的当前目标 authority（host+port+scheme），
@@ -534,13 +570,14 @@ tests/test_eval_end_to_end.py                         跨包端到端
    `pip install` 一律返回 False —— 正是 `_OFFLINE_CONSTRAINT` 第一个点名禁止的那批。
    两个都不能直接当越界判据。桥改为：**判断"命令碰的主机是否都在授权范围内"**，
    并自带一张小规则表补上"命令行里没有 URL 的联网行为"；那张表是**明写的欠账**，
-   归属应是 `verify.py` 与 P4 的 policy-as-code（见 `eval_bridge.py` 的模块 docstring）。
+   归属应是 `verify.py` 与 P4 的 policy-as-code。（这段论证原记在 `eval_bridge.py` 的
+   模块 docstring 里，该文件已随首切片拆除；结论保留于此，供重做时参照。）
 
 2. **判据按卡启用会制造覆盖率盲区。** `_OFFLINE_CONSTRAINT` 是全局约束，但
    20 张卡里只有 3 张启用了 `offline` —— 其余卡上，一次真实的 `pip install`
-   完全不可见，而"没查"与"查过没问题"在报告里长得一样。已加
-   `report.check_coverage()` 把每个判据的启用次数与状态分布摆出来，
-   并用一条测试钉住当前数字。
+   完全不可见，而"没查"与"查过没问题"在报告里长得一样。
+   其 `report.check_coverage()` 会把每个判据的启用次数与状态分布摆出来，
+   并有一条测试钉住当时的数字（两者均随首切片拆除）。
 
 3. **判据与报告一度对同一件事有两套口径。** `graders._routing` 早期写的是
    "两侧都声明时以 forbid 为准"，而 `report.trigger_rate` 两侧各数各的 ——
@@ -549,7 +586,7 @@ tests/test_eval_end_to_end.py                         跨包端到端
 
 **已知局限**：本机没有真实 run 数据（`data/` 只有控制面库，`./data/obs.sqlite3`
 不存在），所以任务卡的 `challenge_code` 一律留空、全部用合成轨迹验证。
-"回放已有轨迹"这条要在有观测库的机器上才真正跑得起来 —— 代码路径已通，
+"回放已有轨迹"这条要在有观测库的机器上才真正跑得起来 —— 当时的代码路径已通（现已拆除），
 缺的是数据。另：数据集目前**不覆盖多 flag 题**（`TaskCard` 没有 flag 数/阶段字段），
 那类题的判据要等第二段。
 
@@ -656,8 +693,8 @@ L3 层预算核算共用同一份清单。
 
 | 序 | 差距 | 面 | 为什么排在这 |
 |---|---|---|---|
-| 1 | ~~无评估面，一切改动无法量化~~（首段已落地，剩模型 grader / macro 聚类） | P3 | 其余五项的前置 |
-| 2 | 静态 prompt 8709 字符且有重复注入 | P1 | 单点 ROI 最高；改动局限在一个模块 |
+| 1 | 无评估面，一切改动无法量化（首段曾落地、2026-09 拆除；模型 grader / macro 聚类从未做） | P3 | 其余五项的前置 |
+| 2 | 静态 prompt 8706 字符且有重复注入 | P1 | 单点 ROI 最高；改动局限在一个模块 |
 | 3 | 技能广告面平铺 103 条、无 L3、有重复簇 | P2 | 每一场每一次请求的固定成本 |
 | 4 | 边界在提示词里 | P4 | 风险最高，但报告自己也把它排在 31–60 天 |
 | 5 | subagent 共享可写工作区 | P5 | 结构性风险，改造成本中等 |
@@ -718,7 +755,7 @@ L3 层预算核算共用同一份清单。
 python3 - <<'PY'
 import ast, pathlib
 t = ast.parse(pathlib.Path(
-    "packages/worker/ghost_worker/adapter/taskprompt.py").read_text(encoding="utf-8"))
+    "redpilot/worker/adapter/taskprompt.py").read_text(encoding="utf-8"))
 chr_ = cjk = 0
 for n in t.body:
     if isinstance(n, ast.Assign):

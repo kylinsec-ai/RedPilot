@@ -27,10 +27,10 @@
    `pi_ext/bash_guard.js`（不是提示词）；最强的复核是 `pi_agents/checker.md`
    的**对抗式证伪**（不是泛化的 critique）；而 `compliance.py` **是打码器不是判据检查器**、
    `heimdall` **没有边**。凡「已具备」必须指得出代码对应物，指不出的降级为「部分」。
-3. **最该抄的不是任何「架构」，是一条纪律 + 一个形状 + 一次搬迁。**
+3. **最该抄的不是任何「架构」，是一条纪律 + 一个形状 + 一次重建。**
    纪律 = `deterministic-picker`（不问 LLM 要数字分）；形状 = Adaptive RAG 的**检索前路由**
-   + Self-RAG 的**逐条质控**（= P2 的现成答案）；搬迁 = 把 `eval_bridge.py` 已经编译好的
-   红线判据**从报告面接到动作面**（= P4 的现成答案）。
+   + Self-RAG 的**逐条质控**（= P2 的现成答案）；重建 = 把 `eval_bridge.py` 曾编译好的
+   红线判据**在动作面重建并接到执行前检查**（= P4 的答案；原实现已随评估面于 2026-09 拆除）。
 4. **唯一真正的新架构是「成功侧记忆」，而它与一条架构红线冲突。**
    本仓有完整的失败侧记忆，**无成功侧**（平台确认后只落 `candidate_sha256`，
    `orchestrator.py:1712-1765`）。仓库里有一具**退役残骸** `adapter/progress.py` ——
@@ -77,7 +77,7 @@
 | 1 | 动作真实且不可逆 | **部分成立**：环境**可重置**（额度 6 次 + 终身 6 次 + 600s 冷却）；不可逆只对**提交与计分**成立 | `orchestrator.py:4811-4813`、`:4816-4890` `_restart_target_for_fault` |
 | 2 | 奖励稀疏二元 | **✗ 推翻**：`SubmitResult` 带 `awarded` / `cumulative_score` / `correct_flag_count` / `total_flag_count` / `matched_flag_index`；另有**扣分 hint**；N-of-M 进度驱动止损 | `adapter/platform/tsecbench_sdk.py:140-144`、`stoploss.record_platform_progress:600` |
 | 3 | 长时程 | **✓**：4000s/题、8 场会话/题、21300s/轮、轮次时间盒递增 | `adapter/config.py:275-288` |
-| 4 | 题目内部无先验 | **✓**（降级表述）：解题方对题目内部无先验，由未知类别 fail-closed + 跨题隔离红线支撑 | `verify.flag_evidence_policy`（未分类题目收紧）、`taskprompt.py:187 _ISOLATION_CONSTRAINT` |
+| 4 | 题目内部无先验 | **✓**（降级表述）：解题方对题目内部无先验，由未知类别 fail-closed + 跨题隔离红线支撑 | `verify.flag_evidence_policy`（未分类题目收紧）、`taskprompt.py:192 _ISOLATION_CONSTRAINT` |
 | 5 | 可跨题复用 | **✗ 推翻**：**运行时产物被架构禁止跨题** | `orchestrator.py:363` docstring 原文 *"The architecture no longer permits cross-challenge answer reads"* |
 
 ### 1.2 修正后的排除逻辑反而更锋利
@@ -213,10 +213,10 @@ def _composite_score(features, wc_range) -> int:
 | # | 架构 | 判定 | 理由与证据 |
 |---|---|---|---|
 | 01 | Reflection (generate→critique→refine) | **已具备** | `adapter/pi_agents/checker.md:8` 原文「你的任务是**证伪它**，而不是确认它」，判定 CONFIRMED / NOT_CONFIRMED / PARTIAL，且**硬性要求自己重跑并附命令原文**（`:38-41`）。这是**生成者/评估者分离**，强于资料里同上下文自省的 critique |
-| 18 | Reflexion（失败反思入 episodic memory） | **部分** | 失败侧四件套齐备：`.continuation.json`（`_CONTINUATION_FILENAME:92`，只收计数与枚举标签，明确无答案 `:3900-3903`）、`tried_commands.md`（`_persist_tried_commands:3734`，命令原文去重表**无结果列**）、`.rejected_flags`（`:1017`，回灌只给 sha1 指纹 `taskprompt.py:518-543`）、`.unverified_flags`（`:1145`）。**成功侧缺失** → §4.4 |
+| 18 | Reflexion（失败反思入 episodic memory） | **部分** | 失败侧四件套齐备：`.continuation.json`（`_CONTINUATION_FILENAME`，只收计数与枚举标签，明确无答案）、`tried_commands.md`（`_persist_tried_commands`，命令原文去重表**无结果列**）、`.rejected_flags`（只给 sha1 指纹，回灌见 `taskprompt.py:520-544`）、`.unverified_flags`。**成功侧缺失** → §4.4 |
 | 20 | Chain-of-Verification | **部分** | 证据闸门是其确定性版本，但 CoVe 的关键一步 ——**「不看 baseline 独立作答」**——未被显式编码。本仓的复核者拿到的是「已被声称的发现」，隔离的是**上下文**而非**结论** |
 | 19 | Self-Discover | **拒绝** | 16 个通用推理模块 vs 本仓 103 条领域技能。知识形状不同 |
-| 32 | Constitutional AI | **采纳** | 判据**已经存在**（`eval_bridge.py:73 EGRESS_RULES`，7 条正则把 `_OFFLINE_CONSTRAINT` 点名禁止的 `apt/pip/npm/git clone/docker pull/gem/cargo` 编译成谓词），但**只报告、不拦截**（`eval_bridge.py:48-60` 自陈是「真实的债务，不是设计选择」）→ §4.5 |
+| 32 | Constitutional AI | **采纳** | 判据曾写好过一份（`eval_bridge.py:73 EGRESS_RULES`，7 条正则把 `_OFFLINE_CONSTRAINT` 点名禁止的 `apt/pip/npm/git clone/docker pull`（外加自选的 `gem/cargo`） 编译成谓词），且**只报告、不拦截**（其自陈是「真实的债务，不是设计选择」）。该实现已随评估面于 2026-09 拆除，需在原地重建 → §4.5 |
 
 ### 族 2 · Sampling & Search
 
@@ -259,7 +259,7 @@ def _composite_score(features, wc_range) -> int:
 > **不是文件**，是函数，且**刻意不持久化 hint 正文**（`:773`）。它不是成功侧记忆。
 > `MEMORY.md` 是**混合容器**：`_merge_memory`（`:3862-3889`）在
 > `<!-- driver-memory -->` 固定段内**幂等替换**，agent 自写笔记原样保留，注入时截断 4000 字符
-> （`taskprompt.py:335`）。里面装的是黑板摘要 + 状态，**没有「上次这样打成功了」的条目**。
+> （`taskprompt.py:340`）。里面装的是黑板摘要 + 状态，**没有「上次这样打成功了」的条目**。
 
 ### 族 5 · Tools & Actions
 
@@ -276,8 +276,8 @@ def _composite_score(features, wc_range) -> int:
 
 | # | 架构 | 判定 | 理由与证据 |
 |---|---|---|---|
-| 05 | Multi-Agent (Supervisor) | **已具备** | 三角色 scout / worker / checker（`pi_agent._install_subagents:626`），且有**强制派发规则**：未解场次 ≥2 且上一场零新 flag → 第一条回复必须是 subagent 调用（`orchestrator.py:5046-5068`）。角色模型路由 `pi_agent._inject_role_model:596` |
-| 07 | Blackboard | **已具备** | `adapter/blackboard.py`：机械**正则**抽取（`_IP_PORT_RX:92` / `_SERVICE_RX:93` / `_CRED_RX:101`），由 driver 在会话**返回后**跑（`orchestrator.py:5241` → `_observe_qualified_tool_facts:3172`），主 Agent 会话期间不占注意力；`actionable_assets():301` 以插入序取前 5 条回灌（`taskprompt.py:481`）。**不是 HEARSAY-II 式投标制**：`confidence` 是插入时按类别写死的常量（network 0.8 / service 0.7 / credential 0.6，`:241/:248/:257`），全仓**无一处按 confidence 排序或仲裁** |
+| 05 | Multi-Agent (Supervisor) | **已具备** | 三角色 scout / worker / checker（`pi_agent._install_subagents`），且有**强制派发规则**：未解场次 ≥2 且上一场零新 flag → 第一条回复必须是 subagent 调用（`orchestrator.py:5046-5068`）。角色模型路由 `pi_agent._inject_role_model` |
+| 07 | Blackboard | **已具备** | `adapter/blackboard.py`：机械**正则**抽取（`_IP_PORT_RX:92` / `_SERVICE_RX:93` / `_CRED_RX:101`），由 driver 在会话**返回后**跑（`_observe_qualified_tool_facts`，由 driver 在会话返回后跑），主 Agent 会话期间不占注意力；`actionable_assets():301` 以插入序取前 5 条回灌（`taskprompt.py:492`）。**不是 HEARSAY-II 式投标制**：`confidence` 是插入时按类别写死的常量（network 0.8 / service 0.7 / credential 0.6，`:241/:248/:257`），全仓**无一处按 confidence 排序或仲裁** |
 | 28 | Debate | **拒绝** | flag 判定是确定性的（平台说了算），辩论无增益；资料自身 leaderboard 记录其群体思维失败 |
 | 30 | STORM | **拒绝** | 多视角检索 + 写文章，与本仓形状无关 |
 | 11 | Meta-Controller | **部分** | 分类已有（`orchestrator.py:917 _infer_category`），但正确的路由目标是**策略**不是架构 → 并入 §4.2 |
@@ -317,7 +317,7 @@ def _composite_score(features, wc_range) -> int:
 | | |
 |---|---|
 | **落在哪个面** | P3（评估）+ P4（动作），横切 |
-| **落点文件** | `packages/ghost/ghost/eval/graders/deterministic.py:33`（`Predicates` 注入协议，**已经是它的事例**）、`adapter/verify.py`、`adapter/stoploss.py` |
+| **落点文件** | `adapter/verify.py`、`adapter/stoploss.py`。（原另举 `eval/graders/deterministic.py:33` 的 `Predicates` 注入协议为「已经是它的事例」—— 该文件已随评估面于 2026-09 拆除，若重做需重建该协议） |
 | **要抄的形状** | 凡有「picker」（排序 / 打分 / 选择）的地方：① 识别分类特征；② 用严格类型 Pydantic schema 化（`bool` / bounded `int` / `Literal[...]`）；③ **Python 合成决策信号**；④ LLM 的数值输出（若有）只进 trace，**绝不作决策值** |
 | **为什么最优先** | P3 第二段要做「模型 grader + rubric」。rubric 打分**正是** §2.3 记录的病态场景。纪律先落地，模型 grader 才不会建在沙子上 |
 | **验收** | 见 §5 的 E4：**分数的离散度**。若 rubric 分数塌缩到同一档，纪律没生效 |
@@ -348,16 +348,16 @@ def _composite_score(features, wc_range) -> int:
    由 pi 的原生 `<available_skills>` 承担。`skill_summary_xml():134` 是
    `ADAPTER_SKILL_AGENT=0` 时的退路。
 
-**验收**：E1（§5）—— 触发率 / 误触率 / 静态 prompt token。P3 已有的
-`datasets/skill_routing.json`（20 张卡，explicit / implicit / noisy / negative 各 5）
-**恰好就是为这件事准备的**。
+**验收**：E1（§5）—— 触发率 / 误触率 / 静态 prompt token。P3 曾有
+`datasets/skill_routing.json`（20 张卡，explicit / implicit / noisy / negative 各 5），
+**恰好就是为这件事准备的** —— 已随首切片于 2026-09 拆除，重做 E1 时需一并重建。
 
 ### 4.3 动作面的形状：Dry-Run + PEV + ACI 合成 → P4
 
 | | |
 |---|---|
 | **落在哪个面** | P4 动作与安全面 |
-| **落点文件** | `packages/worker/ghost_worker/adapter/pi_ext/bash_guard.js`（**框架侧唯一的动作层改造点**） |
+| **落点文件** | `redpilot/worker/adapter/pi_ext/bash_guard.js`（**框架侧唯一的动作层改造点**） |
 | **要抄的形状** | 三条合流：**Dry-Run**（动作按不可逆性分级 → Python 硬上限）、**PEV**（每步执行后独立验证）、**SWE-Agent ACI**（工具面收窄 + 路径逃逸拒绝） |
 | **必须去掉的** | 资料里 Dry-Run 的**人工审批门**。无人值守基准测试没有人在环 —— 这条不适用，不是遗漏 |
 
@@ -408,23 +408,29 @@ subprocess 真执行 + self-verification 来确认有效。本仓的**结构性�
 **验收**：E3（§5）—— `pass^k` 跨题迁移。**风险**：配方过度特化
 （资料侧 `build_29..35` 的 Failure 表把「工作流过度特化」列为成熟失败模式）。
 
-### 4.5 判据搬迁：Constitutional AI 的真身 → P4
+### 4.5 判据重建：Constitutional AI 的真身 → P4
 
 | | |
 |---|---|
 | **落在哪个面** | P4 动作与安全面 |
-| **要抄的形状** | Constitutional AI 逐条规则 pass/fail → Python `all()`。**但本仓要做的不是发明判据，是给已有的判据接第二个消费点** |
-| **判据已经存在** | `adapter/eval_bridge.py:73 EGRESS_RULES` —— 7 条正则，把 `_OFFLINE_CONSTRAINT`（`taskprompt.py:178`）点名禁止的 `apt/pip/npm/git clone/docker pull/gem/cargo` **编译成可执行谓词**；`TaskPredicates.is_offline_violation():184` 是两段式判据（规则表 + 授权主机范围）；消费方是 `graders/deterministic.py:230` 的 `_offline` 判据 |
-| **缺的一步** | **它只报告、不拦截。** `eval_bridge.py:48-60` 自陈第 ② 段规则表是「真实的债务，不是设计选择」 |
-| **搬迁动作** | 把同一份判据接进 `bash_guard.js` 的执行前检查 —— **同源判据的第二个消费点** |
+| **要抄的形状** | Constitutional AI 逐条规则 pass/fail → Python `all()`。**本仓要做的不是发明判据，是把判据接进动作面**（判据本身需先重建 —— 见下沿革） |
+| **判据曾存在** | `adapter/eval_bridge.py:73 EGRESS_RULES` —— 7 条正则，把 `_OFFLINE_CONSTRAINT`（`taskprompt.py:178`）点名禁止的 `apt/pip/npm/git clone/docker pull`（外加自选的 `gem/cargo`） **编译成可执行谓词**；`TaskPredicates.is_offline_violation():184` 是两段式判据（规则表 + 授权主机范围）；消费方曾是 `graders/deterministic.py:230` 的 `_offline` 判据。**该文件已随评估面于 2026-09 拆除**（最后存在于 `a3ea29c`） |
+| **缺的一步** | **它只报告、不拦截。** 它曾自陈第 ② 段规则表是「真实的债务，不是设计选择」—— 这是拆除前的原话，重做时同样成立 |
+| **要做的动作** | 重建同一份判据，并接进 `bash_guard.js` 的执行前检查 —— 让它成为动作面的判据 |
 | **先例** | `_ProgressEvidenceGate`（`orchestrator.py:3057`）已经演示了「同一套 provenance 规则、第二个消费点」的模式。**这是本仓内部的成功范式，不是外来概念** |
 
 **为什么这才是 P4 的正解**：TARGET §2.2 的判定是「安全边界写在提示词里，而不是放在动作上」，
-并列出报告五层骨架里本仓有三层是「无」。但**第 3 层（动作校验）的判据其实已经写好了**，
-只是装在了评估面。**P4 的最低成本路径不是新建判据体系，是搬迁。**
-`_ISOLATION_CONSTRAINT`（`taskprompt.py:187`）同理 —— 它现在有两条注入路径
+并列出报告五层骨架里本仓有三层是「无」。但**第 3 层（动作校验）的判据曾写好过一份**，
+只是装在了评估面。
+
+> **沿革（2026-09-18）**：本节原写「P4 的最低成本路径不是新建判据体系，是**搬迁**」，
+> 前提是判据还在 —— 它已经不在了（见上表「判据曾存在」），故路径变回「新建」。
+> 值得带走的只有一条教训：**把动作面的判据寄存在读侧，读侧一被清理，判据就一起没了。**
+> 判据该住在动作面，评估面只是它的**第二个**消费点。
+
+`_ISOLATION_CONSTRAINT`（`taskprompt.py:192`）同理 —— 它现在有两条注入路径
 （写进每题 `CLAUDE.md` 与直接 append 进 prompt，TARGET §2.1 已点名重复），
-搬迁后提示词里只留一句「这条被强制了，不是请求」。
+判据接进动作面后，提示词里只留一句「这条被强制了，不是请求」。
 
 **验收**：E2（§5）—— 违禁动作**执行前**拦截率。
 
@@ -440,7 +446,7 @@ subprocess 真执行 + self-verification 来确认有效。本仓的**结构性�
 
 ---
 
-## 5. 可比实验设计（用已落地的 P3）
+## 5. 可比实验设计（P3 重建后）
 
 **前提约束**：对齐 TARGET §6 未解问题 1 ——「多智能体的收益无法在等 token 预算下比较」。
 **任何架构对比必须先固定 token 预算**，否则赢面分不清是架构带来的还是 token 更多带来的
@@ -449,14 +455,16 @@ BrowseComp 上 token 量单独解释 80% 的性能方差）。
 
 | 实验 | 对照 | 主指标 | 数据源 | 是否需实跑 |
 |---|---|---|---|---|
-| **E1 技能路由** | 平铺 103 条 vs 预路由 + 逐条质控 | 触发率 / 误触率 / 静态 prompt token | `replay.py` + `datasets/skill_routing.json`（四类各 5，含负样本） | 否（回放即可） |
-| **E2 判据搬迁** | 仅报告 vs 执行前拦截 | 违禁动作**执行前**拦截率 | 事件行 + `bash_guard` 状态 | 否（历史轨迹可判） |
-| **E3 成功侧记忆** | 无配方库 vs 有 | `pass^k`（`report.py:27 DEFAULT_K=3`） | `runs` + 平台判 correct 的 run | 是 |
+| **E1 技能路由** | 平铺 103 条 vs 预路由 + 逐条质控 | 触发率 / 误触率 / 静态 prompt token | `replay.py` + `datasets/skill_routing.json`（四类各 5，含负样本）——**两者已随首切片于 2026-09 拆除，需重建** | 否（回放即可） |
+| **E2 判据重建** | 仅报告 vs 执行前拦截 | 违禁动作**执行前**拦截率 | 事件行 + `bash_guard` 状态 | 否（历史轨迹可判） |
+| **E3 成功侧记忆** | 无配方库 vs 有 | `pass^k`（原 `DEFAULT_K=3`，**已随首切片拆除，需重建**） | `runs` + 平台判 correct 的 run | 是 |
 | **E4 grader 纪律** | 数值打分 vs 分类特征合成 | 分数**离散度**（flat-band 是否发生） | P3 第二段 rubric 输出 | **否（只需 rubric 历史输出）** |
 
-**方法**：全部走 `report.py` 的确定性聚合，**零 LLM 零网络** ——
-`tests/test_eval_end_to_end.py` 已验证这条链路（回放 → 判据 → 报告）。
-**E4 可以在不接实跑的情况下先做**，它是四条里成本最低、且是 P3 第二段前置的一条。
+**方法（评估面重建后）**：全部走其 `report` 的确定性聚合，**零 LLM 零网络** ——
+该链路（回放 → 判据 → 报告）曾由 `tests/test_eval_end_to_end.py` 验证过；
+**该测试与整条链路已于 2026-09 一并拆除**（最后存在于 `a3ea29c`）。
+**E4 须待 P3 第二段落成后才能做**（它的数据源是 rubric 输出，目前不存在），
+届时它会是四条里成本最低的一条。
 
 **产出**：一张基线表进本文附录，附**复跑命令**（沿用 TARGET 附录 A 的体例 ——
 本文的每一个数字都应该能被读者重跑出来）。
@@ -503,13 +511,13 @@ PY
 
 ```bash
 cd /home/kali/RedPilot
-for p in "packages/worker/ghost_worker/adapter/pi_agents/checker.md" \
-         "packages/worker/ghost_worker/adapter/blackboard.py" \
-         "packages/worker/ghost_worker/adapter/pi_ext/bash_guard.js" \
-         "packages/worker/ghost_worker/adapter/stoploss.py" \
-         "packages/worker/ghost_worker/adapter/skill_loader.py" \
-         "packages/ghost/ghost/eval/graders/deterministic.py" \
-         "packages/ghost/ghost/eval/replay.py"; do
+for p in "redpilot/worker/adapter/pi_agents/checker.md" \
+         "redpilot/worker/adapter/blackboard.py" \
+         "redpilot/worker/adapter/pi_ext/bash_guard.js" \
+         "redpilot/worker/adapter/stoploss.py" \
+         "redpilot/worker/adapter/skill_loader.py"; do
+  # 注：本清单原有 `eval/graders/deterministic.py` 与 `eval/replay.py` 两条，
+  # 2026-09 随评估面拆除后移除（最后存在于 a3ea29c）。
   [ -e "$p" ] && echo "OK   $p" || echo "MISS $p"
 done
 ```
@@ -517,7 +525,7 @@ done
 **A.2 三条强提旁路**（§0 论断 2、§4.5 引用的「证据闸门并非无旁路」）：
 
 ```bash
-cd packages/worker/ghost_worker
+cd redpilot/worker/adapter
 grep -n "require_remote=False" orchestrator.py          # → :5538（会话后强提）
 sed -n '4303p'   orchestrator.py                        # → eager 强提 conf>=0.50
 sed -n '5556p'   orchestrator.py                        # → invalid_format 翻案
@@ -526,7 +534,7 @@ sed -n '5556p'   orchestrator.py                        # → invalid_format 翻
 **A.3 同题双解被禁**（§1.3、§3 族 2）：
 
 ```bash
-cd packages/worker/ghost_worker
+cd redpilot/worker/adapter
 sed -n '6223,6230p' orchestrator.py
 # → effective_best_of = 1 ；ADAPTER_BEST_OF=%d ignored
 ```
@@ -534,7 +542,7 @@ sed -n '6223,6230p' orchestrator.py
 **A.4 舰队是分片不是冗余**（§3 族 2 核验补充）：
 
 ```bash
-cd packages/worker/ghost_worker
+cd redpilot/worker/adapter
 grep -n "crc32\|_solver_shard" orchestrator.py | head
 grep -n "_other_solver_active_on" orchestrator.py | head -3
 ```

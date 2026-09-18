@@ -24,9 +24,10 @@ try:
 except ImportError:
     _SDK_AVAILABLE = False
 
-# 平台侧自测服务器 tsecbench/（顶层包，仓库根）**不在镜像里**（.dockerignore 排除），
-# 静态 import 会在 worker 镜像里 ModuleNotFoundError —— 所以这里不 import 它。
-# 本适配器只依赖官方 SDK（上面那个 try/except）。
+# 本适配器只依赖官方 SDK（上面那个 try/except），**不 import 任何本仓的靶场替身**。
+#
+# 沿革：此处原以「本地 `tsecbench/` 不在镜像里（.dockerignore 排除）」为由 —— 该目录与
+# 它的 .dockerignore 条目已于 cb8591a 一并删除（理由见 README「离线自测靶场已移除」）。
 
 
 def sdk_available() -> bool:

@@ -3,7 +3,16 @@
 lifespan:建 ObsStore(建库/DDL/WAL pragma;stale_after 注入 Settings 阈值)、
 起 housekeeper(每 house_interval 秒关掉心跳过期的 running run -> interrupted)。
 env 见 obs/config.py(OBSERVABILITY_TOKEN/DB/WEB;监听 HOST/PORT 属 uvicorn CMD)。
-容器 CMD:uvicorn obs.app:app --host $OBSERVABILITY_HOST --port $OBSERVABILITY_PORT
+
+**仅测试可达**：容器启的是 `redpilot.app`（`Dockerfile.redpilot:30`、`main.py:17`），它
+自己重装观测面各件（`redpilot/app.py:26-32`）而**不调用本工厂** —— 唯一 importers 是
+`tests/obs/conftest.py:10` 与 `tests/obs/test_api.py:13`。故本工厂设的是**旧**的
+`app.state` 名字：装配缺陷在 `tests/obs/` 全绿、在线上全废
+（`tests/app/test_unified_app.py:10-12` 就是为此写的）。
+按本仓「生产消费者为零、唯一调用方是测试」的判据，它与已拆的评估面同类。
+
+沿革：此处原写「容器 CMD:uvicorn obs.app:app --host … --port …」，2026-09 死代码清扫时
+修正 —— 那是一句与部署现实脱节的断言。
 """
 
 from __future__ import annotations
