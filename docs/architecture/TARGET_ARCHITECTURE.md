@@ -52,7 +52,7 @@
 | # | 报告结论 | 判定 | 本仓证据 |
 |---|---|---|---|
 | 1 | 上下文工程 > 提示词工程 | **相反** | 静态段落 8706 字符且重复注入，见 §2.1 |
-| 2 | 默认单智能体，多智能体需论证 | 做到 | `adapter/taskprompt.py:221` 三角色按条件派发，非常驻；`ADAPTER_SUBAGENT` 可整体关闭 |
+| 2 | 默认单智能体，多智能体需论证 | 做到 | `adapter/taskprompt.py:223` 三角色按条件派发，非常驻；`ADAPTER_SUBAGENT` 可整体关闭 |
 | 3 | 上下文是有限资源（context rot / 注意力预算） | **缺失** | 全仓无 token 预算、无上下文构成计量 |
 | 4 | 少即是多（四组规则迁移） | **相反** | `_EFFICIENCY_POLICY` / `_CHALLENGE_PREFLIGHT` 是规则清单，见 §2.1 |
 | 5 | 渐进式披露是第一设计原则 | **部分** | `adapter/skill_loader.py:90` + `pi_agent.py:710`；但 103 条平铺广告、无 L3，见 §2.3 |
@@ -81,7 +81,7 @@
 
 本仓的主循环（`redpilot/worker/orchestrator.py`，7079 行）就是这么跑的：单题拆成多场
 时间盒会话，每场是一个全新的 pi 进程（干净窗口），场间靠三类外部状态交接 ——
-`MEMORY.md`、黑板 `_blackboard.json`（`orchestrator.py:816`）、以及 `AGENTS.md`
+`MEMORY.md`、黑板 `_blackboard.json`（`orchestrator.py:818`）、以及 `AGENTS.md`
 规定的三段式续接块，由 `extract_handoff()` 回捞（调用点 `orchestrator.py:5793-5805`）。
 
 **比报告多做的**：报告只讲"reset 后用结构化交接物传递状态"，本仓把交接做成了
@@ -114,7 +114,7 @@
 > （`:1982-1988` 注释写明 *"For reverse/crypto challenges this is legitimate"*）；
 > ③ `invalid_format` 翻案（`:5556`，skeptic `rescue` 阶段）。
 > 而 `grounded` 的定义比字面宽：flag 只出现在 agent 自己 `echo`/`printf` 的命令里时
-> 也给 `grounded=True, confidence=0.70`（`verify.py:3398-3405`），0.70 ≥ 0.50 即触发旁路 ①。
+> 也给 `grounded=True, confidence=0.70`（`verify.py:3395-3402`），0.70 ≥ 0.50 即触发旁路 ①。
 >
 > **准确的表述**：「确定性」确定在 grounding 的**包含关系判定**、provenance 分类与阈值比较；
 > **不确定在三条旁路是否触发** —— 那取决于 LLM skeptic 是否否决。
@@ -178,7 +178,7 @@ docstring 记录了上一版的教训 —— 框架曾经有一张 `_DOMAIN_SIGN
 本仓 `pi_agent._inject_role_model`（`adapter/solver/pi_agent.py:700`）已把 subagent 角色接到
 独立模型配置；verifier 侧模型也可独立设置 —— 经 `LLM_MODEL` / `LLM_PROVIDER` /
 `LLM_BASE_URL` 等 `LLM_*` 键（`adapter/config.py:204 build_verifier_config`，消费方
-`orchestrator.py:6882`）。方向一致。
+`orchestrator.py:6888`）。方向一致。
 
 > 沿革（2026-09）：此处原写「`VERIFIER_MODEL` 与 heimdall 侧模型可独立设置
 > （`.env.example` 模型段）」—— 死代码清扫时修正：`VERIFIER_MODEL` 全仓无人读取，
@@ -688,8 +688,8 @@ tools:
 
 | 文件 | 写者 | 读过它的地方 |
 |---|---|---|
-| `MEMORY.md` | Agent 自己 + 框架（`taskprompt.write_memory:257`） | 下一场 prompt（上限 4000 字符） |
-| `_blackboard.json` | driver（`orchestrator.py:816`） | 下一场 prompt（`actionable_assets()`） |
+| `MEMORY.md` | Agent 自己（write 工具）+ 框架合并（`orchestrator._merge_memory:3872`，**只写固定段、不覆盖 agent 笔记**） | 下一场 prompt（上限 4000 字符） |
+| `_blackboard.json` | driver（`orchestrator.py:818`） | 下一场 prompt（`actionable_assets()`） |
 | `tried_commands.md` | 框架 | 下一场 prompt（`:679`） |
 | `.rejected_flags` | 框架（平台判错账本，`:1023`） | 指纹回灌（`build_task_prompt:514`） |
 | `.unverified_flags` | 框架（未证实账本，`:1142`） | compliance 检查（`adapter/compliance.py:78`） |

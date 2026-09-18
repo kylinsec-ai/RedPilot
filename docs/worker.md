@@ -80,7 +80,7 @@ redpilot/worker/
 ├── dashboard.py      本地态势台（:8080，stdlib，原 obs/localserver）
 ├── live/             实时状态（原子 JSON）与事件总线（SSE）
 ├── settings.py       进程配置的单一 getenv 收编点
-├── solver/           引擎契约（SolveResult / touch_heartbeat）
+├── solver/           引擎契约（只剩 touch_heartbeat；框架侧 SolveResult 已删）
 └── adapter/          策略层：证据闸门、止损、黑板、heimdall、Pi 引擎、平台适配
 ```
 

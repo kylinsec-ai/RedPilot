@@ -11,6 +11,11 @@
   - `worker/dashboard.py`（原 obs/localserver）：worker 的 import 闭包不再触碰 platform。
   - 去重：删 `worker/{task,taskprompt,flags}.py`，façade 指向 adapter 唯一实现；
     两个 `SolveResult` 刻意保留（provider_failure 判据，见 solver/base.py 注释）。
+    > 沿革（2026-09-18 死码清扫）：框架侧那份 `SolveResult` 已删 —— 它**零生产消费者**
+    > （没有任何生产代码构造它，唯一 import 方是它自己的 3 条测试）。当时"刻意保留"
+    > 的理由是判据语义，而那条判据的执行点实际在编排侧（`_is_api_fault` 与 stoploss），
+    > 并不在这个类里。"两个都不合并"的决定因此只对**一半**成立：adapter 那份仍在用，
+    > 框架这份从未接线。事故教训与"落点应在编排层"已写进 `solver/base.py` 的模块 docstring。
   - 部署面同步：Dockerfile / Dockerfile.redpilot / docker-compose / entrypoint.sh /
     .dockerignore / .gitignore / pytest.ini（testpaths=tests, pythonpath=.）。
   - `tests/architecture/` 17 条边界执行点：R1 contracts stdlib、R2/R3 禁边、

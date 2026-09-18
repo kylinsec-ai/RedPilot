@@ -81,7 +81,7 @@
 | 1 | 动作真实且不可逆 | **部分成立**：环境**可重置**（额度 6 次 + 终身 6 次 + 600s 冷却）；不可逆只对**提交与计分**成立 | `orchestrator.py:4811-4813`、`:4816-4890` `_restart_target_for_fault` |
 | 2 | 奖励稀疏二元 | **✗ 推翻**：`SubmitResult` 带 `awarded` / `cumulative_score` / `correct_flag_count` / `total_flag_count` / `matched_flag_index`；另有**扣分 hint**；N-of-M 进度驱动止损 | `adapter/platform/tsecbench_sdk.py:140-144`、`stoploss.record_platform_progress:600` |
 | 3 | 长时程 | **✓**：4000s/题、8 场会话/题、21300s/轮、轮次时间盒递增 | `adapter/config.py:275-288` |
-| 4 | 题目内部无先验 | **✓**（降级表述）：解题方对题目内部无先验，由未知类别 fail-closed + 跨题隔离红线支撑 | `verify.flag_evidence_policy`（未分类题目收紧）、`taskprompt.py:192 _ISOLATION_CONSTRAINT` |
+| 4 | 题目内部无先验 | **✓**（降级表述）：解题方对题目内部无先验，由未知类别 fail-closed + 跨题隔离红线支撑 | `verify.flag_evidence_policy`（未分类题目收紧）、`taskprompt.py:194 _ISOLATION_CONSTRAINT` |
 | 5 | 可跨题复用 | **✗ 推翻**：**运行时产物被架构禁止跨题** | `orchestrator.py:363` docstring 原文 *"The architecture no longer permits cross-challenge answer reads"* |
 
 ### 1.2 修正后的排除逻辑反而更锋利
@@ -113,7 +113,7 @@ LATS 的 UCB1 选择、ToT 的 beam 排序，都要求对**部分解**给出价�
 | 投票型（Self-Consistency / Ensemble / Debate） | flag 是不可投票的字符串；**同题双解被显式禁止** —— `effective_best_of = 1`（`orchestrator.py:6223`），配 warning `:6229`。`ADAPTER_BEST_OF` 配置项存在但设了就只打一条日志 |
 | 分页型（MemGPT） | 竞技场每场是**全新进程 + 全新上下文**（`create_solver` 在会话循环内调用 `:5159`，`subprocess.Popen` 在 `pi_agent.py:946`），一次 reset 强于 paging |
 | 通用推理模块型（Self-Discover） | 本仓的知识面是 103 条领域技能，不是 16 个可组合的推理模块 |
-| 需联网检索型（Corrective RAG） | 与 `_OFFLINE_CONSTRAINT`（`taskprompt.py:178`）冲突 |
+| 需联网检索型（Corrective RAG） | 与 `_OFFLINE_CONSTRAINT`（`taskprompt.py:177`）冲突 |
 | 图结构型（Graph Memory / GraphRAG） | 本仓的观察台账**零条边**（`heimdall.py:240`），要先有图才谈得上图查询 |
 
 **一个必须写明的推论**：资料自己的 leaderboard 记录了同款 pattern-fit failure ——
@@ -217,7 +217,7 @@ def _composite_score(features, wc_range) -> int:
 | # | 架构 | 判定 | 理由与证据 |
 |---|---|---|---|
 | 01 | Reflection (generate→critique→refine) | **已具备** | `adapter/pi_agents/checker.md:8` 原文「你的任务是**证伪它**，而不是确认它」，判定 CONFIRMED / NOT_CONFIRMED / PARTIAL，且**硬性要求自己重跑并附命令原文**（`:38-41`）。这是**生成者/评估者分离**，强于资料里同上下文自省的 critique |
-| 18 | Reflexion（失败反思入 episodic memory） | **部分** | 失败侧四件套齐备：`.continuation.json`（`_CONTINUATION_FILENAME`，只收计数与枚举标签，明确无答案）、`tried_commands.md`（`_persist_tried_commands`，命令原文去重表**无结果列**）、`.rejected_flags`（只给 sha1 指纹，回灌见 `taskprompt.py:520-544`）、`.unverified_flags`。**成功侧缺失** → §4.4 |
+| 18 | Reflexion（失败反思入 episodic memory） | **部分** | 失败侧四件套齐备：`.continuation.json`（`_CONTINUATION_FILENAME`，只收计数与枚举标签，明确无答案）、`tried_commands.md`（`_persist_tried_commands`，命令原文去重表**无结果列**）、`.rejected_flags`（只给 sha1 指纹，回灌见 `taskprompt.py:532-544`）、`.unverified_flags`。**成功侧缺失** → §4.4 |
 | 20 | Chain-of-Verification | **部分** | 证据闸门是其确定性版本，但 CoVe 的关键一步 ——**「不看 baseline 独立作答」**——未被显式编码。本仓的复核者拿到的是「已被声称的发现」，隔离的是**上下文**而非**结论** |
 | 19 | Self-Discover | **拒绝** | 16 个通用推理模块 vs 本仓 103 条领域技能。知识形状不同 |
 | 32 | Constitutional AI | **采纳** | 判据曾写好过一份（`eval_bridge.py:73 EGRESS_RULES`，7 条正则把 `_OFFLINE_CONSTRAINT` 点名禁止的 `apt/pip/npm/git clone/docker pull`（外加自选的 `gem/cargo`） 编译成谓词），且**只报告、不拦截**（其自陈是「真实的债务，不是设计选择」）。该实现已随评估面于 2026-09 拆除，需在原地重建 → §4.5 |
@@ -263,7 +263,7 @@ def _composite_score(features, wc_range) -> int:
 > **不是文件**，是函数，且**刻意不持久化 hint 正文**（`:773`）。它不是成功侧记忆。
 > `MEMORY.md` 是**混合容器**：`_merge_memory`（`:3862-3889`）在
 > `<!-- driver-memory -->` 固定段内**幂等替换**，agent 自写笔记原样保留，注入时截断 4000 字符
-> （`taskprompt.py:340`）。里面装的是黑板摘要 + 状态，**没有「上次这样打成功了」的条目**。
+> （`taskprompt.py:347`）。里面装的是黑板摘要 + 状态，**没有「上次这样打成功了」的条目**。
 
 ### 族 5 · Tools & Actions
 
@@ -424,7 +424,7 @@ subprocess 真执行 + self-verification 来确认有效。本仓的**结构性�
 |---|---|
 | **落在哪个面** | P4 动作与安全面 |
 | **要抄的形状** | Constitutional AI 逐条规则 pass/fail → Python `all()`。**本仓要做的不是发明判据，是把判据接进动作面**（判据本身需先重建 —— 见下沿革） |
-| **判据曾存在** | `adapter/eval_bridge.py:73 EGRESS_RULES` —— 7 条正则，把 `_OFFLINE_CONSTRAINT`（`taskprompt.py:178`）点名禁止的 `apt/pip/npm/git clone/docker pull`（外加自选的 `gem/cargo`） **编译成可执行谓词**；`TaskPredicates.is_offline_violation():184` 是两段式判据（规则表 + 授权主机范围）；消费方曾是 `graders/deterministic.py:230` 的 `_offline` 判据。**该文件已随评估面于 2026-09 拆除**（最后存在于 `a3ea29c`） |
+| **判据曾存在** | `adapter/eval_bridge.py:73 EGRESS_RULES` —— 7 条正则，把 `_OFFLINE_CONSTRAINT`（`taskprompt.py:177`）点名禁止的 `apt/pip/npm/git clone/docker pull`（外加自选的 `gem/cargo`） **编译成可执行谓词**；`TaskPredicates.is_offline_violation():184` 是两段式判据（规则表 + 授权主机范围）；消费方曾是 `graders/deterministic.py:230` 的 `_offline` 判据。**该文件已随评估面于 2026-09 拆除**（最后存在于 `a3ea29c`） |
 | **缺的一步** | **它只报告、不拦截。** 它曾自陈第 ② 段规则表是「真实的债务，不是设计选择」—— 这是拆除前的原话，重做时同样成立 |
 | **要做的动作** | 重建同一份判据，并接进 `bash_guard.js` 的执行前检查 —— 让它成为动作面的判据 |
 | **先例** | `_ProgressEvidenceGate`（`orchestrator.py:3057`）已经演示了「同一套 provenance 规则、第二个消费点」的模式。**这是本仓内部的成功范式，不是外来概念** |
@@ -438,7 +438,7 @@ subprocess 真执行 + self-verification 来确认有效。本仓的**结构性�
 > 值得带走的只有一条教训：**把动作面的判据寄存在读侧，读侧一被清理，判据就一起没了。**
 > 判据该住在动作面，评估面只是它的**第二个**消费点。
 
-`_ISOLATION_CONSTRAINT`（`taskprompt.py:192`）同理 —— 它现在有两条注入路径
+`_ISOLATION_CONSTRAINT`（`taskprompt.py:194`）同理 —— 它现在有两条注入路径
 （写进每题 `CLAUDE.md` 与直接 append 进 prompt，TARGET §2.1 已点名重复），
 判据接进动作面后，提示词里只留一句「这条被强制了，不是请求」。
 
@@ -590,7 +590,7 @@ grep -lEi "^description:.*(do not|never|not for|avoid)" */SKILL.md 2>/dev/null |
    `orchestrator.py:4303`（eager 强提，`confidence >= 0.50`）、
    `:5537`（会话后强提，`require_remote=False`）、`:5556`（`invalid_format` 翻案）；
 2. `grounded` 的定义比字面宽 —— flag 只出现在 agent 自己 `echo`/`printf` 的命令里时
-   也给 `grounded=True, confidence=0.70`（`verify.py:3398-3405`），
+   也给 `grounded=True, confidence=0.70`（`verify.py:3395-3402`），
    而 0.70 ≥ 0.50 即触发旁路 1；
 3. LLM skeptic 是 **fail-open 否决门**（`verifier.veto_conf` 默认 0.85 以上才拦，
    「LLM 不确定或 verdict 为空 → 宁放过」，`orchestrator.py:1908-1912`）
@@ -608,8 +608,8 @@ grep -lEi "^description:.*(do not|never|not for|avoid)" */SKILL.md 2>/dev/null |
 > `flag_confidence():3139` 与 `Verifier.verify():3558` —— 后者按
 > **来源类别**分别记账（`_tainted_inputs` / `_authored_paths` /
 > `_downloaded_artifacts` / `_derived_artifacts` / `_response_artifacts` … 各成 frozenset，
-> `verify.py:3318-3330`），**不是**一个「非自造」布尔值。
-> LLM skeptic（`verify.py:3465`，开关 `orchestrator.py:6802`，**注意关法是 `!= "1"`**，默认开）
+> `verify.py:3316-3328`），**不是**一个「非自造」布尔值。
+> LLM skeptic（`verify.py:3463`，开关 `orchestrator.py:6802`，**注意关法是 `!= "1"`**，默认开）
 > 构成**否决门**与 `invalid_format` 通道上的**翻案门**。
 > 三条强提旁路绕过 `verified` 但仍受 skeptic 否决约束。
 > **「确定性」确定在 grounding 的包含关系、provenance 分类与阈值比较；

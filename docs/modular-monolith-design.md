@@ -81,7 +81,7 @@ packages/worker/redpilot_worker/roster.py:25   from redpilot.obs.localserver imp
 | 概念 | 旧（root） | 新（adapter） | 状态 |
 |---|---|---|---|
 | `AgentTask` | `redpilot_worker/task.py`（50 行） | `redpilot_worker/adapter/task.py`（62 行） | 字段不同：`files` 语义不同、`summary()`/`hint_fn` 只有一个有 |
-| `SolveResult` | `redpilot_worker/solver/base.py` | `redpilot_worker/adapter/solver/base.py` | worker `__init__` 导出旧、orchestrator 用新 |
+| `SolveResult` | `redpilot_worker/solver/base.py` | `redpilot_worker/adapter/solver/base.py` | worker `__init__` 导出旧、orchestrator 用新。**沿革：旧那份已于 2026-09-18 死码清扫删除**（零生产消费者），现只剩 adapter 一份 |
 | flag 提取 | `redpilot_worker/flags.py` | `adapter/solver/base.py` + `verify.py` | 实现已归拢到 `flags.py`，但 adapter 里仍有 |
 | 任务 prompt | `redpilot_worker/taskprompt.py`（141 行） | `adapter/taskprompt.py`（717 行） | 两套 `build_task_prompt`/`write_context_md` |
 
@@ -434,6 +434,14 @@ python3 -c "import redpilot.worker.orchestrator, sys; assert 'fastapi' not in sy
 - ⚠️ **两个 `SolveResult` 是刻意的，不合并**：`redpilot.worker.solver.base` 那份带
   `provider_failure`（0-turn+报错=引擎没跑起来），`adapter.solver.base` 那份是引擎返回形状；
   `solver/base.py` 的 docstring 记录了合并会丢哪一半语义（2026-09-08 静默烧库事故）。
+
+  > **沿革（2026-09-18 死码清扫，本条已被推翻一半）**：框架那份现已删除。复核发现
+  > 它**零生产消费者** —— 没有任何生产代码构造它，唯一 import 方是它自己的 3 条测试；
+  > `orchestrator.py` 的 docstring 还引用了一个全文件只存在于那行注释里的符号
+  > （`engine_solver`）。"不能合并"这条针对的是**判据语义**，而那条判据的执行点
+  > 从来不在这个类里，而在编排侧（`_is_api_fault` 与 stoploss）。
+  > **保留的是教训，不是类**：2026-09-08 事故与"落点应在编排层、不要重建一个没人读的类"
+  > 写进了 `redpilot/worker/solver/base.py` 的模块 docstring。
 - 闸门：全绿 + `tests/architecture/test_single_source.py`。
 
 ### Phase 6：测试树 + 文档收尾
@@ -485,7 +493,7 @@ python3 -c "import redpilot.worker.orchestrator, sys; assert 'fastapi' not in sy
 | 第二套编排并存 | 框架自家 `orchestration.solve_one` 与竞技场长期并存（已删） | 单一装配根 + 入口测试 |
 | 双状态写者 | `status/*.json` 与 `.live/*.json` 曾各自更新（已由 StatusBridge 单向同步） | R8 数据所有权测试 |
 | 绕过抽象直连内部 | `driver` 曾直接 import `adapter/solver/pi_agent` 的 `compress_transcript`（已归拢） | R6 适配器禁反向 import |
-| 同一领域对象两份定义 | root vs adapter 的 `AgentTask`/`taskprompt`/`flags`（Phase 5 已清偿；`SolveResult` 两份是刻意保留） | 同名定义唯一性测试 |
+| 同一领域对象两份定义 | root vs adapter 的 `AgentTask`/`taskprompt`/`flags`（Phase 5 已清偿）。`SolveResult` 曾刻意保留两份，2026-09-18 复核发现框架那份**零生产消费者**，已删 | 同名定义唯一性测试 |
 | 反向依赖 | worker → `obs.localserver` | R2 禁边 + 运行时足迹测试 |
 | 配置来源分裂 | `settings.py` 收编后 `orchestrator.py` 仍有 10 处 getenv | R7 + 存量 allowlist 只减不增 |
 | 注释当契约 | `redpilot/__init__.py` 的三条边界规则无执行点 | §4 全部规则进测试 |
@@ -549,7 +557,7 @@ docker compose build
 | P2 worker 归位 + dashboard | ✅ | `redpilot/worker`；`localserver.py` → `worker/dashboard.py`（web 回退路径同步修正）；worker 不再 import platform |
 | P3 platform 归位 | ✅ | `redpilot/{control,obs,app.py}`；`redpilot.control/obs` 导入路径未变 |
 | P4 单 pyproject + 部署切换 | ✅ | 根 `pyproject.toml`（`worker`/`platform`/`dev` extras）；Dockerfile/Dockerfile.redpilot/compose/entrypoint/pytest.ini/.dockerignore/.gitignore 同步 |
-| P5 去重 | ✅ | 删除 `worker/{task,taskprompt,flags}.py`；façade 指向 adapter 唯一实现；`SolveResult` 两份刻意保留 |
+| P5 去重 | ✅ | 删除 `worker/{task,taskprompt,flags}.py`；façade 指向 adapter 唯一实现；`SolveResult` 两份曾刻意保留（框架那份于 2026-09-18 死码清扫删除，见 Phase 5 的沿革注） |
 | P6 测试树 + 文档 | ✅ | `packages/*/tests` → `tests/{contracts,control,obs,worker,app}`；`packages/` 目录删除；`docs/worker.md`；README 改述四模块 |
 | 边界执行点 | ✅ | `tests/architecture/` 17 条：R1–R8 + 运行时 import 足迹 + 单一来源 |
 
