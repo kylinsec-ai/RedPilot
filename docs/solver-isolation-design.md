@@ -462,9 +462,13 @@ digest 缺失时跳过并在事件里标 `skipped_no_digest`）。
 
 M1 挡住了写，但"运行中的路由规则是否等于被评审的那一份"仍无人校验。最小做法：driver
 启动时把 `redpilot.__version__` 与锁定面关键文件（`adapter/verify.py`、
-`contracts/platform.py`、`pi_ext/bash_guard.js`）的 sha256 折叠摘要随 `isolation.probe`
+`pi_ext/bash_guard.js`）的 sha256 折叠摘要随 `isolation.probe`
 事件上报（stdlib `hashlib`，零新依赖）；差异由观测/复盘看，**不在运行时拦截** —— 拦截会
 把"改配置"变成新的停机故障面。
+
+> **沿革（2026-09）**：上面的文件清单原有第三项 `contracts/platform.py`（平台状态机与
+> canonical 词汇）。该模块随 control 的 `evaluation/job/attempt` 派发协议一并拆除，
+> 故从清单移除；本节其余内容仍是**未实施提案**，不受影响。
 
 ### 10.2 事故响应（security-observability 六步的落地）
 

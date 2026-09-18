@@ -1,4 +1,6 @@
-"""ingest 共享:token 鉴权 + store 取用(telemetry/canonical 共用,不再各自复制)。
+"""ingest 共享:token 鉴权 + store 取用(摄取侧单一实现,不再各自复制)。
+
+沿革:原文写「telemetry/canonical 共用」,canonical 那路已于 2026-09 拆除。
 
 另含读端鉴权 `check_read_token` —— 读端与写端共用同一头名(都是"观测凭据"),
 但**取值不同**:读端用 `read_token`(未单独配置时回落 ingest token),写端只认

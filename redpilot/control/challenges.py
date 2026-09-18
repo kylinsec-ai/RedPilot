@@ -1,7 +1,10 @@
 """Challenges/评分业务外观:participant/agent 业务规则的唯一入口。
 
 只委托 ChallengeService,不触碰 evaluations/jobs/attempts 调度表;
-调度侧入口见 scheduling.py。api.py challenges 路由组只经本外观调用。
+api.py 的 challenges 路由组只经本外观调用。
+
+沿革:本行原写「调度侧入口见 scheduling.py」,那个模块随 evaluation/job/attempt
+派发协议于 2026-09 拆除。
 """
 
 from __future__ import annotations

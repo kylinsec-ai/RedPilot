@@ -450,7 +450,6 @@ class Store:
             rows = self._connection.execute("SELECT token FROM tasks ORDER BY created_at").fetchall()
         return tuple(str(row["token"]) for row in rows)
 
-    # ── 控制面: evaluation / job / attempt / worker ──────────────
 
 
 

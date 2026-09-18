@@ -9,7 +9,7 @@ RedPilot 是一个**单发行版、模块化单体**应用：一个**求解 work
 
 ```
 redpilot/contracts   共享内核：状态快照 schema、词汇表、redact/text/fsio、paths（零第三方依赖）
-redpilot/control     控制面：challenges / 调度 / VPN / 评测
+redpilot/control     控制面：challenges / 容器供给 / VPN / 判分
 redpilot/obs         观测平台：摄取 / 读端 / SSE / SPA
 redpilot/worker      求解 worker：竞技场编排 + Pi Agent 引擎 + 观测中继 + 本地态势台
 redpilot/app.py      平台进程装配根（唯一同时 import control 与 obs 的地方）
@@ -26,7 +26,7 @@ redpilot/app.py      平台进程装配根（唯一同时 import control 与 obs
 
 ```
                           ┌──────────────────────── server (:8000) ────────────────────────┐
-                          │  控制面 control：challenges / 调度 / VPN / 评测               │
+                          │  控制面 control：challenges / 容器供给 / VPN / 判分           │
    靶场平台 ◄── REST ──── │  观测平台 obs：摄取 / 读端 / SSE / SPA（独立 SQLite）          │
   (list/start/submit)     └───────────────▲──────────────────────────▲───────────────────┘
                                           │ telemetry(写端 token)     │ 读端 token（含明文 flag）

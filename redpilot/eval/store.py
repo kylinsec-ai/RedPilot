@@ -2,7 +2,7 @@
 
 为什么另开一个 SQLite 文件(默认 `./data/eval.sqlite3`)而不是复用 obs.sqlite3:
 `redpilot/obs/store.py` 的架构契约是**单写者** —— 唯一写连接 + RLock + BEGIN IMMEDIATE,
-写锁的持有时间直接等于 ingest 的等待时间,而 ingest 被拖住会经由控制面 outbox 重投
+写锁的持有时间直接等于 ingest 的等待时间,而 ingest 被拖住会经由控制面状态同步
 把压力放大回观测面(见该模块 `_read` 的注释)。评估面是**读侧消费者**:observer 每
 演进一次判据就要重评历史 run,写入节奏由"重评"决定,与求解过程无关。把 eval_* 表
 塞进同一个文件,重评就是去抢那把写锁;库文件层面的隔离是结构性保证,比"调用方记得

@@ -1,10 +1,10 @@
 """Unified RedPilot platform FastAPI application.
 
-Combines control plane (challenges, scheduling, VPN) and observability platform
+Combines control plane (challenges, provisioning, VPN, scoring) and observability
 (telemetry ingest, read API, dashboard) into a single application.
 
 Architecture:
-- Control routes: /openapi/v1/*, /api/v1/*
+- Control routes: /openapi/v1/* (challenges / vpn)
 - Obs routes: /api/* (ingest, reads, SSE)
 - Static files: / (SPA dashboard)
 

@@ -84,8 +84,8 @@ async def post_run_close(body: RunCloseIn, request: Request,
                          _auth=Depends(check_token)) -> dict:
     """关闭 run;终态幂等,无行静默忽略(relay 全序保证事件先于 close 到达)。
 
-    非权威:目标行 canonical=1(或同 attempt 任一行 canonical=1)时拒写,
-    详见 ObsStore.close_run。
+    **单源**:relay 是 run 生命周期的唯一写入者(原另有一条 canonical 权威通道
+    可覆盖它,已于 2026-09 拆除),详见 ObsStore.close_run。
     """
     store = require_store(request)
     require_run_id(body.run_id)
@@ -127,17 +127,17 @@ async def post_ping(body: PingIn, request: Request,
 @router.post("/accepted_flags")
 async def post_accepted_flags(body: AcceptedFlagsIn, request: Request,
                               _auth=Depends(check_token)) -> dict:
-    """已接受 flag 明文(非权威,加性):只补 runs.flags_accepted 一列。
+    """已接受 flag 明文(加性):只补 runs.flags_accepted 一列。
 
-    assignment 模式下 relay 不关 run(canonical 拥有生命周期权威),而该字段此前
-    只经 run_close 写入 —— 于是平台主推模式下 /api/challenge 恒返回 flags: []。
-    这里给明文一条不经过 core 的窄通道,保住「core 只存 SHA-256」(§7.1)。
+    该字段此前只经 run_close 写入,而 relay 未必在那个时机关 run ——
+    于是已获得的 flag 反而看不到(/api/challenge 恒返回 flags: [])。
+    这里给明文一条不经过控制面的窄通道,保住「控制面只存 SHA-256」(§7.1)。
     """
     store = require_store(request)
     require_run_id(body.run_id)
     ok = await run_in_threadpool(store.attach_accepted_flags, body.run_id, body.flags)
     if not ok:
-        # 行还没建(canonical started 与 relay events 都未到):不是错误,
+        # 行还没建(relay 的 events 与 run_close 都未到):不是错误,
         # 调用方无需重试 —— 缺这条数据只会让 flags 显示为空,不影响计分。
         log.debug("accepted flags for %s arrived before its run row; dropped", body.run_id)
     return {"ok": True, "attached": ok}

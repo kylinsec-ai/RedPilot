@@ -107,7 +107,7 @@ class ObsStore:
 
         背景:此前读写共用同一把 RLock 与同一条连接,任何慢查询(如无 LIMIT 的
         `/api/timeline` 全史折叠)都会阻塞 ingest —— 而 ingest 被阻塞会让控制面
-        outbox 重投堆积,把观测面的读压力放大成控制面的写压力。
+        摄取堆积,把观测面的读压力放大成控制面的写压力。
         """
         if self._shared_conn:
             with self._lock:  # 内存库单连接:读也必须串行

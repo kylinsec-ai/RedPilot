@@ -117,9 +117,9 @@ redpilot/                          # 唯一发行版（top-level package）
 ├── __init__.py                    # 唯一 __version__；不 import 任何子模块（零副作用）
 ├── contracts/                     # ① 共享内核（原 redpilot_contracts）
 │   ├── vocabulary.py  paths.py  redact.py  text.py
-│   ├── snapshot.py    fsio.py   digest.py  assets.py  platform.py
+│   ├── snapshot.py    fsio.py   digest.py  assets.py
 │   └── __init__.py
-├── control/                       # ② 控制面：challenges / 调度 / VPN / 评测
+├── control/                       # ② 控制面：challenges / 容器供给 / VPN / 判分
 ├── obs/                           # ③ 观测平台：ingest / read / SSE / SPA
 ├── app.py                         # 平台装配根（唯一同时 import control 与 obs 的地方）
 └── worker/                        # ④ 求解：竞技场 + Pi 引擎 + relay + 本地态势台
@@ -139,12 +139,18 @@ tests/
 └── *.py                           # 竞技场端到端回归（保留原 175 条）
 ```
 
+> **沿革（2026-09）**：本树原列有 `contracts/platform.py`（平台状态机与 canonical 词汇，
+> 含 `EventEnvelope` / `new_id` / `is_canonical_*`），`control/` 一行原写作
+> `challenges / 调度 / VPN / 评测` —— 两者都随 control 的 `evaluation/job/attempt` 派发协议
+> 于 2026-09 一并拆除，控制面收敛为 `challenges / 容器供给 / VPN / 判分`。
+> 完整取舍见 [`docs/architecture.md`](architecture.md) §1.2 I4 沿革。
+
 ### 3.2 模块职责与数据所有权
 
 | 模块 | 拥有 | 数据所有权 | 读者 |
 |---|---|---|---|
 | `contracts` | 词汇表、路径、快照 schema、脱敏/截断、摘要折叠、资产表 | 无状态 | 全部模块 |
-| `control` | 题目定义、调度、容器供给、VPN、判分、outbox | `data/redpilot.sqlite3`（tasks/challenges/submissions/…/outbox_events） | `app.py`、控制面 API |
+| `control` | 题目定义、容器供给、VPN、判分 | `data/redpilot.sqlite3`（tasks/challenges/submissions 三表） | `app.py`、控制面 API |
 | `obs` | 摄取、读端、SSE、SPA、控制代理 | `data/redpilot.sqlite3`（观测库，独立于控制库） | `app.py`、态势台 |
 | `worker` | 竞技场、止损、证据闸门、Pi 引擎、平台适配、relay、本地态势台 | `work/`（status/、.live/、逐题目录） | 平台（HTTP）、本地 :8080 |
 
@@ -282,7 +288,7 @@ __all__ = ["AgentTask", "extract_flags", "is_valid_flag", ...]
 name = "redpilot"
 dynamic = ["version"]                       # 单源：redpilot/__init__.py
 requires-python = ">=3.10"
-dependencies = ["httpx>=0.27,<1"]           # 两角色都用（control outbox / worker relay）
+dependencies = ["httpx>=0.27,<1"]           # 两角色都用（原为 control outbox / worker relay）
 
 [project.optional-dependencies]
 worker   = ["tsec-benchmark", "requests>=2.31,<3", "openai>=1.30,<2"]
@@ -554,6 +560,9 @@ python3 -m pytest -q          → 404 passed (387 行为回归 + 17 架构)
 python3 -m pytest -q tests/architecture → 17 passed
 find . -name pyproject.toml   → 只剩根 pyproject.toml
 ```
+
+> 上面这段是**当日快照**，不随之后的重构回填。控制面派发协议于 2026-09 拆除后复测：
+> `python3 -m pytest -q` → **476 passed / 2 skipped**。
 
 遗留（有测试兜底的存量债）：
 

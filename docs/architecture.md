@@ -22,9 +22,11 @@
 3. **单隧道原则**。一个靶场 VPN 只应有一条隧道：worker-1（`ADAPTER_ROLE=monitor`）持 tun
    并共享 netns，worker-2/3 以 `network_mode: service:worker-1` 复用；隧道没了由 netns
    看门狗 `os._exit(3)` 自愈。
-4. **两套存储、两个权威**。control SQLite（`data/redpilot.sqlite3`）是题目/调度/判分的权威；
-   obs SQLite（`data/obs.sqlite3`）是观测投影。`attempt.*` canonical 事件是终态唯一权威，
-   relay telemetry 永远不能覆盖它。
+4. **两套存储、两个权威**。control SQLite（`data/redpilot.sqlite3`）是题目定义、容器供给与
+   判分的权威；obs SQLite（`data/obs.sqlite3`）是观测投影，run 生命周期由 relay telemetry
+   **单源**写入。~~`attempt.*` canonical 事件是终态唯一权威，relay telemetry 永远不能覆盖它~~
+   —— 那条通道（control outbox → obs canonical ingest）随 `evaluation/job/attempt` 派发协议
+   于 2026-09 拆除，不变量 I4 一并降级为历史条目，见 §1.2。
 5. **flag 两道闸门**。确定性 grounding/证据门（候选必须逐字出现在本场真实输出里）→
    平台 response（correct / duplicate）才是最终判据；eager 提交不必等会话结束。
 6. **一个 flag 语义**：候选先分"幻觉族 / 推导族"，再走置信度分级；幻觉族拒收，推导族进复核。
@@ -48,7 +50,7 @@
 | # | 目标 | 判据 |
 |---|---|---|
 | G1 | **自主解题**：连上靶场 VPN，自主侦察、利用、提交 flag | 平台判分正确，`flags_submitted > 0` |
-| G2 | **全过程可观测**：运行中实时、结束后可回溯 | 观测 SPA 可看图/看 transcript/看 run 历史；断连不丢权威终态 |
+| G2 | **全过程可观测**：运行中实时、结束后可回溯 | 观测 SPA 可看图/看 transcript/看 run 历史；断连不丢终态（relay 保序重试，兜底见 §7.2） |
 | G3 | **长时程稳定**：数小时到数天的持续运行 | 会话级看门狗、舰队监督、热重载、netns/VPN 自愈 |
 | G4 | **不为幻觉付钱**：提交的每个 flag 都有证据、有出身 | `verify.py` 三重门 + 平台判据；幻觉族与推导族分账 |
 | G5 | **不重复踩坑**：跨会话、跨轮次、跨 flag 不重复失败 | 被拒/未证 ledger、`.continuation.json`、黑板、Heimdall |
@@ -61,7 +63,7 @@
 | I1 | 单一发行版、单一 `__version__` | `tests/architecture/test_single_source.py` |
 | I2 | 唯一编排：竞技场是唯一主循环 | 仓库无第二套 `solve_one` 派发链路 |
 | I3 | 唯一求解引擎：Pi Agent | `adapter/solver/factory.py` 只生产 Pi 后端 |
-| I4 | canonical > telemetry：relay 终态永不能覆盖 canonical | `obs/store.py` 的 `close_run`/`append_events` 守卫 + `test_canonical_run_close.py` |
+| I4 | ~~canonical > telemetry：relay 终态永不能覆盖 canonical~~ **已撤销（2026-09）** | 无执行点 —— canonical 通道整体拆除，理由与后果见本节末 |
 | I5 | flag 必须过 grounding 门才能提交 | `adapter/verify.py` + `test_progress_evidence_gate.py` |
 | I6 | 读端凭据 ≠ 写端凭据；读 token 不转发给 worker | `obs/ingest_common.py`、`.env.example` |
 | I7 | 观测面失败隔离：坏掉不影响求解 | relay/Heimdall/verifier 全部 `try/except` 降级 |
@@ -69,9 +71,28 @@
 | I9 | 单靶场单隧道；worker-1 是唯一 netns 提供者 | `docker-compose.yaml`、`_start_netns_watchdog` |
 | I10 | 一个库/目录只有一个写模块 | `tests/architecture/test_data_ownership.py` |
 
+> **I4 为什么撤销（2026-09 取舍留痕）**：控制面原有一套"平台排队 → worker 认领"的派发协议
+> —— `evaluation → job → attempt` 三级状态机 + 租约 + outbox 把 canonical 终态事件投给 obs。
+> 实现最终走向的是**竞技场模型**：worker 直接从靶场平台拉题、自主解题、经 relay 上报遥测，
+> **不经过这个队列**。worker 侧的客户端早已删除（`worker/relay.py` 明说"随 assignment 链路
+> 一起删了"），服务端与 UI 留了下来 —— 零生产消费者、只有测试在调。
+>
+> 于是两端一并拆掉：control 侧四个模块（`scheduling.py` / `control.py` / `maintenance.py` /
+> `outbox.py`）、`contracts/platform.py`、control store 的六张表
+> （`evaluations` / `workers` / `jobs` / `attempts` / `platform_events` / `outbox_events`）
+> 与 22 个相关方法、`/api/v1/evaluations|workers|attempts` 全部路由；obs 侧
+> `canonical_ingest.py`、`runs.canonical` 列，以及 `close_run` 里整套"relay 不得覆盖
+> canonical"守卫。
+>
+> **这不是"被另一条更强的通道取代"，而是这条通道的生产端与接收端一起没了。** run 生命周期
+> 从此由 relay telemetry **单源**写入（`obs/telemetry_ingest.py` 是唯一写入者），终态判据
+> 回到平台 response（§6.3）。I2「唯一编排」不受影响。
+
 ### 1.3 非目标（显式不做）
 
-- **不做多租户 SaaS 控制面**：evaluation/job/attempt 状态机是单平台语义。
+- **不做多租户 SaaS 控制面**：控制面只服务单平台语义（题目定义、容器供给、VPN 生命周期、
+  判分）。原 `evaluation/job/attempt` 三级状态机正是按单平台语义设计的，它已于 2026-09
+  随派发协议拆除，但"不做多租户"这个裁决不变。
 - **不做通用编排 DSL**：循环逻辑全部留在 `orchestrator.py` 一个文件里，可读优先于抽象。
 - **不做 worker 自动更新**：镜像替换由部署方负责（热重载只换"已就位的新码"）。
 - **不引图数据库**：图工程提案（`docs/graph-engineering-design.md`）以 SQLite/文件为存储。
@@ -126,11 +147,10 @@
 ```
                     ┌─────────────────────────────────────────────┐
    操作者浏览器 ───▶ │  RedPilot server :8000                       │
-   (SPA / API)      │  控制面：challenges/调度/VPN/评测            │
+   (SPA / API)      │  控制面：challenges/容器供给/VPN/判分        │
                     │  观测平台：摄取/读端/SSE/SPA                  │
                     └───────▲───────────────────────┬─────────────┘
                             │ telemetry(写 token)    │ 读 token（含明文 flag）
-                            │ canonical(平台 token)  │
                     ┌───────┴───────────────────────▼─────────────┐
    宿主 Docker ───▶ │  worker 舰队（共享 /work 卷）                │
    (启动/重启)      │  worker-1 monitor：VPN + netns + 他管        │
@@ -162,11 +182,11 @@
 ```
 ┌──────────────────────────── server 容器（python:3.13-slim）──────────────────────┐
 │  redpilot.app:app                                                                  │
-│  control 路由 /openapi/v1/* /api/v1/*     obs 路由 /api/*（SSE /api/events）       │
+│  control 路由 /openapi/v1/*（challenges/vpn）  obs 路由 /api/*（SSE /api/events）  │
 │  SPA 静态文件 /                          control store + obs store（两库）         │
-│  healthcheck: GET /healthz             outbox loop → canonical-events              │
+│  healthcheck: GET /healthz             控制面无后台任务（原 outbox loop 已拆）     │
 └────────────────────────────────────────────────────────────────────────────────────┘
-            ▲ telemetry / canonical                                    ▲ 明文 flag 读
+            ▲ telemetry（写 token）                                    ▲ 明文 flag 读
             │                                                          │
 ┌───────────┴──────────────── worker 容器（Kali 基底 + pi CLI）──────────────────────┐
 │  ┌─ worker-1（ADAPTER_ROLE=monitor，cap_add NET_ADMIN，/dev/net/tun）─┐            │
@@ -204,8 +224,8 @@ netns 提供者重建时，消费者连续 3 次检测不到默认路由即 `os.
 ```
 redpilot/                     # 唯一发行版，唯一 __version__
 ├── contracts/                # ① 共享内核：stdlib-only，零第三方依赖
-├── control/                  # ② 控制面：challenges/调度/VPN/评测 + outbox
-├── obs/                      # ③ 观测平台：摄取（canonical/telemetry）/读端/SSE/SPA
+├── control/                  # ② 控制面：challenges/容器供给/VPN/判分
+├── obs/                      # ③ 观测平台：摄取（telemetry 单源）/读端/SSE/SPA
 ├── worker/                   # ④ 求解：竞技场 + Pi 引擎 + relay + 本地态势台
 │   ├── driver.py             #    worker 装配根
 │   ├── orchestrator.py       #    竞技场主循环（唯一编排）
@@ -219,13 +239,17 @@ redpilot/                     # 唯一发行版，唯一 __version__
 
 | 模块 | 拥有 | 数据所有权 | 读者 |
 |---|---|---|---|
-| `contracts` | 词汇表、路径、快照 schema、脱敏/截断、摘要折叠、共享平台契约 | 无状态 | 全部模块 |
-| `control` | 题目定义、调度、容器供给、VPN、判分、outbox | `data/redpilot.sqlite3` | `app.py`、控制面 API |
+| `contracts` | 词汇表、路径、快照 schema、脱敏/截断、摘要折叠 | 无状态 | 全部模块 |
+| `control` | 题目定义、容器供给、VPN、判分 | `data/redpilot.sqlite3`（tasks/challenges/submissions 三表） | `app.py`、控制面 API |
 | `obs` | 摄取、读端、SSE、SPA、控制代理（可选） | `data/obs.sqlite3` | `app.py`、态势台 |
 | `worker` | 竞技场、止损、证据闸门、Pi 引擎、平台适配、relay、本地态势台 | `/work/`（status/.live/逐题目录） | 平台、本地 `:8080` |
 
 规则：**一个库/目录只有一个写模块**（I10）。跨模块读走 API 或事件
 （worker relay → obs ingest 的 HTTP 契约是产品契约，不因合并发行版而变成函数调用）。
+
+> **沿革（2026-09）**：`control` 的拥有物原写作"题目定义、**调度**、容器供给、VPN、判分、
+> **outbox**"，`contracts` 的拥有物原含"**共享平台契约**"（`contracts/platform.py` 的状态
+> 机与 canonical 词汇）。两者都随派发协议拆除，见 §1.2 I4 沿革。
 
 ### 5.3 依赖红线（R1–R8，摘要）
 
@@ -254,7 +278,8 @@ redpilot/                     # 唯一发行版，唯一 __version__
 ### 5.4 装配根
 
 - **`redpilot/app.py`**：构造 control 子应用但**不启动它的 lifespan**（只取路由），
-  统一 lifespan 显式承担 obs store + housekeeper + **canonical outbox**。
+  统一 lifespan 显式承担 obs store + housekeeper；**控制面已无后台任务** ——
+  原在这里启停的 **canonical outbox** 于 2026-09 随派发协议拆除（见 §1.2 I4 沿革）。
   `app.state.store` 恒为 obs store（既有读端契约），control store 挂
   `app.state.control_store`；命名冲突是刻意用两个名字避免的。
   控制面路由直接并入主 app（mount 会与观测 `/api/*` 抢前缀）。
@@ -386,44 +411,55 @@ roster.py ──▶ /work/.live/roster.json ──▶ relay + dashboard（单实
 ### 7.1 控制面
 
 ```
-challenges.py（业务外观：评分规则/靶场预留）
-scheduling.py（调度外观：evaluation/job/attempt 状态机）
-        └── ControlPlaneService ── Store（SQLite，事务）
-                  │                    └── outbox_events（同事务写入）
-                  ▼
+ChallengeFacade（challenges.py：评分规则/靶场预留；路由组的唯一入口）
+      └── ChallengeService（service.py：业务规则 + 容器预留/判分）
+                └── Store（store.py：SQLite，事务；tasks / challenges / submissions 三表）
         provisioner.py（容器供给适配器）   vpn.py（openvpn 生命周期 + 指令黑名单）
 ```
 
-- **状态机**（`contracts/platform.py`）：evaluation（queued/running/completed/canceled/expired）、
-  job（pending/running/completed/failed/canceled）、attempt（starting/solving/submitting/
-  closing/solved/done/failed/interrupted）。attempt 的 `submitting/closing` 也在
-  "活跃"集合里，崩溃守卫按它判定。
-- **凭据分离**：管理端点（VPN 生命周期）要 `REDPILOT_ADMIN_TOKEN`；
-  worker 端要 `X-Worker-Token`。未配置 → 503 **fail closed**，不是放行。
+- **凭据分离**：管理端点（VPN 生命周期等平台全局特权操作）要 `REDPILOT_ADMIN_TOKEN`；
+  题目端点要平台方 token（`BENCHMARK_TOKEN` 家族，按 task 配置）。凭据未配置 →
+  503 **fail closed**，不是放行。
 - **VPN 即代码**：上传的 openvpn 配置有指令黑名单（script-security≥2、up/down、
   tls-verify、log/status、chroot 等），命中即 400 拒收，不静默剥离。
   以 `--script-security 1` 兜底。
-- **outbox 投递语义**：2xx → 删除；429/5xx → 指数退避重试（更行保留）；
-  其他 4xx → dead-letter（重试永不成功，防无界堆积）；传输异常 → 下轮重投。
-  半配置（url/token 只配其一）只告警，不装配。
+- **控制面就是这些**：`/healthz` + 5 条 `/openapi/v1/challenges/*`（list/start/hint/
+  submit/close）+ 4 条 VPN 生命周期 `/openapi/v1/vpn/*`（status/config/start/stop）。
+
+> **沿革（2026-09）：控制面的"调度"与"outbox"整体拆除。** 这里原有一张调度图 ——
+> `scheduling.py`（调度外观）→ `ControlPlaneService` → `Store`（同事务写 `outbox_events`），
+> 配套三套状态机（`contracts/platform.py`：evaluation queued/running/completed/canceled/
+> expired、job pending/running/completed/failed/canceled、attempt starting/solving/
+> submitting/closing/solved/done/failed/interrupted）与 outbox 投递语义
+> （2xx → 删除；429/5xx → 指数退避重试；其他 4xx → dead-letter；传输异常 → 下轮重投）。
+>
+> 拆它的理由不是"设计不好"，而是**它没有生产消费者**：派发协议要的是 worker 认领作业，
+> 而竞技场模型的 worker 直接从靶场平台拉题（§6.1），队列两端都成了只有测试在调的空转代码。
+> 一并消失的还有 control 的 `worker_token` / `public_base_url` / `observability_url` /
+> `observability_token` / `lease_sweep_interval` 五个配置项、五个错误构造器
+> （`worker_required` / `worker_token_not_configured` / `evaluation_not_found` /
+> `assignment_not_found` / `lease_conflict`）、`/api/v1/evaluations|workers|attempts` 全部
+> 路由，以及前端整页控制台（`Control.vue` + `api/control.ts` + 导航条目与路由）。
+> `control/store.py` 从 1270 行降到不足 500 行。取舍记录见 §1.2 I4 沿革。
 
 ### 7.2 观测平台
 
 ```
-                    ┌── canonical ingest（权威）── attempt.started/completed
-worker relay ───────┤     来源：control outbox；runs.canonical=1
-（写 token）        └── telemetry ingest（非权威）── live/events/run_close/roster/ping/accepted_flags
-                         守卫：canonical 终态不可覆盖（同行拒写 + 跨行 attempt_id 守卫）
+worker relay ──▶ telemetry ingest（写 token）── live/events/run_close/roster/ping/accepted_flags
+（唯一写入者）      runs 生命周期由它单源写入；events 表 UNIQUE(run_id, seq) 天然去重
 
 读端（读 token）：SSE /api/events；/api/status|roster|challenge|transcript|timeline|runs*
 SPA：/（外壳公开）、/assets/*（公开）；其余 /api/* 全部需要凭据
 ```
 
-- **两个写路径、一个权威**：终态只信 canonical；`run_close` 只能关闭
-  `running/interrupted`，且不能改已 canonical 的行。
+- **单源**：run 生命周期只由 relay telemetry 写；`run_close` 只能关闭 `running/interrupted`
+  （终态幂等）。原与它并行的 canonical 权威通道（control outbox → `obs/canonical_ingest`
+  → `runs.canonical=1`）于 2026-09 拆除，随之消失的还有"同行拒写 + 跨行 attempt_id 守卫"
+  那套"relay 不得覆盖权威终态"的机制，以及 `runs.canonical` 列（`_MIGRATION_4` 已撤，
+  `MIGRATIONS` 只到 v3；对旧库是 no-op，因为 `migrate()` 用 `MIGRATIONS[version:]` 切片）。
+  见 §1.2 I4 沿革。
 - **幂等地基**：events 表 `UNIQUE (run_id, seq)`，重复投递天然去重。
-- **乱序容忍**：跨 run_id 合并规则在 `ObsStore.append_events/close_run`
-  （`test_canonical_run_close.py` 是 P0 不变量）。
+- **乱序容忍**：跨 run_id 合并规则在 `ObsStore.append_events/close_run`。
 - **读端暴露明文 flag 与完整实录**，所以 token 必须与写端分离，
   且 `OBSERVABILITY_READ_TOKEN` 不转发给 worker 容器。
 - **housekeeping**：events 是唯一无界增长路径；按保留天数 + 单批行数上限
@@ -435,15 +471,18 @@ SPA：/（外壳公开）、/assets/*（公开）；其余 /api/* 全部需要�
 
 | 前缀 | 归属 | 示例 |
 |---|---|---|
-| `/openapi/v1/*` | control | challenges、vpn |
-| `/api/v1/*` | control | evaluations、workers、attempts |
-| `/api/internal/*` | obs | live/events/run_close/roster/ping/accepted_flags、canonical-events |
+| `/openapi/v1/*` | control | 5 条 challenges、4 条 vpn |
+| `/api/internal/*` | obs | live/events/run_close/roster/ping/accepted_flags（telemetry 单源） |
 | `/api/*` | obs 读端 | status/roster/challenge/transcript/timeline/runs、SSE |
 | `/` `/assets/*` | obs SPA | 前端外壳 |
 | `/healthz` | control | 存活探测 |
 
+> **`/api/v1/*` 这一行已删除（2026-09）**：该前缀原是 control 的 evaluations、workers、
+> attempts 三组路由，随派发协议一并拆除。本仓 control 现在**只剩** `/healthz`、
+> 5 条 `/openapi/v1/challenges/*` 与 4 条 `/openapi/v1/vpn/*`。
+
 `obs/control_proxy.py` 只在控制面是**外部**服务时启用（把 `/api/v1/*` 转出去）；
-统一部署下默认关闭。
+统一部署下默认关闭。它也因此成了本仓 `/api/v1/*` 的**唯一来源**（本仓 control 已无此前缀）。
 
 ---
 
@@ -453,8 +492,14 @@ SPA：/（外壳公开）、/assets/*（公开）；其余 /api/* 全部需要�
 
 | 库 | 默认路径 | 写者 | 主要表 | 权威性 |
 |---|---|---|---|---|
-| control | `data/redpilot.sqlite3` | `control/store.py`（单连接 + RLock） | tasks/challenges/submissions/evaluations/workers/jobs/attempts/platform_events/outbox_events | 题目与终态权威 |
-| obs | `data/obs.sqlite3` | `obs/store.py`（进程单写者，WAL） | runs/events/live_state/roster_snapshot | 观测投影（canonical 事件承载权威终态） |
+| control | `data/redpilot.sqlite3` | `control/store.py`（单连接 + RLock） | tasks/challenges/submissions | 题目定义、容器供给与判分权威 |
+| obs | `data/obs.sqlite3` | `obs/store.py`（进程单写者，WAL） | runs/events/live_state/roster_snapshot | 观测投影（run 生命周期由 relay telemetry 单源写入） |
+
+> **沿革（2026-09）**：control 库原有九张表，后六张（`evaluations` / `workers` / `jobs` /
+> `attempts` / `platform_events` / `outbox_events`）随派发协议拆除，现在只剩三张。
+> obs 库的 `runs` 表**保留** `evaluation_id` / `job_id` / `attempt_id` 三列
+> （`_MIGRATION_3` 未撤销，旧库不动），但 relay 侧已不再发送这三个值
+> （`worker/relay.py` 的 `_close_run` docstring 记了这件事），新写入的 run 上它们恒为 NULL。
 
 ### 8.2 `/work` 布局（共享卷）
 
@@ -490,9 +535,15 @@ SPA：/（外壳公开）、/assets/*（公开）；其余 /api/* 全部需要�
 |---|---|---|
 | live 快照 18 键 | `contracts/snapshot.py` | 改名须同步 `LiveState` 与前端 `types.ts` |
 | phase / run 状态 / 事件 kind | `contracts/vocabulary.py` | 前端 `types.ts` 是手工镜像，须同步 |
-| 平台状态机与 canonical 词汇 | `contracts/platform.py` | SQL CHECK 与读端过滤共用 |
 | 路径/文件名/心跳 | `contracts/paths.py` | compose healthcheck 读同一字面量 |
 | relay/ingest HTTP | obs ingest 路由 + relay | 产品契约，跨模块只经 HTTP |
+
+> **沿革（2026-09）**：本表原有一行「平台状态机与 canonical 词汇 | `contracts/platform.py` |
+> SQL CHECK 与读端过滤共用」。`contracts/platform.py` 已随派发协议删除（该模块含
+> `EVALUATION_STATES` / `JOB_STATES` / `ATTEMPT_STATES` / `WORKER_STATES`、`EventEnvelope`、
+> `is_canonical_event_type` / `is_canonical_terminal_status` / `new_id`）；run 状态那部分词汇
+> 本来就在上一行的 `contracts/vocabulary.py`（`RUN_STATUSES` / `RUN_CLOSE_STATUSES` /
+> `CLOSABLE_STATUSES`），未受影响。
 
 ---
 
@@ -513,17 +564,24 @@ worker                    Pi Agent                    平台            obs
   │ submit ─────────────────┼─────────────────────────▶│               │
   │◀─ correct/duplicate ────┼──────────────────────────│               │
   │ 账本更新/会话收尾         │                          │               │
-  │ attempt.completed ──────┼──────────────────────────┼──outbox─────▶│ canonical
+  │ 收尾（run_close）───────┼──────────────────────────┼──────────────▶│ run 终态
 ```
 
-### 9.2 权威终态路径（不与 telemetry 混）
+### 9.2 run 终态路径（单源）
 
 ```
-control Store 事务：写 attempts 终态 + outbox_events（同一事务）
-   → outbox loop：POST /api/internal/canonical-events（写 token）
-   → obs canonical_ingest：runs.canonical=1
-   → telemetry 的 run_close 只能在 running/interrupted 上收尾，不能覆盖
+worker relay._close_run（会话边界，先 FIFO drain 全部事件再收尾）
+   → POST /api/internal/run_close（写 token）
+   → obs telemetry_ingest → ObsStore.close_run（仅 running/interrupted 可写，终态幂等）
+   → runs.status 落终态
 ```
+
+> **沿革（2026-09）**：这里原画的是另一条并行路径 ——
+> `control Store 事务：写 attempts 终态 + outbox_events（同一事务）→ outbox loop：
+> POST /api/internal/canonical-events → obs canonical_ingest：runs.canonical=1 →
+> telemetry 的 run_close 只能在 running/interrupted 上收尾，不能覆盖`。
+> 控制面与 obs 两侧一起拆除后（见 §1.2 I4 沿革），run 终态不再是"两条路径争一个权威"，
+> 而是**一个写入者**；`close_run` 的幂等语义不变。
 
 ---
 
@@ -541,7 +599,7 @@ env 只在六处解析：`contracts/paths.py`（内核例外）、`control/confi
 | 边界 | 机制 |
 |---|---|
 | 观测读/写 | 写 token 只给 worker；读端返回明文 flag，读 token 不转发 |
-| 控制面 admin/worker | `REDPILOT_ADMIN_TOKEN` / `X-Worker-Token` 分离，缺失 503 fail closed |
+| 控制面 admin / 题目 token | `REDPILOT_ADMIN_TOKEN`（全局特权操作）与 `BENCHMARK_TOKEN` 家族（题目端点）分离，缺失 503 fail closed。原并行的 `X-Worker-Token` 随派发协议于 2026-09 拆除 |
 | VPN 配置 | 指令黑名单 + `--script-security 1`，命中即拒 |
 | 容器能力 | 只有 worker-1/monolith 有 `NET_ADMIN` + tun；无 docker socket |
 | 数据脱敏 | `contracts/redact.py` 统一脱敏/截断；快照带外键不广播 |
@@ -553,7 +611,7 @@ env 只在六处解析：`contracts/paths.py`（内核例外）、`control/confi
 | 故障 | 行为 | 是否影响解题 |
 |---|---|---|
 | `OBSERVABILITY_URL` 未设 | relay 整体禁用 | 否 |
-| obs 宕机 | outbox 退避重试；relay 重试；canonical 留在本地 | 否，恢复后补投 |
+| obs 宕机 | relay 自行重试（它是唯一写入者，无第二方兜底，也没有需要补投的 canonical 队列） | 否，恢复后补投 |
 | 观测 token 未配 | ingest 响亮 503（不静默丢） | 否 |
 | verifier LLM 不可用 | 降级为 grounding-only | 否（判断层变薄） |
 | `ADAPTER_SKEPTIC=0` | skeptic 空操作，纯确定性规则 | 否 |
@@ -602,7 +660,7 @@ env 只在六处解析：`contracts/paths.py`（内核例外）、`control/confi
 | 架构红线 | `pytest -q tests/architecture` | 17 条：R1–R8 + 运行时 import 足迹 + 单一来源 |
 | 模块单测 | `pytest -q tests/{contracts,control,obs,worker,app}` | 各模块行为 |
 | 竞技场回归 | `pytest -q tests/` | 175 条：止损、task epoch、eager 提交、交付账本、多段题、supervisor 判据 |
-| 回归全量 | `pytest -q` | 404 passed（README 记录） |
+| 回归全量 | `pytest -q` | 476 passed / 2 skipped（2026-09 拆除后实测） |
 
 新增边界的工作流：先在 `test_layers.py` 的 `FORBIDDEN`/白名单里写规则（红），
 再改代码让规则变绿。**allowlist 只许缩短**（`test_env_reads_are_collected` 的
@@ -646,7 +704,7 @@ stale 兜底防止"顺手把新债加进白名单"）。
 | 决策 | 选择 | 主要理由 |
 |---|---|---|
 | 打包形态 | 单发行版模块化单体 | 包拆分只买到安装闭包；边界改用 AST 测试执行（`docs/modular-monolith-design.md`） |
-| 控制面与观测合并 | 同一 FastAPI `:8000`，两库 | 部署简单；权威性靠 canonical/telemetry 分离而非进程分离 |
+| 控制面与观测合并 | 同一 FastAPI `:8000`，两库 | 部署简单；两库权威性靠"谁的写入者是谁"界定，不靠进程分离（原表述是"靠 canonical/telemetry 分离"，该通道 2026-09 拆除，见 §1.2 I4） |
 | 舰队拓扑 | worker-1 持 VPN，2/3 复用 netns | 单隧道原则；消费者 self-exit 自愈 |
 | 危险能力 | worker-1 无 docker socket，只能请求重启 | 从架构根除而非纪律约束 |
 | 求解引擎 | Pi Agent 唯一 | 避免多引擎行为漂移 |
