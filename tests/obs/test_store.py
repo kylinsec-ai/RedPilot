@@ -255,34 +255,35 @@ def test_reads_see_committed_writes(tmp_path):
         assert st.list_runs() == []
         st.append_events("r1", "worker-1", "a-05", [(0, "session", "{}")])
         assert len(st.list_runs()) == 1, "读连接未看到写入"
-        st.close_run("r1", status="solved", canonical=True, challenge_code="a-05",
+        st.close_run("r1", status="solved", challenge_code="a-05",
                      worker_id="worker-1")
         assert st.run_row("r1")["status"] == "solved"
     finally:
         st.close()
 
 
-# ── 已接受 flag 的窄通道(assignment 模式的补写) ──
+# ── 已接受 flag 的窄通道(加性观测补写) ──
 
-def test_attach_accepted_flags_writes_canonical_row(store):
-    """关键性质:加性观测数据可写入 canonical 行(close_run 会拒,本方法不会)。
+def test_attach_accepted_flags_touches_only_its_column(store):
+    """关键性质:本方法**只动 flags_accepted 一列**,不碰生命周期。
 
-    assignment 模式下 relay 不关 run,而 flags_accepted 只经 run_close 写入 ——
-    若本方法也受 canonical 守卫约束,平台主推模式就永远看不到已获得的 flag。
+    flags_accepted 只经 canonical run_close 写入过一次(那条通道已拆除),
+    此后由本方法补写已获得的 flag 明文 —— 若它也写 status,终态就会被
+    一次补写改写。
     """
     run_id = rid()
     store.append_events(run_id, "worker-1", "a-05", [(0, "session", "{}")],
                         attempt_id=run_id)
-    store.close_run(run_id, status="solved", canonical=True, attempt_id=run_id,
+    store.close_run(run_id, status="solved", attempt_id=run_id,
                     challenge_code="a-05", worker_id="worker-1")
     row = store.run_row(run_id)
-    assert row["status"] == "solved" and row["canonical"] is True
+    assert row["status"] == "solved"
 
     assert store.attach_accepted_flags(run_id, ["flag{a}", "flag{b}"]) is True
     row = store.run_row(run_id)
     assert row["flags_accepted"] == ["flag{a}", "flag{b}"]
     # 只动一列:生命周期字段不受影响
-    assert row["status"] == "solved" and row["canonical"] is True
+    assert row["status"] == "solved"
     assert store.challenge_flags("a-05") == ["flag{a}", "flag{b}"]
 
 
@@ -307,36 +308,6 @@ def test_attach_accepted_flags_no_row_and_empty_are_noops(store):
     assert store.run_row(run_id)["flags_accepted"] == ["flag{y}"]
 
 
-# ── canonical 关闭的字段归属(权威赢下生命周期,不写坏度量) ──
-
-def test_canonical_close_clears_stale_relay_error(store):
-    """relay 先写 error,canonical 以 solved 关闭(载荷恒含 error 键) → 陈旧错误被清掉。
-
-    canonical 的 attempt.completed 载荷由 core 恒带 error 键,故 None 表示"无错误";
-    若沿用 relay 的"非 None 才写",权威终态下会残留一条早已不成立的错误。
-    """
-    rid = seed_run(store, events=[attempt_ev(1), session_ev()])
-    store.close_run(rid, status="failed", error="relay boom")
-    assert store.run_row(rid)["error"] == "relay boom"
-    store.close_run(rid, status="solved", error=None, canonical=True)
-    row = store.run_row(rid)
-    assert row["status"] == "solved" and row["canonical"] is True
-    assert row["error"] is None, "权威终态下残留了 relay 的陈旧 error"
-
-
-def test_canonical_close_does_not_clobber_relay_turns(store):
-    """canonical 关闭不传 turns 时,保留 relay 报的真实轮次,而非用事件计数覆盖。"""
-    rid = seed_run(store, events=[attempt_ev(1), session_ev()])  # 事件计数:turns=0
-    store.close_run(rid, status="done", turns=7, sessions=2)
-    store.close_run(rid, status="solved", canonical=True)  # 不传 turns/sessions
-    row = store.run_row(rid)
-    assert row["turns"] == 7, "canonical 用事件计数覆盖了 relay 的真实轮次"
-    assert row["sessions"] == 2
-    # 传入值仍可显式覆盖(权威确实知道时)
-    store.close_run(rid, status="solved", turns=9, canonical=True)
-    assert store.run_row(rid)["turns"] == 9
-
-
 def test_relay_close_still_keeps_existing_error_when_absent(store):
     """relay 侧语义不变:未带 error 的关闭不擦掉已有信息。"""
     rid = seed_run(store, events=[attempt_ev(1)])
@@ -359,7 +330,7 @@ def test_prune_events_keeps_runs_and_running(store):
 
     removed = store.prune_events(older_than_days=1.0)
     assert removed == 2, "应删掉已结束 run 的两条原文行"
-    # runs 行都还在(含终态与 canonical 标记),审计链不断
+    # runs 行都还在(含终态),审计链不断
     assert store.run_row(old_done)["status"] == "solved"
     assert store.run_row(old_done)["event_count"] == 0
     assert store.run_row(live) is not None

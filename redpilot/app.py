@@ -23,7 +23,6 @@ from fastapi.routing import APIRoute
 
 from .control.api import create_app as create_control_app
 from .control.config import Settings as ControlSettings
-from .control.maintenance import control_lifespan
 from .obs.bus import LiveBus
 from .obs.config import Settings as ObsSettings
 from .obs.control_proxy import router as control_proxy_router
@@ -87,8 +86,7 @@ def create_app(
     if control_url is not None and enable_control_proxy is None:
         obs_settings.control_proxy_enabled = bool(obs_settings.control_url)
 
-    # 控制面先于 lifespan 构造:其 store 要被 lifespan 内的 outbox 使用,
-    # 先绑定可避免闭包引用后置变量。
+    # 控制面先于 lifespan 构造:路由闭包持有其 store。
     control_app = create_control_app(
         control_settings,
         database_path=database_path,
@@ -96,16 +94,18 @@ def create_app(
         provisioner=provisioner,
         max_active_challenges=max_active_challenges,
     )
-    # control_app 自身永不启动(只取其路由),故其 lifespan 不会执行 ——
-    # canonical outbox 的启停由下面的统一 lifespan 显式承担。
+    # control_app 自身永不启动(只取其路由),故其 lifespan 不会执行。
     control_store = control_app.state.store
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        """Unified lifespan: obs store + housekeeper + control outbox.
+        """Unified lifespan: obs store + housekeeper.
 
         `app.state.store` 恒为 obs store(观测读端 `read.py` / `ingest_common.py` 的契约);
         控制面 store 挂在 `app.state.control_store`,两者不可混用 —— 见下方 state 命名注释。
+
+        此前这里还启停控制面的 canonical outbox;那套随 evaluation/job/attempt
+        派发协议于 2026-09 一并拆除,控制面已无后台任务。
         """
         # Initialize obs store and state
         store = ObsStore(obs_settings.db_path, stale_after=obs_settings.stale_after)
@@ -121,16 +121,7 @@ def create_app(
         house = asyncio.create_task(housekeep(store, obs_settings))
 
         try:
-            # 控制面后台任务:与独立控制面工厂共用 control_lifespan 单一实现。
-            # 合并初期此处遗漏了 outbox,导致权威事件通道完全断开
-            # (见 outbox_lifespan docstring)。
-            async with control_lifespan(
-                control_store,
-                url=control_settings.observability_url,
-                token=control_settings.observability_token,
-                sweep_interval=control_settings.lease_sweep_interval,
-            ):
-                yield
+            yield
         finally:
             # Shutdown obs
             house.cancel()

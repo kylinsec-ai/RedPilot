@@ -205,8 +205,6 @@ services:
       REDPILOT_TASKS_JSON: ${REDPILOT_TASKS_JSON:-}
       BENCHMARK_TOKEN: ${BENCHMARK_TOKEN:-}
       REDPILOT_ADMIN_TOKEN: ${REDPILOT_ADMIN_TOKEN:-}
-      REDPILOT_WORKER_TOKEN: ${PLATFORM_WORKER_TOKEN:-}
-      REDPILOT_PUBLIC_BASE_URL: ${REDPILOT_PUBLIC_BASE_URL:-http://server:8000}
       REDPILOT_PROVISIONER: ${REDPILOT_PROVISIONER:-static}
       REDPILOT_MAX_ACTIVE_CHALLENGES: ${REDPILOT_MAX_ACTIVE_CHALLENGES:-3}
       REDPILOT_DB_PATH: /app/data/redpilot.sqlite3
@@ -218,8 +216,6 @@ services:
       OBSERVABILITY_READ_TOKEN: ${OBSERVABILITY_READ_TOKEN:-}
       OBSERVABILITY_DB: /app/data/obs.sqlite3
       OBSERVABILITY_WEB: /app/web
-      # Self-reference for canonical event outbox
-      OBSERVABILITY_URL: ${OBSERVABILITY_URL:-http://localhost:8000}
     ports:
       # 统一端口 8000 提供所有 API（控制面 + 观测）
       # 宿主侧默认只绑回环；需要局域网访问时设置 SERVER_HOST_IP=0.0.0.0

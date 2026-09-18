@@ -34,8 +34,7 @@ _RUN_FIELDS = (
     " CASE WHEN r.ended_at IS NOT NULL THEN MAX(0.0, r.ended_at - r.started_at) END"
     "   AS duration_s,"
     " r.error, r.turns, r.sessions, r.flags_found, r.flags_accepted, r.updated_at,"
-    " (SELECT COUNT(*) FROM events e WHERE e.run_id = r.run_id) AS event_count,"
-    " r.canonical"
+    " (SELECT COUNT(*) FROM events e WHERE e.run_id = r.run_id) AS event_count"
 )
 _RUN_FROM = "FROM runs r"
 
@@ -151,11 +150,9 @@ class ObsStore:
 
         attempt 归一:attempt_id 非空时先按 attempt_id 找已有关联行(同一
         attempt 只留一行);命中则复用其 run_id 落事件,不再按传入 run_id
-        另起一行 —— canonical started/completed 与 relay telemetry
-        (run_id != attempt_id) 因此收敛到同一 run。排序把 canonical 行置顶,
-        已分裂的旧库收敛到权威行。复用时仅回填 evaluation/job(权威补全)+
-        占位值回填(unknown/空 worker/model → 真实值);绝不用 unknown 覆盖
-        真实值、不碰 status(后补 started 不洗终态)。
+        另起一行 —— worker 侧 run_id != attempt_id 时因此收敛到同一 run。
+        复用时仅回填 evaluation/job + 占位值回填(unknown/空 worker/model →
+        真实值);绝不用 unknown 覆盖真实值、不碰 status(后补 started 不洗终态)。
         """
         started_at = started_at if started_at is not None else time.time()
         with self._tx():
@@ -164,7 +161,7 @@ class ObsStore:
                 existing = self._conn.execute(
                     "SELECT run_id, worker_id, challenge_code, model FROM runs"
                     " WHERE attempt_id=?"
-                    " ORDER BY canonical DESC, started_at DESC, rowid DESC LIMIT 1",
+                    " ORDER BY started_at DESC, rowid DESC LIMIT 1",
                     (attempt_id,)).fetchone()
                 if existing is not None:
                     target = existing["run_id"]
@@ -213,78 +210,43 @@ class ObsStore:
                   evaluation_id: str | None = None,
                   job_id: str | None = None,
                   attempt_id: str | None = None,
-                  canonical: bool = False,
                   worker_id: str = "",
                   challenge_code: str = "unknown",
                   model: str = "") -> bool:
-        """关闭 run。
+        """关闭 run —— **单源**：只有 relay telemetry 一个写入者。
 
-        - relay(source=canonical=False): 仅 running/interrupted 可写;
-          若已有 canonical 终态,不能覆盖(含 run_id 不同但 attempt_id 相同的
-          跨行情形 —— 同一 attempt 任一行 canonical=1 即全局拒写)。
-        - canonical(source=canonical=True): 始终可写(覆盖 relay 终态);
-          重复投递幂等。run_id 未命中时按 attempt_id 回落关联;两侧均未命中
-          时新建占位终态行(乱序 completed 先到不丢失,started 后补复用该行)。
-        turns/sessions 缺省按 events 计数回填。
+        仅 running/interrupted 可写；未命中行时返回 False。run_id 未命中且带
+        attempt_id 时，按 attempt_id 回落关联。turns/sessions 缺省按 events 计数回填。
+
+        **沿革**：本方法原有两个来源 —— relay telemetry（非权威）与 core outbox 的
+        canonical `attempt.completed`（权威，可覆盖前者）。为守住"relay 不得覆盖权威
+        终态"，这里曾有一整套守卫：`canonical` 参数、跨行守卫（同一 attempt 任一行
+        `canonical=1` 即全局拒写）、以及"乱序 completed 无行可关时建占位终态行"的分支。
+
+        那套 canonical 通道随 control 侧的 evaluation/job/attempt 派发协议于 2026-09
+        一并拆除（生产端消失后守卫永远不触发），run 生命周期回到 relay 单源。
+        架构不变量 I4「canonical > telemetry」随之降级为历史条目，见 `docs/architecture.md`。
         """
         ended_at = ended_at if ended_at is not None else time.time()
         with self._tx():
-            # 先按 run_id 查;未命中且 attempt_id 不一致时按 attempt_id 回落
-            # (canonical 置顶:已分裂旧库优先命中权威行,新写收敛)
+            # 先按 run_id 查;未命中时按 attempt_id 回落
             row = self._conn.execute(
-                "SELECT run_id, status, canonical, attempt_id FROM runs WHERE run_id=?",
+                "SELECT run_id, status, attempt_id FROM runs WHERE run_id=?",
                 (run_id,)).fetchone()
             if row is None and attempt_id:
                 row = self._conn.execute(
-                    "SELECT run_id, status, canonical, attempt_id FROM runs"
+                    "SELECT run_id, status, attempt_id FROM runs"
                     " WHERE attempt_id=?"
-                    " ORDER BY canonical DESC, started_at DESC, rowid DESC LIMIT 1",
+                    " ORDER BY started_at DESC, rowid DESC LIMIT 1",
                     (attempt_id,)).fetchone()
                 if row is not None:
                     run_id = row["run_id"]
             if row is None:
-                if not canonical:
-                    return False
-                # 乱序 completed 无行可关:建占位终态行保留权威终态。
-                # worker/code 无处可取时用缺省(ingest 透传 worker,code 置 unknown
-                # 与 started 缺码回落一致);started_at 取 ended_at 保持 duration>=0。
-                self._conn.execute(
-                    "INSERT INTO runs(run_id, worker_id, challenge_code, model,"
-                    " evaluation_id, job_id, attempt_id, status,"
-                    " started_at, ended_at, turns, sessions,"
-                    " error, flags_found, flags_accepted, updated_at, canonical)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,1)",
-                    (run_id, worker_id, challenge_code, model,
-                     evaluation_id, job_id, attempt_id, status,
-                     ended_at, ended_at,
-                     turns if turns is not None else 0,
-                     sessions if sessions is not None else 0,
-                     error, flags_found,
-                     json.dumps(flags_accepted, ensure_ascii=False)
-                     if flags_accepted is not None else None,
-                     ended_at))
-                return True
-
-            # 权威终态始终允许写入(幂等);以下守卫只约束 relay 侧。
-            if not canonical:
-                if row["canonical"]:
-                    return False  # relay 不能覆盖 canonical 终态
-                if row["status"] not in CLOSABLE_STATUSES:
-                    return False
-                # 跨行守卫:同一 attempt 任一行已 canonical,relay 一律拒写。
-                # 覆盖 run_id 与 attempt_id 不一致、relay 未带 attempt_id
-                # (取行上 attempt_id)等情形;防分裂库的 relay 行被另行关闭。
-                effective_attempt = attempt_id or row["attempt_id"]
-                if effective_attempt:
-                    guard = self._conn.execute(
-                        "SELECT 1 FROM runs WHERE attempt_id=? AND canonical=1 LIMIT 1",
-                        (effective_attempt,)).fetchone()
-                    if guard is not None:
-                        return False
+                return False
+            if row["status"] not in CLOSABLE_STATUSES:
+                return False
 
             # turns/sessions 取值优先级:传入 > 既有 > 按事件计数回填。
-            # 此前缺中间项(COALESCE(?, 计数)),canonical 关闭传 None 时会用**事件计数
-            # 覆盖** relay 报上来的真实轮次 —— canonical 赢下生命周期,却把度量写坏了。
             sets = ["status=?", "ended_at=?",
                     "turns=COALESCE(?, runs.turns, (SELECT COUNT(*) FROM events e"
                     " WHERE e.run_id=runs.run_id AND e.type='tool_execution_start'))",
@@ -292,11 +254,8 @@ class ObsStore:
                     " WHERE e.run_id=runs.run_id AND e.type='session'))",
                     "updated_at=?"]
             params: list[Any] = [status, ended_at, turns, sessions, ended_at]
-            # error:canonical 的 attempt.completed 载荷**恒含** error 键(core 侧
-            # {"status","solved","flags_found","error"}),故 None 确实表示"无错误",
-            # 应据此清掉 relay 可能留下的陈旧值;relay 侧则仍是"给了才写",避免
-            # 一次未带 error 的关闭擦掉已有信息。
-            if error is not None or canonical:
+            # error 仍是"给了才写",避免一次未带 error 的关闭擦掉已有信息。
+            if error is not None:
                 sets.append("error=?")
                 params.append(error)
             if flags_found is not None:
@@ -310,8 +269,6 @@ class ObsStore:
                 if value is not None:
                     sets.append(f"{column}=?")
                     params.append(value)
-            if canonical:
-                sets.append("canonical=1")
             params.append(run_id)
             cur = self._conn.execute(
                 f"UPDATE runs SET {', '.join(sets)} WHERE run_id=?", params)
@@ -537,19 +494,18 @@ class ObsStore:
         out = [dict(r) for r in rows]
         for row in out:
             row["flags_accepted"] = _decode_flags(row["flags_accepted"])
-            row["canonical"] = bool(row["canonical"])
         return out
 
     def attach_accepted_flags(self, run_id: str, flags: list[str]) -> bool:
-        """只写 runs.flags_accepted 一列 —— **无状态语义**,故可用于 canonical 行。
+        """只写 runs.flags_accepted 一列 —— **无状态语义**,不碰生命周期。
 
-        与 close_run 的区别:close_run 承载生命周期,受 canonical 守卫约束(relay 不得
-        覆盖权威终态);本方法补的是加性观测数据(实测已获得的 flag 明文),不改变
-        status/canonical,因此对权威行也允许写入。
+        与 close_run 的区别:close_run 承载生命周期(status/ended_at);本方法补的是
+        加性观测数据(实测已获得的 flag 明文),不改 status,因此与生命周期写入
+        互不干扰。
 
-        行定位:先按 run_id,再按 attempt_id 回落(与 close_run 同序,canonical 置顶),
-        以适配 relay 侧 run_id != attempt_id 的历史数据。无行则返回 False 不建行 ——
-        建 running 占位反而可能留下永不关闭的幽灵行。
+        行定位:先按 run_id,再按 attempt_id 回落,以适配 relay 侧 run_id != attempt_id
+        的历史数据。无行则返回 False 不建行 —— 建 running 占位反而可能留下永不关闭
+        的幽灵行。
 
         幂等:同值重写无副作用;空列表视为"无数据"不覆盖已有值。
         """
@@ -561,7 +517,7 @@ class ObsStore:
             if row is None:
                 row = self._conn.execute(
                     "SELECT run_id FROM runs WHERE attempt_id=?"
-                    " ORDER BY canonical DESC, started_at DESC, rowid DESC LIMIT 1",
+                    " ORDER BY started_at DESC, rowid DESC LIMIT 1",
                     (run_id,)).fetchone()
             if row is None:
                 return False
@@ -576,7 +532,7 @@ class ObsStore:
         events 无上界增长是唯一的磁盘增长路径(housekeeper 此前只 GC live_state)。
         注意 events 同时是 transcript 证据链,故:
           - 只动 status<>'running' 的 run(在飞的求解不受影响);
-          - 只删原文行,runs 行(含 status/canonical/flags/耗时)留着,审计链不断;
+          - 只删原文行,runs 行(含 status/flags/耗时)留着,审计链不断;
           - 默认阈值取得保守,0 = 关闭(见 Settings.events_retention_days)。
 
         分批执行:单条大 DELETE 会长时间持写锁阻塞 ingest(单写者)。
@@ -629,7 +585,6 @@ class ObsStore:
             return None
         out = dict(row)
         out["flags_accepted"] = _decode_flags(out["flags_accepted"])
-        out["canonical"] = bool(out["canonical"])
         return out
 
     def run_events(self, run_id: str, after: int = 0, limit: int = 500) -> dict[str, Any]:

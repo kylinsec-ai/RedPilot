@@ -11,11 +11,6 @@ from .fsio import atomic_write_json, ensure_dir
 from .paths import (DIGESTS_DIR, FLAG_FILES, FLAG_MAX_LINES, HEARTBEAT_PATH,
                     LIVE_DIR, ROSTER_FILENAME, TRANSCRIPT_FILENAME, is_skill_dir,
                     safe_code)
-from .platform import (ATTEMPT_STATES, CANONICAL_EVENT_TYPES,
-                       CANONICAL_TERMINAL_STATUSES, EVALUATION_STATES,
-                       JOB_STATES, WORKER_STATES, EventEnvelope,
-                       is_canonical_event_type,
-                       is_canonical_terminal_status, new_id)
 from .redact import summarize_args
 from .snapshot import LIVE_SNAPSHOT_KEYS, LiveSnapshot
 from .text import (ASSISTANT_PREVIEW_MAX, ERROR_HEAD_MAX, ARGS_SUMMARY_MAX,
@@ -44,11 +39,6 @@ __all__ = [
     "CLOSABLE_STATUSES", "RUN_ID_RX", "LIVE_EVENT_KINDS", "FLUSH_KINDS",
     "SNAPSHOT_KIND", "SSE_HEARTBEAT_S", "ENVELOPE_KEYS", "OUT_OF_BAND_PREFIX",
     "strip_out_of_band", "strip_for_snapshot",
-    # platform control-plane contract
-    "EVALUATION_STATES", "JOB_STATES", "ATTEMPT_STATES", "WORKER_STATES",
-    "EventEnvelope", "new_id", "CANONICAL_EVENT_TYPES",
-    "CANONICAL_TERMINAL_STATUSES", "is_canonical_event_type",
-    "is_canonical_terminal_status",
     # snapshot
     "LiveSnapshot", "LIVE_SNAPSHOT_KEYS",
     # digest

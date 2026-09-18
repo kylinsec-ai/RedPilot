@@ -3,26 +3,19 @@
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
 import hmac
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import Depends, FastAPI, Header, Query, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from redpilot.control.challenges import ChallengeFacade
 from redpilot.control.config import Settings
-from redpilot.control.control import ControlPlaneService
-from redpilot.control.errors import (APIError, admin_not_configured, admin_required,
-                     assignment_not_found, evaluation_not_found,
-                     lease_conflict, worker_required,
-                     worker_token_not_configured)
+from redpilot.control.errors import APIError, admin_not_configured, admin_required
 from redpilot.control.models import parse_task_config
-from redpilot.control.maintenance import control_lifespan
 from redpilot.control.provisioner import ContainerProvisioner, provisioner_for
-from redpilot.control.scheduling import SchedulingFacade
 from redpilot.control.service import ChallengeService
 from redpilot.control.store import Store
 from redpilot.control.vpn import VPNManager
@@ -30,9 +23,6 @@ from redpilot.control.vpn import VPNManager
 
 log = logging.getLogger("redpilot.api")
 
-
-# NOTE: canonical outbox 投递循环已抽到 redpilot.outbox.dispatch_outbox_loop,
-# 此处仅做 lifespan 装配(语义不变,见 outbox 模块文档)。
 
 
 class SubmitRequest(BaseModel):
@@ -81,52 +71,6 @@ class VPNConfigRequest(BaseModel):
     content: str = Field(min_length=1, max_length=262144, description="OpenVPN 配置文件内容 (.ovpn)")
 
 
-class EvaluationCreateRequest(BaseModel):
-    task_token: str = Field(min_length=1, max_length=4096)
-    project_id: str = Field(default="default", min_length=1, max_length=128)
-    idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
-
-
-class WorkerRegisterRequest(BaseModel):
-    capabilities: dict[str, Any] = Field(default_factory=dict)
-
-
-class WorkerHeartbeatRequest(BaseModel):
-    status: Literal["offline", "idle", "busy", "draining"] = Field(default="idle")
-
-
-class ClaimRequest(BaseModel):
-    lease_seconds: int = Field(default=300, ge=30, le=3600)
-
-
-class AttemptHeartbeatRequest(BaseModel):
-    lease_seconds: int = Field(default=300, ge=30, le=3600)
-
-
-class AttemptEventRequest(BaseModel):
-    event_id: str | None = Field(default=None, min_length=1, max_length=128)
-    event_type: str = Field(min_length=1, max_length=128)
-    seq: int = Field(default=0, ge=0)
-    occurred_at: float | None = None
-    payload: dict[str, Any] = Field(default_factory=dict)
-
-
-class AttemptEventsRequest(BaseModel):
-    lease_id: str = Field(min_length=1, max_length=128)
-    events: list[AttemptEventRequest] = Field(default_factory=list, max_length=500)
-
-
-class AttemptCompleteRequest(BaseModel):
-    lease_id: str = Field(min_length=1, max_length=128)
-    status: Literal["solved", "done", "failed", "interrupted"] = Field()
-    solved: bool = False
-    flags_found: int | None = Field(default=None, ge=0)
-    error: str | None = Field(default=None, max_length=2000)
-
-
-class AttemptHeartbeatRouteRequest(AttemptHeartbeatRequest):
-    lease_id: str = Field(min_length=1, max_length=128)
-
 
 def _error_response(error: APIError) -> JSONResponse:
     return JSONResponse(status_code=error.status_code, content=error.as_response())
@@ -154,27 +98,12 @@ def create_app(
     service.seed(normalized_tasks)
     # NOTE:启动期种子经 service 直写;运行时路由只经 ChallengeFacade(见下)。
 
-    @asynccontextmanager
-    async def lifespan(_app: FastAPI):
-        # 启停语义单源在 control_lifespan(统一 app 与本工厂共用,防装配路径漂移)。
-        async with control_lifespan(
-            store,
-            url=settings.observability_url,
-            token=settings.observability_token,
-            sweep_interval=settings.lease_sweep_interval,
-        ):
-            yield
-    app = FastAPI(title="RedPilot Platform", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(title="RedPilot Platform", version="1.0.0")
     app.state.store = store
     app.state.service = service
-    control = ControlPlaneService(store, public_base_url=settings.public_base_url)
-    app.state.control = control
-    # 内部边界:challenges(业务) vs scheduling(调度)外观;路由组只经各自外观调用,
-    # 不再直调 Store/Service(见 challenges.py/scheduling.py)。
+    # 内部边界:路由组只经 challenges 外观调用,不直调 Store/Service(见 challenges.py)。
     challenges = ChallengeFacade(service)
-    scheduling = SchedulingFacade(store, control)
     app.state.challenges = challenges
-    app.state.scheduling = scheduling
     app.state.settings = settings
     app.state.vpn = VPNManager(Path(database_path or settings.database_path).parent / "vpn")
 
@@ -202,13 +131,6 @@ def create_app(
             raise admin_not_configured()
         if admin_token is None or not hmac.compare_digest(admin_token.encode(), expected.encode()):
             raise admin_required()
-
-    def authenticated_worker(worker_token: str | None = Header(default=None, alias="X-Worker-Token")) -> None:
-        expected = settings.worker_token
-        if not expected:
-            raise worker_token_not_configured()
-        if worker_token is None or not hmac.compare_digest(worker_token.encode(), expected.encode()):
-            raise worker_required()
 
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict:
@@ -265,169 +187,6 @@ def create_app(
         token: str = Depends(authenticated_token),
     ) -> dict:
         return challenges.close(token, unique_code)
-
-    # ---- 控制面 API: evaluation/job/attempt/worker -----------------
-    @app.post("/api/v1/evaluations", tags=["control-plane"])
-    def create_evaluation(
-        payload: EvaluationCreateRequest,
-        _admin: None = Depends(authenticated_admin),
-    ) -> dict:
-        try:
-            return scheduling.create_evaluation(
-                payload.task_token,
-                project_id=payload.project_id,
-                idempotency_key=payload.idempotency_key,
-            )
-        except KeyError as exc:
-            if exc.args and exc.args[0] == "task_not_found":
-                raise APIError(404, "task_not_found", "Task not found") from exc
-            raise
-        except ValueError as exc:
-            if str(exc) == "task_not_active":
-                raise APIError(409, "invalid_state", "Task is no longer active") from exc
-            if str(exc) == "idempotency_key_reuse":
-                raise APIError(409, "idempotency_key_reuse", "Idempotency key already used for another task") from exc
-            raise
-
-    @app.get("/api/v1/evaluations", tags=["control-plane"])
-    def list_evaluations(
-        project_id: str | None = Query(default=None),
-        _admin: None = Depends(authenticated_admin),
-    ) -> dict:
-        return {"evaluations": scheduling.list_evaluations(project_id)}
-
-    @app.get("/api/v1/evaluations/{evaluation_id}", tags=["control-plane"])
-    def get_evaluation(
-        evaluation_id: str,
-        _admin: None = Depends(authenticated_admin),
-    ) -> dict:
-        row = scheduling.get_evaluation(evaluation_id)
-        if row is None:
-            raise evaluation_not_found()
-        return row
-
-    @app.post("/api/v1/evaluations/{evaluation_id}/cancel", tags=["control-plane"])
-    def cancel_evaluation(
-        evaluation_id: str,
-        _admin: None = Depends(authenticated_admin),
-    ) -> dict:
-        row = scheduling.cancel_evaluation(evaluation_id)
-        if row is None:
-            raise evaluation_not_found()
-        return row
-
-    @app.get("/api/v1/workers", tags=["control-plane"])
-    def list_workers(_admin: None = Depends(authenticated_admin)) -> dict:
-        return {"workers": scheduling.list_workers()}
-
-    @app.post("/api/v1/workers/{worker_id}/register", tags=["worker"])
-    def register_worker(
-        worker_id: str,
-        payload: WorkerRegisterRequest,
-        _auth: None = Depends(authenticated_worker),
-    ) -> dict:
-        return scheduling.register_worker(worker_id, payload.capabilities)
-
-    @app.post("/api/v1/workers/{worker_id}/heartbeat", tags=["worker"])
-    def worker_heartbeat(
-        worker_id: str,
-        payload: WorkerHeartbeatRequest,
-        _auth: None = Depends(authenticated_worker),
-    ) -> dict:
-        if not scheduling.worker_heartbeat(worker_id, payload.status):
-            raise APIError(404, "worker_not_found", "Worker not registered")
-        return {"ok": True, "worker_id": worker_id, "status": payload.status}
-
-    @app.post("/api/v1/workers/{worker_id}/claim", response_model=None, tags=["worker"])
-    def claim_job(
-        worker_id: str,
-        payload: ClaimRequest,
-        _auth: None = Depends(authenticated_worker),
-    ) -> dict | Response:
-        try:
-            assignment = scheduling.claim(worker_id, payload.lease_seconds)
-        except KeyError as exc:
-            if exc.args and exc.args[0] == "worker_not_registered":
-                raise APIError(404, "worker_not_registered", "Worker not registered") from exc
-            raise
-        if assignment is None:
-            raise assignment_not_found()
-        return {"assignment": assignment}
-
-    @app.post("/api/v1/attempts/{attempt_id}/heartbeat", tags=["worker"])
-    def attempt_heartbeat(
-        attempt_id: str,
-        payload: AttemptHeartbeatRouteRequest,
-        request: Request,
-        _auth: None = Depends(authenticated_worker),
-    ) -> dict:
-        ok = scheduling.heartbeat_assignment(
-            attempt_id,
-            request.headers.get("X-Worker-Id", ""),
-            payload.lease_id,
-            payload.lease_seconds,
-        )
-        if not ok:
-            raise lease_conflict()
-        return {"ok": True, "attempt_id": attempt_id}
-
-    @app.post("/api/v1/attempts/{attempt_id}/events", tags=["worker"])
-    def append_attempt_events(
-        attempt_id: str,
-        payload: AttemptEventsRequest,
-        request: Request,
-        _auth: None = Depends(authenticated_worker),
-    ) -> dict:
-        # lease 与 heartbeat/complete 一致走 JSON body:Query 会进访问日志,
-        # bearer 不应出现在 URL 里。
-        worker_id = request.headers.get("X-Worker-Id", "")
-        try:
-            inserted = scheduling.append_events(
-                attempt_id,
-                worker_id,
-                payload.lease_id,
-                [event.model_dump() if hasattr(event, "model_dump") else event.dict() for event in payload.events],
-            )
-        except KeyError as exc:
-            raise APIError(404, "attempt_not_found", "Attempt not found") from exc
-        except PermissionError as exc:
-            log.warning("attempt %s lease mismatch (worker=%s)", attempt_id, worker_id)
-            raise lease_conflict() from exc
-        except (TypeError, ValueError) as exc:
-            raise APIError(422, "invalid_event", str(exc)) from exc
-        return {"ok": True, "inserted": inserted}
-
-    @app.post("/api/v1/attempts/{attempt_id}/complete", tags=["worker"])
-    def complete_attempt(
-        attempt_id: str,
-        payload: AttemptCompleteRequest,
-        request: Request,
-        _auth: None = Depends(authenticated_worker),
-    ) -> dict:
-        worker_id = request.headers.get("X-Worker-Id", "")
-        try:
-            return scheduling.complete_attempt(
-                attempt_id,
-                worker_id,
-                payload.lease_id,
-                status=payload.status,
-                solved=payload.solved,
-                flags_found=payload.flags_found,
-                error=payload.error,
-            )
-        except KeyError as exc:
-            raise APIError(404, "attempt_not_found", "Attempt not found") from exc
-        except PermissionError as exc:
-            raise lease_conflict() from exc
-        except ValueError as exc:
-            raise APIError(422, "invalid_attempt", str(exc)) from exc
-
-    @app.get("/api/v1/attempts/{attempt_id}/events", tags=["control-plane"])
-    def attempt_events(
-        attempt_id: str,
-        _admin: None = Depends(authenticated_admin),
-    ) -> dict:
-        return {"events": scheduling.attempt_events(attempt_id)}
 
     # ---- OpenVPN lifecycle(平台全局特权操作;仅 REDPILOT_ADMIN_TOKEN,参与方 token 不可达)----
     @app.get("/openapi/v1/vpn/status", tags=["vpn"])

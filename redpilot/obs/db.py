@@ -109,13 +109,14 @@ _MIGRATION_3 = [
     "CREATE INDEX IF NOT EXISTS idx_runs_evaluation ON runs(evaluation_id, started_at DESC)",
 ]
 
-# ── v4: canonical 终态标记 ──
-# 权威事件(attempt.completed)写入时置 1;relay run_close 不能覆盖已存在的 canonical 终态。
-_MIGRATION_4 = [
-    "ALTER TABLE runs ADD COLUMN canonical INTEGER NOT NULL DEFAULT 0",
-]
+# ── v4 已撤（2026-09）──
+# 原为 canonical 终态标记列（core outbox 权威事件写入时置 1，relay 不得覆盖）。
+# 那条通道随 control 侧派发协议一并拆除，列不再有意义。
+# 对**已存在**的旧库这无害：`migrate()` 用 `MIGRATIONS[version:]`，旧库停在
+# user_version=4 时切片为空、直接 no-op，多出的列留着不影响任何读写。
+_MIGRATION_4_REMOVED = True
 
-MIGRATIONS: list[list[str]] = [_MIGRATION_1, _MIGRATION_2, _MIGRATION_3, _MIGRATION_4]
+MIGRATIONS: list[list[str]] = [_MIGRATION_1, _MIGRATION_2, _MIGRATION_3]
 
 
 def connect(db_path: str | os.PathLike) -> sqlite3.Connection:

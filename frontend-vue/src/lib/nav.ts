@@ -43,13 +43,6 @@ export const NAV: NavGroup[] = [
         to: "#/",
         isActive: (view) => view === "overview",
       },
-      {
-        kind: "link",
-        key: "control",
-        label: "控制面",
-        to: "#/control",
-        isActive: (view) => view === "control",
-      },
     ],
   },
   {

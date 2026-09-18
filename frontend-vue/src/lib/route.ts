@@ -1,6 +1,5 @@
 /**
  * hash 路由: #/ 总览 / #/c/<code> 题目详情 / #/runs Runs 历史 / #/runs/<run_id> run 详情 /
- * #/control 控制面。
  *
  * 文法**逐字**对齐旧版 parseHash:code 白名单 [A-Za-z0-9_-]{1,64}(decode 后再校验,
  * decode 抛错即回落)、run_id 白名单 32hex(大写不认),不匹配的 hash 一律回落总览。
@@ -12,7 +11,7 @@
  */
 import { ref, type Ref } from "vue";
 
-export type RouteView = "overview" | "challenge" | "runs" | "run" | "control";
+export type RouteView = "overview" | "challenge" | "runs" | "run";
 
 export interface HashRoute {
   view: RouteView;
@@ -29,12 +28,10 @@ const RUN_ID_HEX = "[0-9a-f]{32}";
 export const RUN_ID_RX = new RegExp(`^${RUN_ID_HEX}$`);
 const CHAL_RX = /^#\/c\/(.+)$/;
 const RUNS_RX = new RegExp(`^#/runs(?:/(${RUN_ID_HEX}))?$`);
-const CONTROL_RX = /^#\/control$/;
 
 export function parseHash(hash = typeof window === "undefined" ? "" : location.hash): HashRoute {
   const fallback: HashRoute = { view: "overview", code: null, runId: null, key: "overview" };
   const h = hash || "#/";
-  if (CONTROL_RX.test(h)) return { view: "control", code: null, runId: null, key: "control" };
   const m = h.match(RUNS_RX);
   if (m) {
     return m[1]

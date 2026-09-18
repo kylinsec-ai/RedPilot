@@ -1,9 +1,9 @@
 """telemetry ingest(非权威):worker relay 的观测数据(events/live/run_close/roster/ping)。
 
 权威语义:本模块所有写入都是非权威投影,只用于观测/调试,不参与计分,
-永不能覆盖 canonical 终态(守卫在 ObsStore.close_run/append_events 内:
-同行 canonical=1 拒写 + 跨行 attempt_id 全局守卫)。终态权威只归
-canonical_ingest.post_canonical_events。
+是 run 生命周期的**唯一**写入者 —— 此前另有一条 canonical 权威通道可覆盖它,
+那条通道随 control 侧派发协议于 2026-09 拆除,相关守卫(同行 canonical 拒写 +
+跨行 attempt_id 守卫)一并消失。
 """
 
 from __future__ import annotations

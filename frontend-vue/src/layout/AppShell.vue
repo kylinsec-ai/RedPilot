@@ -52,7 +52,6 @@ const contextTitle = computed(() => {
   const r = current.value;
   if (r.view === "challenge" && r.code) return { text: r.code, mono: true };
   if (r.view === "run" && r.runId) return { text: `run ${r.runId.slice(0, 8)}…`, mono: true };
-  if (r.view === "control") return { text: "控制面", mono: false };
   return null;
 });
 

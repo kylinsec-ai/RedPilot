@@ -56,25 +56,3 @@ def resource_unavailable(message: str = "Challenge resources are unavailable") -
 
 def internal_error() -> APIError:
     return APIError(500, "internal_error", "Internal server error")
-
-
-def worker_token_not_configured() -> APIError:
-    return APIError(503, "worker_token_not_configured",
-                    "平台未配置 REDPILOT_WORKER_TOKEN,Worker API 不可用")
-
-
-def worker_required() -> APIError:
-    return APIError(401, "worker_token_required",
-                    "缺少或无效的 Worker 凭据")
-
-
-def evaluation_not_found() -> APIError:
-    return APIError(404, "evaluation_not_found", "Evaluation not found")
-
-
-def assignment_not_found() -> APIError:
-    return APIError(404, "assignment_not_found", "No assignment is available")
-
-
-def lease_conflict() -> APIError:
-    return APIError(409, "lease_conflict", "Assignment lease is invalid or expired")

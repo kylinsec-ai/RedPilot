@@ -105,7 +105,3 @@ class PingIn(BaseModel):
     worker_id: str
 
 
-class CanonicalEventsIn(BaseModel):
-    """core outbox 的事件批次；不携带 transcript 原文。"""
-
-    events: list[dict[str, Any]] = Field(default_factory=list, max_length=500)

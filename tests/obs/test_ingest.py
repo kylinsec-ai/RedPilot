@@ -46,54 +46,6 @@ def test_ingest_roundtrip(client, headers):
                        headers=headers).status_code == 400
 
 
-def test_canonical_attempt_events_project_to_stable_run(client, headers):
-    attempt_id = rid()
-    base = {
-        "schema_version": 1,
-        "evaluation_id": rid(),
-        "job_id": rid(),
-        "attempt_id": attempt_id,
-        "worker_id": "worker-1",
-    }
-    started = dict(base, event_id=rid(), event_type="attempt.started", seq=0,
-                   occurred_at=1000.0,
-                   payload={"unique_code": "a-05", "attempt_no": 1})
-    completed = dict(base, event_id=rid(), event_type="attempt.completed", seq=1,
-                     occurred_at=1010.0,
-                     payload={"status": "solved", "solved": True, "flags_found": 1})
-    response = client.post("/api/internal/canonical-events",
-                           json={"events": [started, completed]}, headers=headers)
-    assert response.status_code == 200
-    assert response.json() == {"ok": True, "processed": 2, "skipped": 0}
-    rows = client.get("/api/runs").json()["runs"]
-    assert len(rows) == 1
-    assert rows[0]["run_id"] == attempt_id
-    assert rows[0]["attempt_id"] == attempt_id
-    assert rows[0]["status"] == "solved"
-
-def test_canonical_events_count_skipped_not_silent(client, headers):
-    """未知类型/空 attempt_id/非法终态计入 skipped,不再 ok 绿灯丢数据。"""
-    attempt_id = rid()
-    base = {
-        "schema_version": 1, "evaluation_id": rid(), "job_id": rid(),
-        "attempt_id": attempt_id, "worker_id": "worker-1",
-    }
-    good = dict(base, event_id=rid(), event_type="attempt.started", seq=0,
-                occurred_at=1000.0, payload={"unique_code": "a-05"})
-    unknown_type = dict(base, event_id=rid(), event_type="attempt.frobnicate", seq=1,
-                        occurred_at=1001.0, payload={})
-    no_attempt = dict(base, event_id=rid(), event_type="attempt.started", seq=2,
-                      occurred_at=1002.0, payload={"unique_code": "a-05"})
-    del no_attempt["attempt_id"]
-    bad_status = dict(base, event_id=rid(), event_type="attempt.completed", seq=3,
-                      occurred_at=1003.0, payload={"status": "running"})
-    response = client.post("/api/internal/canonical-events",
-                           json={"events": [good, unknown_type, no_attempt, bad_status]},
-                           headers=headers)
-    assert response.status_code == 200
-    assert response.json() == {"ok": True, "processed": 1, "skipped": 3}
-
-
 def test_run_close_unknown_run_ok_with_trace(client, headers):
     """未知 run 的 close 仍 ok(幂等),不断言日志,只 pin 语义不碎。"""
     body = {"run_id": rid(), "worker_id": "worker-1", "status": "done"}

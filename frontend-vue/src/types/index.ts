@@ -201,33 +201,8 @@ export type EvaluationStatus = (typeof EVALUATION_STATUSES)[number];
 export const WORKER_STATUSES = ["offline", "idle", "busy", "draining"] as const;
 export type WorkerStatus = (typeof WORKER_STATUSES)[number];
 
-export interface EvaluationRow {
-  evaluation_id: string;
-  project_id: string;
-  // 注意:后端不再下发 task_token(题目鉴权秘密只经 claim 给 worker)。
-  status: EvaluationStatus;
-  job_count: number;
-  pending_count: number;
-  running_count: number;
-  completed_count: number;
-  failed_count: number;
-  created_at: number;
-  started_at?: number | null;
-  ended_at?: number | null;
-}
 
-export interface WorkersResp {
-  workers: WorkerRow[];
-}
 
-export interface WorkerRow {
-  worker_id: string;
-  capabilities: Record<string, unknown>;
-  status: WorkerStatus;
-  last_seen_at: number;
-  registered_at: number;
-  updated_at: number;
-}
 
 export interface RunEventRow {
   seq: number;

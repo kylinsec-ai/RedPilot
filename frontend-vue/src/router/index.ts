@@ -12,7 +12,6 @@ import { createRouter, createWebHashHistory } from "vue-router";
 import { CODE_RX, RUN_ID_RX, current, parseHash } from "../lib/route";
 import Overview from "../views/Overview.vue";
 import Challenge from "../views/Challenge.vue";
-import Control from "../views/Control.vue";
 import Runs from "../views/Runs.vue";
 import Run from "../views/Run.vue";
 
@@ -20,7 +19,6 @@ const router = createRouter({
   history: createWebHashHistory(),
   routes: [
     { path: "/", name: "overview", component: Overview },
-    { path: "/control", name: "control", component: Control },
     { path: "/runs", name: "runs", component: Runs },
     { path: "/runs/:runId", name: "run", component: Run },
     { path: "/c/:code", name: "challenge", component: Challenge },
