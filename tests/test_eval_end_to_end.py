@@ -1,9 +1,9 @@
-"""评估面端到端：回放 → 判据 → 报告，跨 ghost/worker 两包跑一遍。
+"""评估面端到端：回放 → 判据 → 报告，跨 redpilot 两包跑一遍。
 
-为什么这条测试放在仓库根的 `tests/`（而不是 `packages/ghost/tests/`）：它**必须
-同时 import 两个包** —— 评估面在 `ghost.eval`，判据实现在
-`redpilot.worker.adapter.eval_bridge`，而生产代码里 `ghost` 不许 import `ghost_worker`
-（红线，见 `packages/ghost/tests/test_ghost_purity.py`）。测试是唯一能合法把两边
+为什么这条测试放在仓库根的 `tests/`（而不是 `redpilot/tests/`）：它**必须
+同时 import 两个包** —— 评估面在 `redpilot.eval`，判据实现在
+`redpilot.worker.adapter.eval_bridge`，而生产代码里 `redpilot` 不许 import `redpilot.worker`
+（红线，见 `tests/architecture/test_layers.py`）。测试是唯一能合法把两边
 接起来的地方，接得起来这件事本身就是要验的东西：
 
     判据注入这条路走得通吗？还是说"注入协议"只是个说法、真接的时候接不上？

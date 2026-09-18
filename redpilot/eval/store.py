@@ -1,16 +1,16 @@
 """评估结果落库:eval_* 表,**独立于生产观测库**。
 
 为什么另开一个 SQLite 文件(默认 `./data/eval.sqlite3`)而不是复用 obs.sqlite3:
-`ghost/obs/store.py` 的架构契约是**单写者** —— 唯一写连接 + RLock + BEGIN IMMEDIATE,
+`redpilot/obs/store.py` 的架构契约是**单写者** —— 唯一写连接 + RLock + BEGIN IMMEDIATE,
 写锁的持有时间直接等于 ingest 的等待时间,而 ingest 被拖住会经由控制面 outbox 重投
 把压力放大回观测面(见该模块 `_read` 的注释)。评估面是**读侧消费者**:observer 每
 演进一次判据就要重评历史 run,写入节奏由"重评"决定,与求解过程无关。把 eval_* 表
 塞进同一个文件,重评就是去抢那把写锁;库文件层面的隔离是结构性保证,比"调用方记得
 轻点写"可靠。
 
-**为什么自带 pragma 而不复用 `ghost.obs.db.connect`**:那条路径 import
-`ghost.obs.schema`,而 schema 是 pydantic + fastapi 的摄取模型 —— 评估面要能在零
-fastapi 的 worker 基线里跑(见 packages/ghost/pyproject.toml 的基线依赖说明)。取值
+**为什么自带 pragma 而不复用 `redpilot.obs.db.connect`**:那条路径 import
+`redpilot.obs.schema`,而 schema 是 pydantic + fastapi 的摄取模型 —— 评估面要能在零
+fastapi 的 worker 基线里跑(见 pyproject.toml 的基线依赖说明)。取值
 与 obs 侧逐字相同(单写者纪律也照搬),但来源独立,不把 web 依赖拖进来。
 
 判据本身不在这里:本模块只做"存与读",判据在 `graders/`,由 observer 注入。
@@ -117,7 +117,7 @@ def _decode_checks(raw: str | None) -> list[dict[str, str]]:
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    """连接 + pragma(取值与 `ghost.obs.db.connect` 逐字相同,来源独立)。"""
+    """连接 + pragma(取值与 `redpilot.obs.db.connect` 逐字相同,来源独立)。"""
     conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
     conn.row_factory = sqlite3.Row
     if db_path != ":memory:":          # 内存库不支持 WAL(同 obs 侧)

@@ -2,15 +2,15 @@
 
 ## 为什么需要这一层
 
-评估面住在 `packages/ghost`（`ghost.eval`），而判断"这条命令是不是碰了靶场
+评估面住在 `redpilot`（`redpilot.eval`），而判断"这条命令是不是碰了靶场
 以外的东西"这件事的判据住在 `packages/worker`（`adapter/verify.py`）。架构
-红线是 `packages/ghost` **不许** import `ghost_worker`（由
-`packages/ghost/tests/test_ghost_purity.py` 强制）。所以评估面把判据定义成
+红线是 `redpilot` **不许** import `redpilot.worker`（由
+`tests/architecture/test_layers.py` 强制）。所以评估面把判据定义成
 一个注入协议（`redpilot.eval.graders.deterministic.Predicates`），由外面把实现
 喂进去。桥就搭在这里 —— worker 是唯一同时看得到两边的一侧。
 
 **为什么不干脆在评估面里再写一套判据**：抄出来的那份就是判据分叉的起点。
-本仓已经吃过同名的亏 —— `ghost_worker/taskprompt.py` 与
+本仓已经吃过同名的亏 —— `redpilot/worker/adapter/taskprompt.py` 与
 `adapter/taskprompt.py` 曾双份并存，两份各自演化，一份成了死代码，而
 "技能库怎么用"那条规则只写进了死的那份（见
 `packages/worker/tests/test_taskprompt_single_source.py`）。
@@ -107,7 +107,7 @@ class TaskPredicates:
     """绑定到某一题的判据实现（满足 `redpilot.eval.graders.deterministic.Predicates`）。
 
     刻意**不**继承那个 Protocol：Protocol 是结构化类型，继承会引入
-    `ghost.eval` → worker 的反向 import，正好破坏本模块要守的那条红线。
+    `redpilot.eval` → worker 的反向 import，正好破坏本模块要守的那条红线。
     duck typing 在这里不是偷懒，是唯一不违反依赖方向的写法。
     """
 

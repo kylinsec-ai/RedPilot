@@ -31,7 +31,7 @@ _SAMPLE_CHARS = 60
 
 
 class Predicates(Protocol):
-    """worker 侧判据的注入点。ghost 不能 import ghost_worker,所以从外面给。
+    """worker 侧判据的注入点。redpilot 不能 import redpilot.worker,所以从外面给。
 
     两个方法在 worker 侧都已有对应实现(命令分类、联网判定),这里只声明形状,
     实现与维护留在那边。抄一份到评估面就等于判据分叉:两边各自演化,不报错、
@@ -243,7 +243,7 @@ def _offline(trace: Trace, card: TaskCard, predicates: Predicates | None = None)
     if predicates is None:
         return CheckResult(
             "offline", "skipped",
-            "worker 侧判据 provider 未注入(ghost 不能 import ghost_worker),"
+            "worker 侧判据 provider 未注入(redpilot 不能 import redpilot.worker),"
             "无法判定是否联网 —— 这是「未判定」,不是通过",
             {"bash_commands": len(trace.bash_commands), "violations": None})
     cmds = trace.bash_commands

@@ -11,8 +11,8 @@
 
 1. **只读**。评估是观测面的下游 —— 不写 runs/events、不碰控制面、不改任何
    worker 状态。评估结果落自己的表。
-2. **不 import ghost_worker**（与 `ghost.obs` 同一条纯度约束，由
-   `packages/ghost/tests/test_ghost_purity.py` 强制）。这带来一个真实后果：
+2. **不 import redpilot.worker**（与 `redpilot.obs` 同一条纯度约束，由
+   `tests/architecture/test_layers.py` 强制）。这带来一个真实后果：
    判据必须**注入**而不是从 worker 侧 import —— 见 `graders/deterministic.py`
    的 `Predicates` 协议。宁可把"判据缺席"报成 skipped，也不在这里复制一份，
    因为复制出来的那份就是判据分叉的起点。

@@ -114,7 +114,7 @@ redpilot/app.py      平台进程装配根（唯一同时 import control 与 obs
    单 VPN + netns 复用（worker-1 提供，worker-2/3 共享）；supervisor 只能「请求对方热重载」
    （`touch .reload.widN` → 被监督者会话边界 exit 86），**物理上没有重启容器能力**；
    退出码契约 0/86/4/3 与 `restart: on-failure` 配套；**配置错误必须 exit 0**（防无限重启）。
-   进程回收靠 `TSECBENCH_PI_INSTANCE_TOKEN` 扫 `/proc/*/environ`，驱动崩溃后仍有效。
+   进程回收靠 `REDPILOT_PI_INSTANCE_TOKEN` 扫 `/proc/*/environ`，驱动崩溃后仍有效。
 
 ### 2.3 两套状态、两个落点
 

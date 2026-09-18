@@ -46,7 +46,7 @@ DEFAULT_PROVIDER = "deepseek"
 # to reap only the processes belonging to a finished challenge visit.  This is
 # needed for commands such as `nohup ... &` / `setsid ...`: they can outlive
 # Pi's normal process group and otherwise leak into the next challenge.
-_INSTANCE_TOKEN_ENV = "TSECBENCH_PI_INSTANCE_TOKEN"
+_INSTANCE_TOKEN_ENV = "REDPILOT_PI_INSTANCE_TOKEN"
 _INSTANCE_TOKEN_RX = re.compile(r"^[0-9a-f]{32}$")
 
 # INFRA_BLOCKED 证据接地（B12）：marker 是 agent 自己输出的字面串，写文件、

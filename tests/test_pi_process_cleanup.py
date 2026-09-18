@@ -26,11 +26,11 @@ class PiProcessCleanupTests(unittest.TestCase):
                     json.dumps({"trace_scope": scope}), encoding="utf-8")
                 tagged = subprocess.Popen(
                     ["sh", "-c", "exec sleep 30"],
-                    env={**env, "TSECBENCH_PI_INSTANCE_TOKEN": scope},
+                    env={**env, "REDPILOT_PI_INSTANCE_TOKEN": scope},
                 )
                 other = subprocess.Popen(
                     ["sh", "-c", "exec sleep 30"],
-                    env={**env, "TSECBENCH_PI_INSTANCE_TOKEN": other_scope},
+                    env={**env, "REDPILOT_PI_INSTANCE_TOKEN": other_scope},
                 )
                 time.sleep(0.05)
                 self.assertGreaterEqual(cleanup_instance_processes(td, grace_seconds=0.1), 1)

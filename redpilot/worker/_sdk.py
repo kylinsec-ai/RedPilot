@@ -6,19 +6,23 @@
 
 在此做一次收敛,好处:
   - worker 在公开源上立刻可构建、可导入,不再因 SDK 命名而 ImportError;
-  - SDK 日后发布 RedPilot 命名版本时,本模块自动优先采用,无需改任何调用方;
-  - "SDK 改名"从线上事故降级为这里的一行分支。
+  - 调用方只认本模块导出的名字,"SDK 改名"从线上事故降级为这里的一行别名。
+
+沿革:这里原有一段 `try: from tsec_benchmark import <旧品牌名>` /
+`except ImportError: ... as ...` 的双分支,理由是"上游某天改用本仓品牌名时自动跟上"。
+2026-09 拆掉 —— 上游只会发行 TSec 命名的类,那个分支永远走不到,留着正是本模块
+当初要消除的那类死代码。
 
 调用方一律 `from ._sdk import ...`,不要直接 import tsec_benchmark。
 """
 
 from __future__ import annotations
 
-try:  # 新命名(RedPilot 品牌)
-    from tsec_benchmark import RedPilotmark, RedPilotmarkAsync
-except ImportError:  # PyPI <= 0.1.2:TSec 命名;同一实现,仅类名不同
-    from tsec_benchmark import TSecBenchmark as RedPilotmark
-    from tsec_benchmark import TSecBenchmarkAsync as RedPilotmarkAsync
+# 单性别名，不留 try/except 双分支：上游 `tsec-benchmark` 只会发行 TSec 命名的类
+# （`RedPilotmark` 是本仓的品牌别名，PyPI 不会提供），保留"上游某天改叫 RedPilot"
+# 的分支等于留一段永远走不到的死代码 —— 那正是本模块当初要消除的东西。
+from tsec_benchmark import TSecBenchmark as RedPilotmark
+from tsec_benchmark import TSecBenchmarkAsync as RedPilotmarkAsync
 
 # 以下名字两侧同名,直接转出(已验证 0.1.2 全部提供)。
 from tsec_benchmark import (  # noqa: E402

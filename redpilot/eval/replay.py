@@ -2,7 +2,7 @@
 
 为什么要"唯一入口"：判据分叉是这类系统最典型的静默失败 —— 同一件事被两处
 各自实现，一处改了另一处没跟上，不报错、不告警，只是结论开始互相矛盾。本仓
-已经吃过一次同名的亏（`ghost_worker/taskprompt.py` 与 `adapter/taskprompt.py`
+已经吃过一次同名的亏（`redpilot/worker/adapter/taskprompt.py` 与 `adapter/taskprompt.py`
 双份并存，见 `packages/worker/tests/test_taskprompt_single_source.py`）。所以
 「run_id → 事件 → 时间线」这条链只允许有一个实现，就是本模块；判据只消费它。
 

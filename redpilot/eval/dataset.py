@@ -125,7 +125,7 @@ def task_from_dict(d: dict) -> TaskCard:
 
 
 # 数据集就放在本模块旁边。用**同目录相对**而不是"上溯 N 层"：后者在目录布局
-# 变动后会静默指错（`ghost_contracts/paths.py` 的 docstring 记了同一个坑）。
+# 变动后会静默指错（`redpilot/contracts/paths.py` 的 docstring 记了同一个坑）。
 _DEFAULT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "datasets")
 
 
