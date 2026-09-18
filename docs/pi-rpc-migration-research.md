@@ -110,10 +110,15 @@ RPC 要求：
 
 ### R4 运行时补丁需要重新验证
 
-本仓库有两处"改 pi 安装源码"的补丁：
-- `adapter/pi_ext/patch_pi_bash.py`：改 `dist/core/tools/bash.js`（重复命令短路 +
-  `tried_commands.md`）——**模式无关**，RPC 下仍在同一个 bash 工具路径生效，预期不破；
+本仓库有一处"改 pi 安装源码"的补丁：
 - `_patch_subagent_exit_bug()`：改 subagent 扩展的 `index.ts`，靠 `agent_end` 强杀子进程。
+
+> 📌 此前并列为"两处"的另一处 `adapter/pi_ext/patch_pi_bash.py`（改
+> `dist/core/tools/bash.js` 做重复命令短路 + `tried_commands.md`）**已于 2026-09 删除**：
+> 它是构建期脚本，`Dockerfile` 只 `COPY` 不执行，早已被下面的运行时补丁取代 ——
+> 留着会让人以为 bash 短路还挂在它身上。同目录的 `bash_guard.js` 是**活的**
+> （动作层边界的唯一实现，见 `docs/architecture/TARGET_ARCHITECTURE.md` §2.2），未动。
+
   它修的是**子 pi 进程**不退出的问题。上 RPC 后要确认：子 Agent 由扩展 spawn 时用的是
   哪种 mode（若是 print/json，则补丁照旧必要；若也是 rpc，则终态判定要换成 `agent_settled`）。
 

@@ -23,14 +23,13 @@ from .observability import StatusBridge
 from .relay import ObsRelay, maybe_start_relay
 from .settings import WorkerSettings
 from .solver import SolveResult, touch_heartbeat
-from .transcripts import compress_transcript
 
 __all__ = [
     # 配置与任务
     "SolverConfig", "AgentTask", "WorkerSettings",
     "build_task_prompt", "write_context_md",
-    # flag 与 transcript
-    "extract_flags", "is_valid_flag", "compress_transcript",
+    # flag
+    "extract_flags", "is_valid_flag",
     # 实时状态与观测桥
     "LiveBus", "LiveState", "head_text", "summarize_args", "tail_text",
     "StatusBridge",

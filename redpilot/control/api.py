@@ -170,7 +170,7 @@ def create_app(
     control = ControlPlaneService(store, public_base_url=settings.public_base_url)
     app.state.control = control
     # 内部边界:challenges(业务) vs scheduling(调度)外观;路由组只经各自外观调用,
-    # 不再直调 Store/Service(见 challenges.py/scheduling.py/store_facets.py)。
+    # 不再直调 Store/Service(见 challenges.py/scheduling.py)。
     challenges = ChallengeFacade(service)
     scheduling = SchedulingFacade(store, control)
     app.state.challenges = challenges
