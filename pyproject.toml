@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "redpilot"
+dynamic = ["version"]
+description = "RedPilot: single-distribution modular monolith (control plane + observability + solver worker)"
+requires-python = ">=3.10"
+# 基线依赖: 两角色都要用 httpx(control outbox / worker relay)。
+# 平台与 worker 的差异此后只由 extras 表达,不再由多发行版表达。
+dependencies = ["httpx>=0.27,<1"]
+
+[project.optional-dependencies]
+# worker(Kali 镜像): 官方 SDK + 直接 import 的 requests/openai
+# (直接 import 的包必须直接声明,不赌 tsec-benchmark 的传递依赖)
+worker = ["tsec-benchmark", "requests>=2.31,<3", "openai>=1.30,<2"]
+# platform(统一 server): fastapi/pydantic 不进 Kali 镜像(瘦身既定决策)
+platform = ["fastapi", "uvicorn", "pydantic", "python-dotenv"]
+dev = ["pytest>=8,<10", "pyflakes"]
+
+[project.scripts]
+redpilot-worker = "redpilot.worker.driver:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "redpilot.__version__"}
+
+[tool.setuptools.packages.find]
+# namespaces=false: 每个包目录必须有 __init__.py; 兜底排除嵌套自拷贝
+include = ["redpilot*"]
+exclude = ["redpilot.tests*", "redpilot.packages*"]
+namespaces = false

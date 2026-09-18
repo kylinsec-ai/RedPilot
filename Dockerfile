@@ -1,9 +1,9 @@
 # ══════════════════════════════════════════════════════════════
-# Ghost 平台接入层适配器 Dockerfile
-# 基于已构建的 Ghost Kali 镜像，叠加 Pi Agent + 适配器代码
+# RedPilot 平台接入层适配器 Dockerfile
+# 基于已构建的 RedPilot Kali 镜像，叠加 Pi Agent + 适配器代码
 # ══════════════════════════════════════════════════════════════
 
-FROM ghost/kali:latest
+FROM redpilot/kali:latest
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -44,7 +44,7 @@ RUN set -eu; \
         chromium \
         dirsearch feroxbuster nuclei \
         chisel gdb foremost sshpass steghide \
-        redis-tools s3cmd awscli \
+        redis-tools s3cmd awscli acl libcap2-bin \
         python3-pycryptodome python3-sympy python3-gmpy2 python3-z3 python3-pwntools \
         jq qemu-user-static ltrace strace python3-filebytes; \
     # 移除 Debian 拆分版 playwright(版本错配 1.38 driver vs 1.55 py → KeyError),pip 装
@@ -57,6 +57,18 @@ RUN set -eu; \
     # ropper: 用 apt 的 python3-filebytes(依赖),--no-deps 避开源码编译
     pip3 install --break-system-packages --no-cache-dir --no-deps ropper; \
     echo "[build] tools layer done"
+
+# ── 3.7 求解身份（M1，设计 docs/solver-isolation-design.md §4）──
+# driver 保持 root（看门狗 / /proc 回收依赖），只把 Pi 子进程降为 uid 10001。
+# nmap/ping 打 file capability 以保留 raw socket 能力；能否生效取决于容器
+# bounding set 是否包含 NET_RAW（Docker 默认包含），运行期 isolation.probe
+# 会给出真实结论，构建失败不 gate（setcap 失败只是能力降级，不是构建错误）。
+RUN set -eux; \
+    useradd -u 10001 -m -s /bin/bash solver; \
+    setcap cap_net_raw+ep /usr/bin/nmap 2>/dev/null || true; \
+    setcap cap_net_raw+ep /bin/ping 2>/dev/null || true; \
+    getcap /usr/bin/nmap /bin/ping || true; \
+    id solver
 
 # ── 3.6 浏览器冒烟(不 gate 构建,结果进日志) ──
 RUN python3 - <<'PY' || echo "[build] WARN: playwright smoke failed (see above)"
@@ -75,19 +87,18 @@ PY
 # ── 4. Python 依赖(三包 monorepo;editable 安装保留 compose 卷热补丁工作流) ──
 # --no-build-isolation:镜像 pip 走 BFSU 源,构建隔离会临时拉 setuptools;
 # apt 预装 python3-setuptools 后本地构建即可。
-# ghost 只装基线(纯 stdlib + contracts):fastapi/pydantic 不进 Kali 镜像(瘦身既定决策)。
-# worker 侧只用到 ghost.obs.localserver —— 该模块零 fastapi 依赖,基线安装即可。
+# redpilot 是单发行版；worker 只装 [worker] extra(fastapi/pydantic 不进 Kali 镜像)。
+# editable 安装锚在 /opt/redpilot，compose 的热补丁挂载与之对应。
 RUN apt-get update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
         python3-setuptools && rm -rf /var/lib/apt/lists/*
-COPY packages/contracts /opt/packages/contracts
-COPY packages/ghost /opt/packages/ghost
-COPY packages/worker /opt/packages/worker
+COPY pyproject.toml /opt/redpilot/pyproject.toml
+COPY redpilot /opt/redpilot/redpilot
 RUN pip3 install --break-system-packages --no-build-isolation --no-cache-dir \
-        -e /opt/packages/contracts -e /opt/packages/ghost -e /opt/packages/worker
+        -e "/opt/redpilot[worker]"
 
 # ── 4b. 策略层源码(朋友线合并结果) ──
-# 策略层已搬进包内：packages/worker/ghost_worker/adapter/ —— 上面第 4 步的
-# editable 安装(include = ["ghost_worker*"])会自动收进去，**不再需要单独 COPY**。
+# 策略层在 redpilot/worker/adapter/ —— 上面 editable 安装(packages.find
+# include = ["redpilot*"])会自动收进去，**不再需要单独 COPY**。
 # 这一块曾经是 `COPY adapter /app/adapter` + 依赖 `WORKDIR /app` 进 sys.path；
 # 搬进包后那条路径依赖消失，镜像里只有一个安装来源。
 #
@@ -104,7 +115,7 @@ COPY tools /opt/tools
 #     下 pi 只认 $HOME 内的 skills/，且框架两条扫描（skill_loader.SkillStore 的名录扫描、
 #     pi_agent._install_skills 的软链装载）都从 ADAPTER_SKILLS_DIR / /app/skills
 #     起算 —— 只留 /root 那份的话它们全都扫到空目录，静默退化成 0 个技能。
-#     两者由 ghost_contracts.paths.skills_root 统一解析（见其 docstring）。
+#     两者由 redpilot.contracts.paths.skills_root 统一解析（见其 docstring）。
 COPY skills /root/.pi/agent/skills
 COPY skills /app/skills
 COPY web /app/web
@@ -114,8 +125,8 @@ COPY entrypoint.sh /app/entrypoint.sh
 # /app/... 是因为 ADAPTER_WORKDIR=/work 与入口脚本都住在 /app，与策略层源码
 # 在哪儿无关。改名/移动时这三处要一起改，否则护栏与角色软链会静默落空。
 # (pi_agents/*.md 的角色模型由 _inject_role_model 在运行期注入，不是死文件。)
-COPY packages/worker/ghost_worker/adapter/pi_ext /app/adapter/pi_ext
-COPY packages/worker/ghost_worker/adapter/pi_agents /app/adapter/pi_agents
+COPY redpilot/worker/adapter/pi_ext /app/adapter/pi_ext
+COPY redpilot/worker/adapter/pi_agents /app/adapter/pi_agents
 RUN chmod +x /app/entrypoint.sh /opt/tools/*.py
 
 # ── 6. 自检 ──
@@ -126,6 +137,11 @@ RUN set -eu; mkdir -p /opt/tools; log=/opt/tools/BUILD_SELFCHECK.txt; : > "$log"
         else echo "MISS $b" >>"$log"; missing="$missing $b"; fi; done; \
     echo "==== SELF-CHECK ====" >>"$log"; \
     echo "pi builtin models: $(timeout 5 pi --list-models 2>/dev/null | wc -l) entries" >>"$log"; \
+    python3 -c "import sys, redpilot.worker.orchestrator; \
+        bad=sorted({'fastapi','pydantic','uvicorn'} & set(sys.modules)); \
+        assert not bad, f'platform deps leaked into worker: {bad}'" \
+        && echo "OK   import closure slim (no fastapi)" >>"$log" \
+        || { echo "FAIL import closure carries platform deps" >>"$log"; cat "$log"; exit 1; }; \
     if [ -n "$missing" ]; then echo "MISSING:$missing" >>"$log"; cat "$log"; \
         echo "!!! BUILD WARNING: tools missing:$missing"; fi; \
     echo "BUILD OK" >>"$log"; cat "$log"

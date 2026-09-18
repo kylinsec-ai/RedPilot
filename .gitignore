@@ -48,6 +48,9 @@ __pycache__/
 node_modules/
 dist/
 
+# ── Python 构建产物（单发行版）──
+/build/
+
 # ── 系统 / 编辑器 ──
 .DS_Store
 *.swp
@@ -58,6 +61,6 @@ dist/
 .claude/worktrees/
 bin/
 
-# 历史事故: ghost/control/ 下曾出现整棵 monorepo 的递归自拷贝，被 setuptools
+# 历史事故: control/ 下曾出现整棵 monorepo 的递归自拷贝，被 setuptools
 # 命名空间发现收进 wheel 并污染 pytest 收集。此路径永不合法，兜底忽略。
-packages/ghost/ghost/control/packages/
+redpilot/control/packages/

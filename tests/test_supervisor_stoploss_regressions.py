@@ -8,8 +8,8 @@ import threading
 import unittest
 from pathlib import Path
 
-from ghost_worker.adapter.stoploss import StopLoss
-from ghost_worker import supervisor as supervisor
+from redpilot.worker.adapter.stoploss import StopLoss
+from redpilot.worker import supervisor as supervisor
 
 
 class _Log:

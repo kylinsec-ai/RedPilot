@@ -112,7 +112,7 @@ export function startLiveWatchers(): () => void {
     live.conn = "connecting";
     connect();
   };
-  document.addEventListener("ghost:read-token-changed", reconnect);
+  document.addEventListener("redpilot:read-token-changed", reconnect);
 
   const onVisible = () => {
     if (!stopped && !document.hidden && !running) connect();
@@ -139,6 +139,6 @@ export function startLiveWatchers(): () => void {
     clearInterval(fallback);
     if (retry) clearTimeout(retry);
     document.removeEventListener("visibilitychange", onVisible);
-    document.removeEventListener("ghost:read-token-changed", reconnect);
+    document.removeEventListener("redpilot:read-token-changed", reconnect);
   };
 }

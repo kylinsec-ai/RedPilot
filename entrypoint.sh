@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[adapter] === Ghost 平台接入层适配器 ==="
+echo "[adapter] === RedPilot 平台接入层适配器 ==="
 echo "[adapter] BENCHMARK_BASE_URL=${BENCHMARK_BASE_URL:-<unset>}"
 echo "[adapter] ADAPTER_ROLE=${ADAPTER_ROLE:-solver} ADAPTER_WORKER_ID=${ADAPTER_WORKER_ID:-<auto>}"
 
@@ -33,7 +33,7 @@ if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
   if [[ -n "${SOLVER_API_KEY:-}" ]]; then
     export DEEPSEEK_API_KEY="${SOLVER_API_KEY}"
     echo "[adapter] WARNING: DEEPSEEK_API_KEY 未设,已从旧别名 SOLVER_API_KEY 桥接。" >&2
-    echo "[adapter] WARNING: 该别名已废弃,请改用 pi 官方 env 名(见 packages/worker/README.md 凭据说明)。" >&2
+    echo "[adapter] WARNING: 该别名已废弃,请改用 pi 官方 env 名(见 docs/worker.md 凭据说明)。" >&2
   elif [[ -z "${ANTHROPIC_API_KEY:-}" && -n "${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
     export DEEPSEEK_API_KEY="${ANTHROPIC_AUTH_TOKEN}"
     echo "[adapter] WARNING: DEEPSEEK_API_KEY 未设,已从 ANTHROPIC_AUTH_TOKEN 桥接(朋友的旧部署走网关 key)。" >&2
@@ -51,13 +51,13 @@ while IFS= read -r k; do
   esac
 done < <(compgen -e)
 if [[ $have_key -eq 0 && ! -s "${HOME:-/root}/.pi/agent/auth.json" ]]; then
-  echo "[adapter] WARNING: 未检测到 *_API_KEY 凭据且无 ~/.pi/agent/auth.json,pi 可能无法鉴权(见 packages/worker/README.md 凭据说明)。" >&2
+  echo "[adapter] WARNING: 未检测到 *_API_KEY 凭据且无 ~/.pi/agent/auth.json,pi 可能无法鉴权(见 docs/worker.md 凭据说明)。" >&2
 fi
 
 cd /app 2>/dev/null || true
 
 # ── VPN 连接 ──
-# Ghost 要求: 所有题目入口地址必须通过 VPN 才能访问
+# RedPilot 要求: 所有题目入口地址必须通过 VPN 才能访问
 # ADAPTER_VPN_CONFIG 为空/未设时跳过（如共享 worker-1 网络的 worker-2/3）
 VPN_CONFIG="${ADAPTER_VPN_CONFIG:-}"
 
@@ -138,5 +138,5 @@ else
   head -20 /tmp/tsec-run.log >&2 2>/dev/null || true
 fi
 
-echo "[adapter] starting arena driver (ghost_worker.orchestrator via driver 装配层)..."
-exec python3 -m ghost_worker.driver
+echo "[adapter] starting arena driver (redpilot.worker.orchestrator via driver 装配层)..."
+exec python3 -m redpilot.worker.driver

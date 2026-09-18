@@ -2,7 +2,7 @@
 
 为什么这条测试放在仓库根的 `tests/`（而不是 `packages/ghost/tests/`）：它**必须
 同时 import 两个包** —— 评估面在 `ghost.eval`，判据实现在
-`ghost_worker.adapter.eval_bridge`，而生产代码里 `ghost` 不许 import `ghost_worker`
+`redpilot.worker.adapter.eval_bridge`，而生产代码里 `ghost` 不许 import `ghost_worker`
 （红线，见 `packages/ghost/tests/test_ghost_purity.py`）。测试是唯一能合法把两边
 接起来的地方，接得起来这件事本身就是要验的东西：
 
@@ -17,14 +17,14 @@ from __future__ import annotations
 import json
 import unittest
 
-from ghost.eval import (CHECK_IDS, EvalStore, RunRecord, load_tasks, pass_k, summary,
+from redpilot.eval import (CHECK_IDS, EvalStore, RunRecord, load_tasks, pass_k, summary,
                         trigger_rate)
-from ghost.eval.dataset import TaskCard
-from ghost.eval.graders import grade
-from ghost.eval.replay import trace_from_rows
+from redpilot.eval.dataset import TaskCard
+from redpilot.eval.graders import grade
+from redpilot.eval.replay import trace_from_rows
 
 # ── 跨包接线：worker 侧的判据实现（生产代码里这是唯一的注入点）──
-from ghost_worker.adapter.eval_bridge import task_predicates
+from redpilot.worker.adapter.eval_bridge import task_predicates
 
 
 def ev(**kw) -> dict:
@@ -216,7 +216,7 @@ class EndToEndTests(unittest.TestCase):
         这条测试不要求补齐覆盖（那是数据集作者的取舍），只要求**盲区能被看见**：
         启用次数为 0 或偏少的判据，必须在报告里有一个明确的数字。
         """
-        from ghost.eval import check_coverage
+        from redpilot.eval import check_coverage
 
         preds = task_predicates(targets=[TARGET])
         cards = load_tasks()
@@ -236,7 +236,7 @@ class EndToEndTests(unittest.TestCase):
         这不是"应该如此"，而是"现在如此" —— 钉住它是为了让改动它的人看见这个
         数字在变，而不是让盲区随着时间悄悄扩大或缩小却没人注意。
         """
-        from ghost.eval import check_coverage
+        from redpilot.eval import check_coverage
 
         preds = task_predicates(targets=[TARGET])
         cards = load_tasks()
@@ -255,7 +255,7 @@ class EndToEndTests(unittest.TestCase):
         """
         cards = load_tasks()
         self.assertGreaterEqual(len(cards), 20)
-        from ghost.eval.dataset import iter_missing_categories
+        from redpilot.eval.dataset import iter_missing_categories
         self.assertEqual(list(iter_missing_categories(cards)), [],
                          "评估集四类用例必须齐备（负样本尤其不能缺）")
 

@@ -102,7 +102,7 @@
         bind:value={tokenInput}
         type="password"
         autocomplete="current-password"
-        placeholder="GHOST_ADMIN_TOKEN"
+        placeholder="REDPILOT_ADMIN_TOKEN"
         class="h-8 min-w-0 flex-1 rounded-md border border-line2 bg-panel2 px-2.5 font-mono text-[12.5px] text-ink placeholder:text-dim focus:border-blue focus:outline-none"
       />
       <button

@@ -1,5 +1,5 @@
 # ══════════════════════════════════════════════════════════
-# Ghost 平台编排 — 统一服务器 + 三容器 worker 舰队
+# RedPilot 平台编排 — 统一服务器 + 三容器 worker 舰队
 #
 # server    = 控制面 + 观测平台统一服务(:8000)
 # worker-1  = 舰队协调者：**只维持 VPN + 状态汇总 + 他管**，不做题
@@ -21,7 +21,7 @@
 # 另两个就断网（这条由 netns 看门狗兜底：worker-2/3 检测到被孤立会退出重启）。
 #
 # 为什么 worker-1 不做题：它是 netns 提供者，重启它会同时打断两个解题 worker。
-# 所以它的能力被架构限死为"只请求对方热重载"，见 ghost_worker/supervisor.py。
+# 所以它的能力被架构限死为"只请求对方热重载"，见 redpilot/worker/supervisor.py。
 # ══════════════════════════════════════════════════════════
 
 x-worker-build: &worker-build
@@ -41,10 +41,9 @@ x-worker-healthcheck: &worker-healthcheck
 x-worker-volumes: &worker-volumes
   - ./work:/work
   - ./vpn:/vpn:ro
-  # 挂载宿主最新包源（免重建镜像；editable 安装指向 /opt/packages/*，热补丁即生效）
-  - ./packages/contracts:/opt/packages/contracts:ro
-  - ./packages/ghost:/opt/packages/ghost:ro
-  - ./packages/worker:/opt/packages/worker:ro
+  # 挂载宿主最新包源（免重建镜像；editable 安装锚在 /opt/redpilot，热补丁即生效）
+  - ./redpilot:/opt/redpilot/redpilot:ro
+  - ./pyproject.toml:/opt/redpilot/pyproject.toml:ro
   - ./tools:/opt/tools:ro
   # skills 挂两处（与 Dockerfile 的两处 COPY 对应）：/root 那份是 pi 在 HOME 未改写时
   # 的默认发现路径；/app/skills 是逐题 HOME 场景下框架两条扫描（名录扫描 + 软链装载）
@@ -150,9 +149,9 @@ x-worker-env: &worker-env
 
 # ── 三个 worker 共用的引擎调优（restart / shm / init）──
 x-worker-runtime: &worker-runtime
-  image: ghost-adapter:latest
+  image: redpilot-adapter:latest
   # restart 语义与 worker 的退出码契约对齐 —— **完整表在
-  # packages/worker/README.md**，这里只说本文件关心的一半：
+  # docs/worker.md**，这里只说本文件关心的一半：
   #   exit 0  任务终态 / 配置错（明示后停止）= 正常终止，**不重启**；
   #   非零    86 热重载 / 4 VPN 层 / 3 netns 被孤立 / 其他崩溃 = 拉起重试。
   #   注意：on-failure 会重启一切非零退出 —— 配置错误绝不能用 1/2 退出
@@ -197,20 +196,20 @@ services:
   server:
     build:
       context: .
-      dockerfile: Dockerfile.ghost
-    image: ghost-server:latest
-    container_name: ghost-server
+      dockerfile: Dockerfile.redpilot
+    image: redpilot-server:latest
+    container_name: redpilot-server
     restart: unless-stopped
     environment:
       # Control plane settings
-      GHOST_TASKS_JSON: ${GHOST_TASKS_JSON:-}
+      REDPILOT_TASKS_JSON: ${REDPILOT_TASKS_JSON:-}
       BENCHMARK_TOKEN: ${BENCHMARK_TOKEN:-}
-      GHOST_ADMIN_TOKEN: ${GHOST_ADMIN_TOKEN:-}
-      GHOST_WORKER_TOKEN: ${PLATFORM_WORKER_TOKEN:-}
-      GHOST_PUBLIC_BASE_URL: ${GHOST_PUBLIC_BASE_URL:-http://server:8000}
-      GHOST_PROVISIONER: ${GHOST_PROVISIONER:-static}
-      GHOST_MAX_ACTIVE_CHALLENGES: ${GHOST_MAX_ACTIVE_CHALLENGES:-3}
-      GHOST_DB_PATH: /app/data/ghost.sqlite3
+      REDPILOT_ADMIN_TOKEN: ${REDPILOT_ADMIN_TOKEN:-}
+      REDPILOT_WORKER_TOKEN: ${PLATFORM_WORKER_TOKEN:-}
+      REDPILOT_PUBLIC_BASE_URL: ${REDPILOT_PUBLIC_BASE_URL:-http://server:8000}
+      REDPILOT_PROVISIONER: ${REDPILOT_PROVISIONER:-static}
+      REDPILOT_MAX_ACTIVE_CHALLENGES: ${REDPILOT_MAX_ACTIVE_CHALLENGES:-3}
+      REDPILOT_DB_PATH: /app/data/redpilot.sqlite3
       # Observability settings
       OBSERVABILITY_TOKEN: ${OBSERVABILITY_TOKEN:-}
       # 读端凭据（态势台/runs/transcript）。读端返回明文 flag 与完整实录，不再匿名开放；
@@ -231,8 +230,8 @@ services:
       - ./data:/app/data
       - ./web:/app/web:ro
       # 热补丁挂载（开发用）：免重建镜像直接生效代码修改
-      - ./packages/contracts:/opt/packages/contracts:ro
-      - ./packages/ghost:/opt/packages/ghost:ro
+      - ./redpilot:/opt/redpilot/redpilot:ro
+      - ./pyproject.toml:/opt/redpilot/pyproject.toml:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=3)"]
       interval: 30s
@@ -244,7 +243,7 @@ services:
   worker-1:
     <<: *worker-runtime
     build: *worker-build
-    container_name: ghost-worker-1
+    container_name: redpilot-worker-1
     healthcheck: *worker-healthcheck
     # VPN：唯一持有 tun 的容器；worker-2/3 复用它的 netns
     cap_add:
@@ -270,7 +269,7 @@ services:
   # 差异只有三处：container_name / ADAPTER_WORKER_ID / WORKER_ID。
   worker-2:
     <<: *worker-solver
-    container_name: ghost-worker-2
+    container_name: redpilot-worker-2
     environment:
       <<: *worker-solver-env
       ADAPTER_WORKER_ID: '1'
@@ -278,7 +277,7 @@ services:
 
   worker-3:
     <<: *worker-solver
-    container_name: ghost-worker-3
+    container_name: redpilot-worker-3
     environment:
       <<: *worker-solver-env
       ADAPTER_WORKER_ID: '2'
@@ -291,7 +290,7 @@ services:
   worker:
     <<: *worker-runtime
     build: *worker-build
-    container_name: ghost-worker
+    container_name: redpilot-worker
     profiles: ["monolith"]
     healthcheck: *worker-healthcheck
     cap_add:

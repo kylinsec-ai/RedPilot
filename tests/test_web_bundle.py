@@ -2,7 +2,7 @@
 
 为什么需要这条用例:vite 产物名带内容哈希、由两个 HTTP 服务端转发
 (ghost/obs/read.py 的统一 server 与 obs/localserver.py 的 worker 本地态势台),
-而两者的 mime/名字守卫**单源**在 ghost_contracts.assets。于是存在一类静默失败:
+而两者的 mime/名字守卫**单源**在 redpilot.contracts.assets。于是存在一类静默失败:
 构建换了扩展名(或 vite 输出嵌套路径)而白名单没跟上 → 站点外壳 200、
 静态资源 404,页面白屏且服务端毫无报错。
 
@@ -20,10 +20,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from ghost.app import create_app
-from ghost.control.config import Settings as ControlSettings
-from ghost.obs.config import Settings as ObsSettings
-from ghost_contracts.assets import ASSET_RX, ASSET_TYPES, asset_content_type
+from redpilot.app import create_app
+from redpilot.control.config import Settings as ControlSettings
+from redpilot.obs.config import Settings as ObsSettings
+from redpilot.contracts.assets import ASSET_RX, ASSET_TYPES, asset_content_type
 
 WEB_DIR = Path(__file__).resolve().parents[1] / "web"
 
@@ -97,7 +97,7 @@ def test_index_referenced_assets_are_all_serviceable(client):
         assert "/" not in name and "\\" not in name, f"{ref} 不是平铺资源名"
         assert ASSET_RX.fullmatch(name), f"{ref} 不匹配 ASSET_RX 平铺名守卫"
         assert ext in ASSET_TYPES, (
-            f"扩展名 {ext} 不在 ghost_contracts.assets.ASSET_TYPES 白名单里;"
+            f"扩展名 {ext} 不在 redpilot.contracts.assets.ASSET_TYPES 白名单里;"
             f"构建换了产物类型就要同步白名单,否则该资源会静默 404"
         )
 

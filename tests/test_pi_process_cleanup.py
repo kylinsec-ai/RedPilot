@@ -10,7 +10,7 @@ import time
 import unittest
 from pathlib import Path
 
-from ghost_worker.adapter.solver.pi_agent import cleanup_instance_processes
+from redpilot.worker.adapter.solver.pi_agent import cleanup_instance_processes
 
 
 class PiProcessCleanupTests(unittest.TestCase):

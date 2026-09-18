@@ -40,7 +40,7 @@ python -m pytest packages/contracts/tests/test_skills_root.py -v
 ## 本仓库对它的两处依赖
 
 1. **frontmatter 形态**：上游 `description:` 一律是 YAML 块标量（`>-` 折行）。
-   `ghost_worker/adapter/skill_loader.py` 的解析器必须认它，否则技能名录全是
+   `redpilot/worker/adapter/skill_loader.py` 的解析器必须认它，否则技能名录全是
    空的描述（曾实测：解析出 `description: '>-'` 字面量）。
 2. **装载面**：`skills/` 逐目录含 `SKILL.md` 才算技能 —— Dockerfile 两处 `COPY skills`
    与 `pi_agent._install_skills` 的软链装载都按这条规则发现。
