@@ -217,14 +217,19 @@ __all__ = ["AgentTask", "extract_flags", "is_valid_flag", ...]
   JSON 键集/SSE 帧形状一致）—— 这条测试本来就该存在（`localserver` docstring 声称
   「字节兼容由测试强制」），现在是补票的时机。
 
-### 3.7 `tsecbench/` 与 `fastapi-console/`：不是产品模块
+### 3.7 `tsecbench/` 与 `fastapi-console/`：已删除（2026-09）
 
-- `tsecbench/` 模拟的是**外部平台**，是测试替身，归测试支撑（`tests/support/` 或保持根目录），
-  不进 `redpilot` 包、不进 wheel、不进镜像。
-- `fastapi-console/` 是只读运维工具，当前 import `redpilot_worker.adapter.*` 与 `tsecbench`。
-  迁移时只改 import 前缀；不要顺手并进 `app.py`。若长期维护，再单独立项为
-  `redpilot.tools.console`（可选 extra）。
-- 判据：`redpilot` 包 = 产品运行时；其他顶层目录 = 开发/运维外围。
+本节原判据是「`redpilot` 包 = 产品运行时；其他顶层目录 = 开发/运维外围」，
+据此让两者留在 `redpilot` 包外。**实际结局是两者都删了** —— 留外并没有解决它们的
+真正问题：
+
+- `tsecbench/`（本地靶场测试替身）不是「留在包外」就能静态的：它是
+  `redpilot/control/` 的**逐字 fork**（`models.py` 269 行对 269 行，只差一行
+  docstring），两边持续分叉。测试替身与产品实现同源，等于没有独立判据。
+- `fastapi-console/` 是**另一条数据链**上的观测面（直读 `work/status/*.json`，
+  不经观测库），且 `agent.py:25` 硬编码的容器名早已不存在。
+- 判据修正为：**外围目录要么有独立判据，要么删**。同源的测试替身比没有替身更危险
+  —— 它会让「产品改了」在测试侧同步改一遍，测试仍然绿。
 
 ---
 
@@ -556,7 +561,7 @@ find . -name pyproject.toml   → 只剩根 pyproject.toml
   只减不增；修好一个删一个，stale 条目会让测试变红）。
 - Docker 构建在本机（Termux）无法验证，需在目标主机/CI 跑 `docker compose config/build`；
   镜像 selfcheck 已加入 worker import 足迹断言。
-- `fastapi-console/` 的 import 已跟改 `redpilot.worker.*`，但它仍是外围工具，未并入产品包。
+- `fastapi-console/` 与 `tsecbench/` 已删（见 §3.7），连带 4 个测试文件 90 条用例。
 
 ---
 

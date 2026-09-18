@@ -267,7 +267,7 @@ entrypoint 的凭据解析顺序是"官方 env 名 → `~/.pi/agent/auth.json`"�
 
 `StopLoss` 的粒度全部是 **题目 × 轮次**：`dry_cutoff`（连续 3 场无新事实）、
 `zero_flag_cutoff`（连续 3 场 0 flag）、`per_challenge_seconds`（终身时间预算）、
-单场 `deadline`。而 `AGENTS.md` 里真正影响胜负的两条是 **动作级**的：
+单场 `deadline`。而 `taskprompt._CLAUDE_MD`（逐题 `CLAUDE.md` 的正文）里真正影响胜负的两条是 **动作级**的：
 
 ```
 - 同一方向连续失败 3 次 → 立即换思路

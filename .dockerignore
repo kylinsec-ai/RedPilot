@@ -21,12 +21,11 @@ vpn/
 
 # ── 非构建输入的大目录（.git/.venv/前端源码 合计 50M+），纯拖慢构建
 #    前端**源码与依赖**都不进上下文（构建输入是产物 web/，它不在这里排）
-#    —— 用通配而非逐个点名：前端目录改过名（frontend → frontend-vue），
-#    旧写法没跟上，整棵前端源码又回到了上下文里。
+#    —— 用通配而非逐个点名：前端源码目录历史上换过实现（Svelte 版 frontend/
+#    已删，现行是 Vue 版 frontend-vue/），逐个点名的写法在下一次变动时就会漏。
 .git/
 .venv/
 legacy/
-tsecbench/
 tests/
 frontend*/
 

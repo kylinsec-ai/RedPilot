@@ -93,7 +93,7 @@
 | **filesystem-context** | 数据（§8.2 `/work`、§6.2 技能装载） | `/work` 是标准答案式的**上下文溢出层**：大输出落文件、计划持久化、子 Agent 文件通信、技能动态装载、日志可 grep | `transcript.jsonl`、`MEMORY.md`、`_blackboard.json`、skill_loader |
 | **memory-systems** | 记忆（§6.4） | 分层正确（工作/短期/长期），**时间有效性只做到一半**：ledger 与 epoch 有，黑板的撤销/陈旧没有 | `.continuation.json` 按 task epoch 失效；黑板只增不改（缺口 D2） |
 | **advanced-evaluation** | 判分（§6.3） | 判分器设计符合"证据先于分数 + 确定性预检 + 面板投票 + 置信校准"；幻觉/推导分族是防自我增强偏差的关键 | `verify.py` 三重门、`skeptic_votes`、rescue/veto 阈值 |
-| **long-horizon-prompting** | 任务简报（§6.1 会话、§10.5） | `AGENTS.md` 就是每题的长时程简报：成功谓词、非计数结果、止损、反停滞、返回条件都在；**努力地板与污染护栏部分还是 prompt 级而非 harness 级** | `AGENTS.md`、`stoploss.py`；缺口 D4 |
+| **long-horizon-prompting** | 任务简报（§6.1 会话、§10.5） | `taskprompt._CLAUDE_MD` 就是每题的长时程简报：成功谓词、非计数结果、止损、反停滞、返回条件都在；**努力地板与污染护栏部分还是 prompt 级而非 harness 级** | `taskprompt.py`、`stoploss.py`；缺口 D4 |
 
 ### 2.1 harness-engineering 的五类面（RedPilot 映射）
 
@@ -476,7 +476,7 @@ SPA：/（外壳公开）、/assets/*（公开）；其余 /api/* 全部需要�
     ├── transcript.jsonl        # pi 原始实录（append-only）
     ├── FLAG / flag.txt         # 候选 flag（提交入口）
     ├── 靶标产物、脚本、笔记
-    └── AGENTS.md               # 发给解题 Agent 的指令（当 CLAUDE.md 用）
+    └── CLAUDE.md               # 发给解题 Agent 的指令（taskprompt.write_context_md 写）
 ```
 
 > **技能视角（filesystem-context）**：这是 Pattern 1/2/3/5 的组合 ——
@@ -579,10 +579,15 @@ env 只在六处解析：`contracts/paths.py`（内核例外）、`control/confi
 
 ### 10.5 发给解题 Agent 的指令
 
-`AGENTS.md` 写进每道题的工作目录（当 `CLAUDE.md`）。它包含：
+`redpilot/worker/adapter/taskprompt.py` 的 `write_context_md()` 把指令写进每题工作目录的
+`CLAUDE.md`（内容 = `_CLAUDE_MD` + `_ISOLATION_CONSTRAINT`）。它包含：
 先侦察后利用、最小代价优先、不编造 flag、立即记录/提交、**反停滞**（同向 3 次失败换思路、
 爆破 5 分钟无果换攻击面）、`INFRA_BLOCKED` 标记、会话结束的三段式续接块。
 竞技场侧的续接回捞（`extract_handoff`）与它配套。
+
+> 📌 仓库根曾有一份 `AGENTS.md`，文档一度称它「写进每道题的工作目录」——
+> **那不是真的**：没有任何代码读它，逐题 `CLAUDE.md` 一直来自上面这个模块。
+> 它已在 2026-09 清理中删除。
 
 > **技能视角（long-horizon-prompting）**：这份指令是"成功谓词 + 非计数结果 +
 > 返回条件 + 反停滞"的轻量版。缺口 D4：其中的努力地板（5 分钟）与部分护栏
@@ -628,10 +633,10 @@ stale 兜底防止"顺手把新债加进白名单"）。
 | D1 | R7 env 收编存量债 12 文件 | `tests/architecture/test_layers.py` `ENV_DEBT` | 每迁一个文件从集合删除；优先 `orchestrator.py`（10 处直读） |
 | D2 | 黑板缺 `origin/evidence/lifecycle` | `docs/graph-engineering-design.md` | 加三字段与撤销/陈旧语义，仍存 SQLite/文件；先补"协议对比测试" |
 | D3 | 求解 Agent 无文件系统沙箱 | 本设计 §1.3 | **已实施首批**：Pi 降权（uid 10001）+ 控制面状态搬家 + ACL/chown 交接，见 `docs/solver-isolation-design.md` §4–§5、§14；容器内真降权待探针 |
-| D4 | 努力地板/爆破上限仍是 prompt 级 | `AGENTS.md` vs `stoploss.py` | **已实施首批**：SurfaceLedger（软提示 → `steer` → `abort`+`follow_up`），见 `docs/solver-isolation-design.md` §6、§14；`bash_guard` 错误翻译未做 |
+| D4 | 努力地板/爆破上限仍是 prompt 级 | `taskprompt._CLAUDE_MD` vs `stoploss.py` | **已实施首批**：SurfaceLedger（软提示 → `steer` → `abort`+`follow_up`），见 `docs/solver-isolation-design.md` §6、§14；`bash_guard` 错误翻译未做 |
 | D5 | `work/` scratch 清理策略 | `filesystem-context` Gotcha 1 | **已实施首批**：终态 `.closed` + 保留天数、默认 dry-run、digest 前置，见 `docs/solver-isolation-design.md` §7、§14 |
 | D6 | 确定性侦察 sidecar | `docs/deterministic-recon-design.md` | T0 秒级探针先出、LLM 立即开工；结构化工具输出（nmap -oX 等）编译成事实 |
-| D7 | `fastapi-console` 与 `web/` 前端归并 | README §"进不了镜像的两个资产" | 长期单独立项为可选 extra，不并进 `app.py` |
+| D7 | ~~`fastapi-console` 与 `web/` 前端归并~~ | — | **已消解**：`fastapi-console/` 于 2026-09 删除（与 `redpilot/obs` 功能重复且走另一条数据链） |
 | D8 | 事件密集路径的 obs 写入放大 | obs housekeeping 设计 | 已有保留天数 + 分批删除；观察后再决定是否采样 |
 
 ---

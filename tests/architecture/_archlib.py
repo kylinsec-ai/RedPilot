@@ -63,7 +63,12 @@ def imports(path: Path):
                 continue
             yield mod, target
             for a in node.names:
-                sub = f"{target}.{a.name}"
+                # 先归一化再查存在性。`from redpilot import control` 这类：target 是
+                # "redpilot"（不带点，canon 不减前缀），拼出来是 "redpilot.control"，
+                # 去 ROOT/redpilot/control 找必然落空 —— 于是这条**看起来像依赖子模块**
+                # 的写法会被静默放过，正是禁边守卫最该拦住的一种。canon 之后为
+                # "control"，与 `from redpilot.control import x` 走同一条路径。
+                sub = canon(f"{target}.{a.name}")
                 if module_exists(sub):
                     yield mod, sub
 

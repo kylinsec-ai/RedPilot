@@ -185,8 +185,8 @@ worker 容器与 compose 的 `restart: on-failure` 靠一组退出码配套（`0
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q                      # 全仓 404
-.venv/bin/python -m pytest -q tests/architecture   # 边界执行点 17
+.venv/bin/python -m pytest -q                      # 全仓 513
+.venv/bin/python -m pytest -q tests/architecture   # 边界执行点 24
 .venv/bin/python -m pytest -q tests/               # 架构 + 模块 + 竞技场回归
 ```
 
@@ -195,25 +195,38 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 
 | 目录 | 内容 |
 |---|---|
-| `tests/architecture/` | 17 条边界执行点：禁边、façade、运行时 import 足迹、数据所有权、单一来源 |
+| `tests/architecture/` | 24 条边界执行点：禁边、façade、运行时 import 足迹、数据所有权、单一来源，以及守卫自检 |
 | `tests/contracts/` `tests/control/` `tests/obs/` `tests/worker/` `tests/app/` | 各模块单测（由原 `packages/*/tests/` 迁入） |
-| `tests/*.py` | 175 条竞技场行为回归（止损、task epoch、eager 提交、交付账本、多段题推进、supervisor 判据） |
+| `tests/*.py` | 99 条竞技场行为回归（止损、task epoch、eager 提交、交付账本、多段题推进、supervisor 判据） |
 
 容器的 entrypoint 与 worker 装配层见 `entrypoint.sh` 与 `redpilot/worker/driver.py`。
 
 ---
 
-## 进不了镜像的两个资产
+## 离线自测靶场已移除
 
-这两个目录都在仓库里、都**不在 worker 镜像里**（`.dockerignore` 排除）、也不被任何服务
-启动。它们不是死代码 —— 但需要手动起，别以为 compose 会带上：
+仓库里曾有两个**不进镜像、也不被任何服务启动**的离线资产，2026-09 一并删除：
 
-| 目录 | 是什么 | 怎么跑 |
+| 已删 | 曾经是什么 | 为什么删 |
 |---|---|---|
-| `tsecbench/` | **本地靶场 API**（题目/容器/提交/VPN 的完整挑战接口）。对着它就能端到端自测 worker，不需要真的靶场平台 | 自带 `.venv` 起：`.venv/bin/python -m uvicorn 'tsecbench.api:create_app' --factory --port 8000`；注意它和统一 server 抢同一个 8000，同时起要改端口 |
-| `fastapi-console/` | **只读 Web 控制台**（看舰队/任务/运行产物） | `bash fastapi-console/run.sh start`（默认 `:8003`，`FAC_PORT` 可改）。它读仓库根的 `.agent.env` 拿平台凭据与 LLM key —— 该文件被 gitignore，需要自己建 |
+| `tsecbench/` | 本地靶场 API（题目/容器/提交/VPN 的完整挑战接口），对着它就能不连真靶场跑通 worker | 它是 `redpilot/control/` 的**逐字 fork**（`models.py` 269 行对 269 行，只差一行 docstring），两边持续分叉；且只被 `tests/` 与 `fastapi-console/` 引用 |
+| `fastapi-console/` | 朋友的 Web 控制台（`agent.py:25` 硬编码 `tsecbench-worker-1/2/3`） | 它盯的容器名早已不存在（现为 `redpilot-worker-*`），启停目标落空；且它的观测面功能与 `redpilot/obs` 重复，却走另一条数据链（直读 `work/status/*.json` 而非观测库） |
 
-两者都只被 `tests/` 引用，所以 `pytest` 会跑到它们、`docker compose` 不会。
+连带删除的 4 个测试文件（90 条）与它们同命：
+
+| 文件 | 条数 | 依赖 |
+|---|---|---|
+| `tests/test_solver_regressions.py` | 62 | `fastapi_console.agent`（**文件级 import**） |
+| `tests/test_console_compliance.py` | 15 | `fastapi_console` + `tsecbench.errors` |
+| `tests/test_challenges_api.py` | 8 | `tsecbench.api` |
+| `tests/test_console_epoch_isolation.py` | 5 | `fastapi_console.agent` |
+
+> ⚠️ 记一笔覆盖损失：`test_solver_regressions.py` 里**只有 7 条真的测那个控制台**
+> （`test_console_priority_*` / `test_event_aggregation_*`），其余 55 条测的是竞技场
+> 止损、task epoch、交付账本——它们是被第 29-30 行的文件级 import 连坐的。
+> 需要时从 git 历史取回（最后一次存在于 `edfd569`）。
+
+**代价**：失去"不连真靶场就能端到端自测 worker"的能力。以后 E2E 验证只对真靶场平台做。
 
 ---
 
@@ -226,7 +239,6 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 | [`docs/architecture/TARGET_ARCHITECTURE.md`](docs/architecture/TARGET_ARCHITECTURE.md) | **目标架构** —— 把《智能体工程最佳实践研究报告》的十二条结论逐条对齐到本仓（六处已做对 / 三处方向相反 / 一处缺失），六面架构与 ROI 排序的差距清单 |
 | [`docs/architecture/AGENT_ARCHITECTURE_SELECTION.md`](docs/architecture/AGENT_ARCHITECTURE_SELECTION.md) | **架构选型** —— 把 35 个公开智能体架构按本仓任务形状逐个裁决（采纳 8 / 已具备 7 / 部分 6 / 拒绝 13 / 待度量 1）。TARGET 管「怎么修」，它管「抄哪个」 |
 | [`docs/worker.md`](docs/worker.md) | worker 的跑法、结构、provider/模型配置、四条关键约定（状态落点 / 退出码 / 进程回收 / flag 双闸门） |
-| [`AGENTS.md`](AGENTS.md) | **发给解题 Agent 的指令**（写进每道题的工作目录当 `CLAUDE.md`），不是仓库说明 |
 | [`.env.example`](.env.example) | 全部可调项，按段分组并标注「必须一起改」的联动项 |
 | [`docs/pi-rpc-migration-research.md`](docs/pi-rpc-migration-research.md) | 从 `--print` 换到 RPC 的调研、实测与失败模式 |
 | [`docs/graph-engineering-design.md`](docs/graph-engineering-design.md) | 证据图设计（把黑板 / Heimdall / 证据出身连成一张可追溯的图） |
@@ -235,4 +247,3 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 | [`docs/autonomous-offensive-agent-comparison.md`](docs/autonomous-offensive-agent-comparison.md) | 自主进攻性安全 Agent 架构谱系与本仓库对照 |
 | [`docs/top10-offensive-agents-deep-dive.md`](docs/top10-offensive-agents-deep-dive.md) | 开源前十名 Agent 的源码级深潜 |
 | [`docs/specterops-skills-evaluation.md`](docs/specterops-skills-evaluation.md) | skills 替换决策的评估与取舍。⚠️ **该评估选定的 SpecterOps/skills 未予采纳** —— 技能库最终是 yaklang/hack-skills，见下方「技能面」 |
-| [`docs/friend-reference/`](docs/friend-reference/) | 早期历史快照（仅存档，照它跑构建会失败） |

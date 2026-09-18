@@ -250,7 +250,7 @@ def _composite_score(features, wc_range) -> int:
 | # | 架构 | 判定 | 理由与证据 |
 |---|---|---|---|
 | 08 | Episodic + Semantic | **部分** | 有分层雏形（MEMORY / 黑板 / 四本账本 / 续接检查点分离），但**无向量检索层、无语义层**。资料侧的记忆选型决策树（`docs/tutorials/memory.md`）对本仓的映射见 §3 末 |
-| 12 | Graph Memory | **拒绝** | 同 GraphRAG：无图，且它是默认关的旁路（`ADAPTER_HEIMDALL` 默认 `"0"`，`orchestrator.py:3618`；`_heimdall_init:3621` 拿不到 LLM 就直接不启用）。唯一消费方是只读控制台（`fastapi-console/.../services.py:432`），评估面不消费 |
+| 12 | Graph Memory | **拒绝** | 同 GraphRAG：无图，且它是默认关的旁路（`ADAPTER_HEIMDALL` 默认 `"0"`，`orchestrator.py:3618`；`_heimdall_init:3621` 拿不到 LLM 就直接不启用）。唯一消费方是只读控制台（曾为 `fastapi-console/.../services.py:432`，该目录已于 2026-09 删除，**现无任何消费方**），评估面不消费 |
 | 31 | MemGPT | **拒绝** | 竞技场的一次 reset 强于 paging；报告侧也承认 compaction 消除不了 context anxiety |
 | 29 | Voyager | **采纳（受限）** | 可复用技能库 + 课程。**硬约束：产物不跨题** → §4.4 |
 | 35 | Agent Workflow Memory | **采纳（受限）** | 存「策略配方」而非事实或代码；与 Voyager 合流 → §4.4 |
