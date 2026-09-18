@@ -5,6 +5,11 @@
 > 每条断言都带本仓证据（`file:line`）或可复跑的实测数字。
 > **更新（2026-09-17）**：本文原为纯设计。P3 评估面的**第一段已落地**，
 > §3.3 附落地状态与三处被现实修正的设计；其余五面仍是设计。
+>
+> **姊妹文档**：`AGENT_ARCHITECTURE_SELECTION.md` —— 把 35 个公开智能体架构
+> （`docs/reference/all-agentic-architectures`，只读参考库）按本仓任务形状逐个裁决，
+> 补的是本文缺的那一层：**六个面各该抄哪个现成形状**。本文管"怎么修"，
+> 它管"抄哪个"。§1.2 的一处措辞已按该文的核验结果修正。
 
 **路径约定**（全文简写均按此展开，可逐条打开核对）：
 
@@ -86,10 +91,26 @@
 - `adapter/verify.py`（3594 行，全仓最大模块）的 `FlagEvidencePolicy:556` 按题目
   分类决定"什么算证据"，`flag_evidence_policy():640` 是入口；
 - eager 投递线程在会话进行中就盯着 `FLAG` 文件（`orchestrator._eager_needs_scan:1351`），
-  投递前过一道 grounding 门：候选必须**逐字出现在本场真实工具输出里**
-  （`_remote_grounded:1789` / `_flag_grounded_in_transcripts:1959`）；
-- 独立复核 `_skeptic_check:1867` 在提交前再判一次；
+  投递前过一道 grounding 门（`_remote_grounded:1789`），**默认**要求候选
+  *逐字出现在本场真实工具输出里* —— 但见下方 ⚠️；
+- 独立复核 `_skeptic_check:1867` 在提交前再判一次，是 **fail-open 否决门**
+  （`verifier.veto_conf` 默认 0.85 以上才拦，「LLM 不确定或 verdict 为空 → 宁放过」）；
 - 平台响应（correct / duplicate）是唯一终局判据（`_record_confirmed_submission:1712`）。
+
+> ⚠️ **措辞修正（2026-09-17，架构选型核验所得）**：本节此前写"候选必须逐字出现在本场
+> 真实工具输出里"，这是一处**过度断言**。实际存在**三条强提旁路**，都绕过 `verified`
+> 直达平台：① eager 强提 —— `claim.grounded and claim.confidence >= 0.50`
+> （`orchestrator.py:4303`）；② 会话后强提 —— `_flag_grounded_in_transcripts(..., require_remote=False)`
+> （`:5537`），该判据是**时序**判据，且**接受"只出现在 agent 自己敲的命令参数里"**
+> （`:1982-1988` 注释写明 *"For reverse/crypto challenges this is legitimate"*）；
+> ③ `invalid_format` 翻案（`:5556`，skeptic `rescue` 阶段）。
+> 而 `grounded` 的定义比字面宽：flag 只出现在 agent 自己 `echo`/`printf` 的命令里时
+> 也给 `grounded=True, confidence=0.70`（`verify.py:3398-3405`），0.70 ≥ 0.50 即触发旁路 ①。
+>
+> **准确的表述**：「确定性」确定在 grounding 的**包含关系判定**、provenance 分类与阈值比较；
+> **不确定在三条旁路是否触发** —— 那取决于 LLM skeptic 是否否决。
+> 另注 `orchestrator.py:1897` 的注释写"准入制"，与 `:1908-1912` 的代码（fail-open 否决）
+> 矛盾，**行为以代码为准**。详见 `AGENT_ARCHITECTURE_SELECTION.md` 附录 B。
 
 **为什么这是对的**：报告 §7.2 说 grader 分三型，确定性优先。本仓的 evidence gate 就是
 "Python grader 对整条轨迹做断言"的形态 —— 它检查的是工具输出与候选值的**包含关系**，

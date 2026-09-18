@@ -30,6 +30,10 @@ tsecbench/
 tests/
 frontend*/
 
+# docs/reference/ 是参考知识库（第三方仓库的浅克隆，7.3M）—— 同上，非构建输入。
+# 两个 Dockerfile 都不 COPY docs/，但排除它省下的是**每次构建**都要传一遍的上下文。
+docs/reference/
+
 # ── 上一轮镜像构建写进 src 的轮子缓存：**不排掉会被连带复制进镜像**，
 #    而它含编译后的 .pyc —— 实测让"删掉的模块"继续可 import
 #    （stale 缓存比"文件不存在"难排查得多）。三个包目录各一。

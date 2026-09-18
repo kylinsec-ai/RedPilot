@@ -29,6 +29,14 @@ django_console.sqlite3
 *.zip
 TsecBench-main/
 
+# ── 参考知识库 —— 第三方仓库的浅克隆，只在本机读，不入库 ──
+# docs/reference/ 按需 clone 外部参考仓，当前一个:
+#   all-agentic-architectures —— FareedKhan-dev/all-agentic-architectures
+#   (35 个 agentic 架构的公开实现，MIT，--depth 1 快照 cf9d620 / 2026-05-28)
+# 它们是只读参考材料，不是本仓内容: 体量可观、上游随时会变，且自带 src/ 与 tests/
+# （正是下方那条 setuptools 命名空间发现事故的同款形状）。要归档再 clone 一次。
+docs/reference/
+
 # ── Python ──
 __pycache__/
 *.py[cod]
