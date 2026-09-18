@@ -32,7 +32,10 @@ def create_platform(base_url: str, token: str, *,
                     spec: Optional[dict] = None) -> PlatformBackend:
     """
     创建平台后端实例。
-    mode 为空时按可用性自动选择: sdk(已安装) > http(默认)
+
+    mode 为空时**默认 tsecbench-http**（无依赖，任何环境都能起）。
+    只有显式点名 `tsecbench-sdk` 且 SDK 未安装时才降级到 http —— 即
+    **不会**因为 SDK 装了就自动优先用它。
     """
     mode = (mode or "tsecbench-http").lower()
 

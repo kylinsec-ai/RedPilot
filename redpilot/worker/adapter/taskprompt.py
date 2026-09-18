@@ -16,7 +16,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from typing import Optional
 
 from .task import AgentTask
 from .verify import (flag_evidence_policy,
@@ -189,6 +188,9 @@ _OFFLINE_CONSTRAINT = """## ⚠️ 运行环境约束（隔离内网 · 禁止�
 
 
 # 跨题隔离红线（防止 agent 读 /work 其他题目的 FLAG/MEMORY/事件日志，抄袭别题 flag）
+#
+# **注入点只有一处**：`write_context_md()` 把它写进逐题 CLAUDE.md。
+# 2026-09 死码清扫删掉了 `build_task_prompt` 里那份逐字重复的第二份 —— 理由见那里的注释。
 _ISOLATION_CONSTRAINT = """## 🔒 战场隔离红线（必须遵守）
 / 共享目录下存在**其他挑战**的数据（其他题目的 FLAG 文件、MEMORY.md、_events.jsonl 事件日志等）。
 **这些信息不属于你的本次挑战，禁止读取、搜索、引用**：
@@ -251,7 +253,13 @@ _SUBAGENT_GUIDE = """## 🧵 子 Agent 委派（遇到困难时随时叫帮手�
 
 
 def write_context_md(workdir: str) -> str:
-    """写入 Agent 上下文指令文件（Pi/Claude 均支持 CLAUDE.md）"""
+    """写入 Agent 上下文指令文件（Pi/Claude 均支持 CLAUDE.md）。
+
+    `_ISOLATION_CONSTRAINT` 的**唯一**注入点就在这里（2026-09 起；此前
+    `build_task_prompt` 还会再 append 一份逐字相同的，已删）。
+    调用点在编排层每场会话的建上下文处（`orchestrator._solve_one_unlocked`），
+    先于 `build_task_prompt` —— 别把它挪到 prompt 之后。
+    """
     path = os.path.join(workdir, "CLAUDE.md")
     with open(path, "w", encoding="utf-8") as f:
         f.write(_CLAUDE_MD)
@@ -259,11 +267,10 @@ def write_context_md(workdir: str) -> str:
     return path
 
 
-def write_memory(workdir: str, content: str) -> str:
-    path = os.path.join(workdir, "MEMORY.md")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return path
+# 沿革（2026-09 死码清扫）：这里原有 `write_memory(workdir, content)`，**零调用点**
+# ——它在 `orchestrator.py` 被 import 却从未被调用过。MEMORY.md 实际由 agent 自己写，
+# 再由 `orchestrator._merge_memory` 往受围栏区域合并。框架侧那条写入路径从来没接上，
+# 留着会让人以为"记忆写入是受控的"（TARGET §3.6 讨论过这一点）。
 
 
 def _reusable_artifacts(workdir: str) -> str:
@@ -381,7 +388,12 @@ def build_task_prompt(
         sections.append(_OFFLINE_CONSTRAINT)
 
     # ── 跨题隔离红线（防偷读别题 flag）──
-    sections.append(_ISOLATION_CONSTRAINT)
+    # 2026-09 死码清扫：这里曾再 append 一遍 `_ISOLATION_CONSTRAINT`，与
+    # `write_context_md()` 写进逐题 CLAUDE.md 的那份**逐字重复**（同一常量、
+    # 每次会话白烧 1834 字符）。**只走 CLAUDE.md 一条路** —— 那是 pi 的项目指令
+    # 文件：Agent 可随时重读，且**子 Agent 进程**（同 cwd 的独立 pi）也会加载它，
+    # 而父会话的 prompt 不会传给子 Agent。隔离红线恰恰必须对子 Agent 也生效。
+    # 原委与判定依据见 docs/architecture/TARGET_ARCHITECTURE.md §2.1（`:235-238`、`:374`）。
     # ── 降权身份边界（M1；隔离关闭时为空串，整段不注入）──
     if identity_note:
         sections.append(str(identity_note).strip())

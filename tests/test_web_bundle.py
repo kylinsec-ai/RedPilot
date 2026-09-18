@@ -1,7 +1,7 @@
 """前端构建产物的服务契约回归(web/ 即交付物)。
 
 为什么需要这条用例:vite 产物名带内容哈希、由两个 HTTP 服务端转发
-(ghost/obs/read.py 的统一 server 与 obs/localserver.py 的 worker 本地态势台),
+(`redpilot/obs/read.py` 的统一 server 与 `redpilot/worker/dashboard.py` 的本地态势台),
 而两者的 mime/名字守卫**单源**在 redpilot.contracts.assets。于是存在一类静默失败:
 构建换了扩展名(或 vite 输出嵌套路径)而白名单没跟上 → 站点外壳 200、
 静态资源 404,页面白屏且服务端毫无报错。

@@ -23,19 +23,26 @@ django_console.sqlite3
 *.sqlite3-wal
 
 # ── 分叉归档与跨分支残留 —— 含活凭据，绝不入库 ──
-# 1.zip 内含: .env(BENCHMARK_TOKEN/SOLVER_API_KEY)、.agent.env(ANTHROPIC_AUTH_TOKEN)、
-# vpn/*.ovpn、data/*.sqlite3 + 23MB fastapi.log + 两份 5.7MB 完整 Agent 转录。
-1.zip
+# 沿革（2026-09 死码清扫）：这里曾有一份本机 1.zip（57MB），是 TsecBench-main 分叉的
+# 快照，内含 .env(BENCHMARK_TOKEN/SOLVER_API_KEY)、.agent.env(ANTHROPIC_AUTH_TOKEN)、
+# vpn/*.ovpn、data/*.sqlite3 + 23MB fastapi.log + 两份 5.7MB 完整 Agent 转录，已删除。
+# **规则保留**：任何 .zip / TsecBench-main/ 都按同一判据拒绝入库（同形状的东西还会再来）。
 *.zip
 TsecBench-main/
 
 # ── 参考知识库 —— 第三方仓库的浅克隆，只在本机读，不入库 ──
-# docs/reference/ 按需 clone 外部参考仓，当前一个:
+# docs/reference/ 按需 clone 外部参考仓。曾引用的一个:
 #   all-agentic-architectures —— FareedKhan-dev/all-agentic-architectures
 #   (35 个 agentic 架构的公开实现，MIT，--depth 1 快照 cf9d620 / 2026-05-28)
+#   2026-09 死码清扫已把本机那份删掉；`docs/architecture/AGENT_ARCHITECTURE_SELECTION.md`
+#   是它的裁决书，该文**把引用的数字与原文就地引全**，因此不 clone 也能读。
 # 它们是只读参考材料，不是本仓内容: 体量可观、上游随时会变，且自带 src/ 与 tests/
 # （正是下方那条 setuptools 命名空间发现事故的同款形状）。要归档再 clone 一次。
 docs/reference/
+
+# ── 本机工具状态（.remember 等）──
+# 既未跟踪、也没被忽略时，git status 会一直挂着一行噪声。
+.remember/
 
 # ── Python ──
 __pycache__/

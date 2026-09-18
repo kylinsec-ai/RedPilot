@@ -148,10 +148,6 @@ class SolveResult:
         return bool(self.flags)
 
 
-# 兼容旧名
-CCResult = SolveResult
-
-
 class SolverBackend(ABC):
     """
     Agent 求解器抽象接口。

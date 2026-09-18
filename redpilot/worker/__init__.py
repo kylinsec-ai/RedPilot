@@ -22,7 +22,7 @@ from .live import LiveBus, LiveState, head_text, summarize_args, tail_text
 from .observability import StatusBridge
 from .relay import ObsRelay, maybe_start_relay
 from .settings import WorkerSettings
-from .solver import SolveResult, touch_heartbeat
+from .solver import touch_heartbeat
 
 __all__ = [
     # 配置与任务
@@ -33,8 +33,8 @@ __all__ = [
     # 实时状态与观测桥
     "LiveBus", "LiveState", "head_text", "summarize_args", "tail_text",
     "StatusBridge",
-    # 求解引擎契约（框架侧 provider_failure 判据，见 solver/base.py）
-    "SolveResult", "touch_heartbeat",
+    # 求解引擎契约（只剩心跳；框架侧 SolveResult 已随死码清扫删除，见 solver/base.py）
+    "touch_heartbeat",
     # 观测中继
     "ObsRelay", "maybe_start_relay",
 ]

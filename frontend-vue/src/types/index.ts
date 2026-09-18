@@ -1,10 +1,10 @@
 /**
- * API 契约类型 —— 字段名逐字对齐 Python(ghost_worker/roster.py 的题目总览、
- * ghost_worker/live/ 的状态快照与 SSE 信封、ghost/obs 的 runs/控制面行),
+ * API 契约类型 —— 字段名逐字对齐 Python(redpilot/worker/roster.py 的题目总览、
+ * redpilot/worker/live/ 的状态快照与 SSE 信封、redpilot/obs/schema.py 的 runs 行),
  * 改键名必须同步后端。
  *
- * 本文件是后端契约的手工镜像:单源在 Python 侧(ghost_contracts.vocabulary /
- * ghost/obs/schema.py / ghost/control/*),此处只做 TS 侧声明。
+ * 本文件是后端契约的手工镜像:单源在 Python 侧(redpilot/contracts/vocabulary.py /
+ * redpilot/obs/schema.py),此处只做 TS 侧声明。
  */
 
 export const ACTIVE_PHASES: readonly string[] = [

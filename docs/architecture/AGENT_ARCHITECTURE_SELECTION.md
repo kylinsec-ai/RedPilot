@@ -1,9 +1,12 @@
-# 智能体架构选型：把 35 个公开架构裁决到 Ghost
+# 智能体架构选型：把 35 个公开架构裁决到 RedPilot
 
 > **输入**：`docs/reference/all-agentic-architectures` —— FareedKhan-dev/all-agentic-architectures
 > 的浅克隆，MIT，快照 `cf9d620` / 2026-05-28，35 个 agentic 架构（36 个导出类）的公开实现。
-> **该目录被 `.gitignore:33-38` 排除**，故本文所有引用的数字与原文均**就地引全**，
-> 不要求读者装得上那份资料。
+> **该目录被 `.gitignore` 排除**（只在本机、不入库），故本文所有引用的数字与原文均
+> **就地引全**，不要求读者装得上那份资料。
+> **沿革（2026-09 死码清扫）**：本机那份克隆已删除（7.3MB，`.gitignore` 里记着 clone
+> 命令与快照号，随时可重建）。删除**不削弱本文的可读性** —— 正是上面那条"就地引全"
+> 的规矩让这件事成立：所有被引的数字与原文都在文中，不依赖那个目录还在。
 >
 > **姊妹文档**：`docs/architecture/TARGET_ARCHITECTURE.md`（下称 TARGET）管
 > 「六个面怎么修」，输入是《智能体工程最佳实践研究报告》即**共识层**。
@@ -18,7 +21,7 @@
 
 ### 四条论断
 
-1. **Ghost 的任务形状排除掉这份资料里最流行的那一族。** 搜索型（LATS / ToT）需要
+1. **RedPilot 的任务形状排除掉这份资料里最流行的那一族。** 搜索型（LATS / ToT）需要
    **动作级的价值函数**，本仓的奖励**粒度停在 flag 不在 action**；投票型
    （Self-Consistency / Ensemble / Debate）在 flag 上不可投票，**且同题双解被显式禁止**；
    上下文分页型（MemGPT）被竞技场的一次 reset 取代。资料自己的 leaderboard 记录了同款
@@ -33,8 +36,9 @@
    红线判据**在动作面重建并接到执行前检查**（= P4 的答案；原实现已随评估面于 2026-09 拆除）。
 4. **唯一真正的新架构是「成功侧记忆」，而它与一条架构红线冲突。**
    本仓有完整的失败侧记忆，**无成功侧**（平台确认后只落 `candidate_sha256`，
-   `orchestrator.py:1712-1765`）。仓库里有一具**退役残骸** `adapter/progress.py` ——
-   说明这是**试过并主动放弃**，不是没想到。跨题复用又被
+   `orchestrator.py:1712-1765`）。仓库里曾有一具**退役残骸** `adapter/progress.py`
+   —— 说明这是**试过并主动放弃**，不是没想到。（该残骸已于 2026-09 死码清扫删除；
+   本论断的证据链与取证命令见 §3.4 / §4.4 的沿革注。）跨题复用又被
    `_remove_retired_owner_state:363` 明令禁止，故 Voyager / AWM 只能以
    **「方法提升进静态技能层」**的受限形态落地。
 
@@ -63,7 +67,7 @@
 
 ---
 
-## 1. 判据：Ghost 的任务形状
+## 1. 判据：RedPilot 的任务形状
 
 架构选型的唯一合法判据是**任务形状**，不是架构的流行度。本节先立形状，再推排除项。
 
@@ -116,7 +120,7 @@ LATS 的 UCB1 选择、ToT 的 beam 排序，都要求对**部分解**给出价�
 `LATS` 在 `math_word` 上失败（搜索型用在没有价值函数的地方）、
 `Debate` + `Ensemble` 在 `trick_logic`（Sally 三兄弟逻辑题）上失败（群体思维）、
 `Reflexion` + `AWM` 在 `stateful_recall` 上失败（存的是反思与策略，不是事实）。**它证明的不是这些架构不好，
-而是它们的形状与那类任务不匹配。** 本节的六条排除项是同一种推理，只是换成 Ghost 的形状。
+而是它们的形状与那类任务不匹配。** 本节的六条排除项是同一种推理，只是换成 RedPilot 的形状。
 
 ---
 
@@ -192,7 +196,7 @@ def _composite_score(features, wc_range) -> int:
 
 > 5 个独立布尔值无法像 1 个数字那样被压平。
 
-**这条与 Ghost 的关系是本份研究中最直接的一处**：本仓的
+**这条与 RedPilot 的关系是本份研究中最直接的一处**：本仓的
 `FlagEvidencePolicy` + `flag_confidence()` 就是同一条哲学的一个实例
 （LLM 不产出决策值，Python 产出），但**只用在了 flag 一个维度上**。
 资料侧统计 13 个架构应用了这条纪律，另有 9 个「架构上免疫」（本就没有 LLM-as-Scorer 步骤）。
@@ -380,7 +384,7 @@ def _composite_score(features, wc_range) -> int:
 | **落在哪个面** | P6 记忆与状态面（+ P2 的 `skills-overlay/` 作为写入目标） |
 | **要抄的形状** | **Voyager**（可复用技能库）+ **Agent Workflow Memory**（策略配方）合流：从成功的 run 里提炼「方法」，而不是记「答案」 |
 | **硬约束** | **产物不跨题** —— `orchestrator.py:363` docstring 原文 *"The architecture no longer permits cross-challenge answer reads"*。因此唯一合规的形态是：**把验证过的方法提升进静态技能层**（`skills-overlay/`），运行时隔离红线保持不动 |
-| **数据结构** | 复用 P3 已落地的 `runs` + `transcript` + `fold_rows`；与 `ghost_contracts/paths.py` 的状态文件契约（TARGET §3.6 已规划）合流 |
+| **数据结构** | 复用 P3 已落地的 `runs` + `transcript` + `fold_rows`；与 `contracts/paths.py` 的状态文件契约（TARGET §3.6 已规划）合流 |
 
 **这为什么不是「照抄 Voyager」**：Voyager 的技能是**可执行 Python**，靠
 subprocess 真执行 + self-verification 来确认有效。本仓的**结构性优势**在于
@@ -389,11 +393,17 @@ subprocess 真执行 + self-verification 来确认有效。本仓的**结构性�
 `_record_confirmed_submission:1712-1765` 已经在收的数据（它现在只落了
 `candidate_sha256` 与计数，**不记手法** —— 缺的就是「手法」这一列）。
 
-**必须正面处理的历史教训**：`adapter/progress.py` 是一具**退役的成功侧残骸**：
+**必须正面处理的历史教训**：`adapter/progress.py` 曾是一具**退役的成功侧残骸**
+（2026-09 死码清扫删除，原文见 git 历史；下面是对它的记录，论断不因删除而失效）：
 
 - `ChallengeProgress.save_attempt(tools_used, findings, dead_ends, next_steps):24` 会写 `_progress.json`；
 - `build_resume_prompt():67` 会生成「### 已发现信息 ✓ ... ### 建议的下一步」——**这就是成功侧**；
 - `_update_memory_md():97` 用 `open(..., 'w')` **整体覆写** MEMORY.md。
+
+> **删它的判据**：它**零调用点** —— 唯一引用是 `orchestrator.py` 那行 import，
+> 而那两个名字在 orchestrator 里从未被使用（pyflakes 同样报 unused import）。
+> 注意这与"设计上放弃了成功侧记忆"是**两件事**：文件被删只是把残骸清了，
+> 上面那条历史教训（试过、放弃了、原因是跨题复用被红线禁止）依然成立。
 
 **它是死代码**：`orchestrator.py:38` import 了 `ChallengeProgress` 与
 `extract_progress_from_result`，全仓**零调用点**。而它的覆写行为与
@@ -552,7 +562,8 @@ grep -n "_other_solver_active_on" orchestrator.py | head -3
 ```bash
 cd /home/kali/RedPilot
 grep -rn "ChallengeProgress\|extract_progress_from_result" --include="*.py" . | grep -v '\.venv'
-# → 只有 adapter/progress.py 的定义 + orchestrator.py:38 的 import，零调用点
+# → 2026-09 之前：只有 adapter/progress.py 的定义 + orchestrator.py 的 import，零调用点
+# → 2026-09 之后：0 命中（残骸已删，见 §3.4 的沿革注）
 ```
 
 **A.6 技能面负样本统计**（§4.2）：

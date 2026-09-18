@@ -38,18 +38,12 @@ TRANSCRIPT_FILENAME = "transcript.jsonl"  # <workdir>/<safe_code>/transcript.jso
 # 控制面（harness）状态目录：与题目目录（求解 Agent 可写）分离的唯一落点。
 # 预算状态、面预算账本等"裁决状态"只能写这里；题目目录里放的只能是工作记忆
 # （MEMORY/黑板/FLAG/转录）。完整论证与权限矩阵见 docs/solver-isolation-design.md §4–§5。
+# 沿革（2026-09 死码清扫）：这里原有 `harness_dir()` / `harness_subdir()` 两个
+# 便捷函数。删除理由是零调用 —— 真正的消费方（`adapter/stoploss.py:152`、
+# `adapter/surface.py:473`、`adapter/workgc.py:25`）都 import 本常量自己 join，
+# 那两个包装函数从加进来那天起就没有过调用方。**拼装遵守同一约定即可，不必经过 helper。**
 HARNESS_DIR = ".harness"
 HARNESS_STOPLOSS_SUBDIR = "stoploss"
-
-
-def harness_dir(workdir: str) -> str:
-    """返回 <workdir>/.harness（控制面状态根）路径字面量拼装。"""
-    return os.path.join(workdir, HARNESS_DIR)
-
-
-def harness_subdir(workdir: str, name: str) -> str:
-    """返回 <workdir>/.harness/<name>；name 由调用方用固定字面量传入。"""
-    return os.path.join(workdir, HARNESS_DIR, name)
 
 # 心跳文件(compose healthcheck 以同一字面量读取 —— 两处必须同步改)
 HEARTBEAT_PATH = "/tmp/driver_heartbeat"

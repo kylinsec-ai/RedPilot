@@ -1,9 +1,17 @@
-"""provider 失败护栏测试:0-turn+报错的会话不再被当作"正常完成"。
+"""provider 失败护栏测试:0-turn+报错的会话必须留下**可诊断的 error**。
 
 2026-09-08 事故回归(280 run/0 flag/63 题静默烧库):pi 对 provider 400 只发
 stopReason=error 的收尾消息,pi_agent 漏读 → err=none → 编排层当完成处理。
-本文件覆盖:pi_agent 读出 stopReason=error(SolveResult.provider_failure)、
-solve_one 会话级重试与 ProviderFailure 上抛、driver 连续熔断 exit 3。
+护栏的形态是:**error 文本必须传得出来** —— 编排侧两道判据
+(`_is_api_fault` 认账号级故障 / stoploss 认零进展)都靠它。
+
+本文件覆盖:pi_agent 从 stopReason=error 读出 error、非零退出+仅 stderr 时也留下 error、
+令牌式进程回收的两个不变量。
+
+沿革:本文件原有三条直接断言框架侧 `SolveResult.provider_failure` 的用例,
+2026-09 死码清扫随那个类一并删除 —— 该类零消费者(唯一 import 方就是这三条用例),
+而判据本身由编排层自建。**判据没被删掉,删掉的是一个没人读的重复实现**;
+原委见 `redpilot/worker/solver/base.py` 的模块 docstring。
 
 pytest 由仓库根起(仓库根在 pythonpath,redpilot.worker 可导入)。
 """
@@ -11,25 +19,6 @@ pytest 由仓库根起(仓库根在 pythonpath,redpilot.worker 可导入)。
 from __future__ import annotations
 
 import json
-
-from redpilot.worker.solver.base import SolveResult
-
-
-# ── SolveResult.provider_failure 判定 ──
-
-def test_provider_failure_zero_turns_with_error():
-    r = SolveResult(turns=0, error="400 Error from provider (Console Go): MissingSessionID")
-    assert r.provider_failure
-
-
-def test_zero_turns_without_error_is_not_provider_failure():
-    # 无报错的 0-turn 会话(如空响应)不触发熔断语义
-    assert not SolveResult(turns=0).provider_failure
-
-
-def test_turns_with_error_is_not_provider_failure():
-    # 真实干过活的会话(哪怕带错误)不算 provider 失败
-    assert not SolveResult(turns=3, error="timeout").provider_failure
 
 
 def _adapter_cfg(**changes):
@@ -85,9 +74,10 @@ def _json_quote(s: str) -> str:
 # 故障熔断（`_is_api_fault` / `_mark_api_fault` / api_pause）。那一层由仓库根的
 # tests/test_solver_regressions.py 与 test_scheduler_stoploss_backoff.py 覆盖。
 #
-# 这里保留的判据是**跨两层共用的那个**：`SolveResult.provider_failure`
-# （上面三条用例）。引擎替掉、编排退位，这两件事都没有改变"0-turn + 报错
-# = LLM 上游故障"这条判据 —— 而它正是 2026-09-08 静默烧题的入口。
+# 这里保留的要求是**跨两层共用的那个**：0-turn 的会话必须带着 error 出来。
+# 引擎替掉、编排退位，这两件事都没有改变"0-turn + 报错 = LLM 上游故障"这条判据
+# —— 而它正是 2026-09-08 静默烧题的入口。上面 `test_nonzero_exit_leaves_a_diagnosable_error`
+# 就是它在引擎边界的执行点。
 
 
 # ── driver 层的连续熔断：框架版已退位 ──
@@ -109,9 +99,9 @@ def test_nonzero_exit_leaves_a_diagnosable_error(tmp_path, monkeypatch):
     把它当成"正常跑完没解出来"（编排层判 provider 故障 / 账号级故障**都靠
     error 文本**，空 error 等于两道护栏同时失效）。
 
-    断言刻意只锁"诊断信息进来了"：`provider_failure` 是框架侧 SolveResult 的
-    属性，朋友引擎的结果模型里没有它 —— 判据由编排层自建（见 orchestrator 的
-    `_is_api_fault` 与 stoploss），本用例不越界去断言别人家的属性。
+    断言刻意只锁"诊断信息进来了"：引擎的结果模型里只有一个 `error` 字符串，
+    "这是不是 provider 级故障"的判定不在引擎侧 —— 判据由编排层自建（见 orchestrator
+    的 `_is_api_fault` 与 stoploss），本用例不越界去断言别人家的判据。
     """
     from redpilot.worker.adapter.solver import create_solver
 

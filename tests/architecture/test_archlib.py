@@ -4,9 +4,9 @@
 skills 定位在搬迁后静默归零（见 `contracts/paths.py:skills_root`）。所以拿合成包树
 把两个方向都验一遍：真违规要被抓到，而注释/docstring 里的模块名不算依赖。
 
-搬自 `tests/test_ghost_purity.py` 的两个 meta-test。那个文件的三条禁边断言已由
-`test_layers.py` 的 `test_forbidden_edges_absent` 覆盖（同一套边，两份实现会漂移），
-故只把这一层自检搬过来。
+搬自两个已删的旧文件（`tests/test_ghost_purity.py`，随改名 ghost → redpilot 而去）。
+那批旧断言里的三条禁边已由 `test_layers.py` 的 `test_forbidden_edges_absent` 覆盖
+（同一套边，两份实现会漂移），故只把这一层自检搬了过来。
 """
 
 from __future__ import annotations

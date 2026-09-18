@@ -38,7 +38,6 @@ from redpilot.worker.adapter.config import (SolverConfig, ControllerConfig,
                                             IsolationConfig, SurfaceBudgetConfig,
                                             WorkGcConfig, build_verifier_config)
 from redpilot.worker.adapter import isolation, surface, workgc
-from redpilot.worker.adapter.progress import ChallengeProgress, extract_progress_from_result
 from redpilot.worker.adapter.task import AgentTask
 from redpilot.worker.adapter.verify import (Verifier, flag_confidence, flag_submission_key,
                             subagent_enabled,
@@ -54,7 +53,7 @@ from redpilot.worker.adapter.verify import (Verifier, flag_confidence, flag_subm
                             authored_paths_from_call,
                             collect_script_bodies,
                             FlagEvidencePolicy)
-from redpilot.worker.adapter.solver import create_solver, extract_flags, extract_handoff, SolveResult
+from redpilot.worker.adapter.solver import create_solver, extract_handoff
 from redpilot.worker.adapter.blackboard import Blackboard, goals_for_category
 try:                                   # [B54] 监控缺失绝不能拖垮解题路径
     from redpilot.worker.adapter import hallucination as _hallu
@@ -62,10 +61,10 @@ except Exception:                      # pragma: no cover
     _hallu = None
 from redpilot.worker.adapter.stoploss import StopLoss
 from redpilot.worker.adapter.scheduler import run_fleet
-from redpilot.worker.adapter.taskprompt import build_task_prompt, write_context_md, write_memory
+from redpilot.worker.adapter.taskprompt import build_task_prompt, write_context_md
 from redpilot.worker.adapter.platform_client import (PlatformClient, RateLimitedClient, Challenge,
-                                     SubmitResult, InvalidState, DuplicateSubmit,
-                                     ChallengeNotFound, ResourceUnavailable, VpnCheckError)
+                                     InvalidState, ChallengeNotFound, ResourceUnavailable,
+                                     VpnCheckError)
 from redpilot.worker.adapter import observability as obs
 # 心跳路径单源：原先这里写死 "/tmp/driver_heartbeat"，与 contracts.paths 是
 # 两份副本（compose healthcheck 读同一字面量）。两处副本漂移是静默故障类别 ——
@@ -3565,12 +3564,19 @@ def _is_api_fault(result) -> bool:
     停掉（2026-09-11 实测 round 0 整轮阵亡，且全是**假止损**——额度恢复后
     这些题会被静默跳过）。判据与 solve_one 返回体的 api_error 字段同源。
 
-    ⚠️ 与 `engine_solver.SolveResult.provider_failure` 的分工（两者互补，都要）：
-      - `provider_failure`（引擎侧）：0-turn + **任何**报错 = 引擎压根没跑起来
-        （provider 400 / 鉴权失败 / 会话起不来）。它认的是"没跑"，不认内容。
-      - 这里（编排侧）：**看报错文本**认账号级故障（余额/认证），turns 不限
-        —— 跑了几轮之后余额耗尽同样要暂停整轮，而不是把题打成 stuck。
-    合并成一条会丢一半语义：只留一边，另一方那一族失败就退化成假止损。
+    ⚠️ 分工与边界：这是编排层**唯一**的故障判据，它认的是**报错文本**（余额/认证），
+    turns 不限 —— 跑了几轮之后余额耗尽同样要暂停整轮，而不是把题打成 stuck。
+
+    **不要用 turns==0 来找 provider 故障**：stoploss-dropped / mutex-bail / start_failed
+    的题 turns 也是 0，分片内旧题全被止损时会把"无 API 错误"误判成连败并触发假熔断
+    —— 这就是 BUG-K（见轮末 API 故障计数处的实测记录）。
+
+    沿革（2026-09 死码清扫）：此处原引用 `engine_solver.SolveResult.provider_failure`
+    作为"互补的另一半"，而 `engine_solver` 这个符号在整个文件里**只出现在那行注释里**，
+    那个类也零消费者（没有生产代码构造它，唯一 import 方是它自己的测试）。
+    引擎"压根没跑起来"这件事现在的可见形态是 **0-turn 且 error 非空**，
+    由引擎边界保证 error 一定传得出来（回归见
+    `tests/worker/test_provider_failure_guard.py`），再经 status/stoploss 记账。
     """
     return bool(result is not None and getattr(result, "error", None)
                 and any(t in str(result.error) for t in _API_FAULT_TOKENS))

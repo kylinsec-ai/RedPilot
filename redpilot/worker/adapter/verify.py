@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import ast
 import base64
-import hashlib
 import json
 import logging
 import math
@@ -23,8 +22,7 @@ import os
 import re
 import shlex
 import threading
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 log = logging.getLogger("adapter.verify")

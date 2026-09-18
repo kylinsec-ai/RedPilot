@@ -1,4 +1,4 @@
-# 目标架构：把 2026 智能体工程共识落到 Ghost
+# 目标架构：把 2026 智能体工程共识落到 RedPilot
 
 > **输入**：《智能体工程最佳实践研究报告》（仓库根 `智能体工程最佳实践研究报告.md`）
 > 与 `skills/` 技能库。
@@ -230,12 +230,17 @@ docstring 记录了上一版的教训 —— 框架曾经有一张 `_DOMAIN_SIGN
 且这**尚未计入**任务卡、已知事实、前次记忆（上限 4000 字符，`:340 _PRIOR_MEMORY_MAX`）、已判错候选指纹、
 黑板、Heimdall 图。真正进上下文的量比这个数字大。
 
-**已确认的两处重复注入**（同一份内容走两条路进同一个上下文）：
+**两处重复注入**（同一份内容走两条路进同一个上下文）：
 
-1. `_ISOLATION_CONSTRAINT` **既**被 `write_context_md():248` 写进每题目录的 `CLAUDE.md`
-   （与 `_CLAUDE_MD` 拼在一起），**又**被 `build_task_prompt():377` 直接 append 进 prompt。
-2. `_OFFLINE_CONSTRAINT`（`:178`）与 `_CLAUDE_MD` 内部的「运行环境约束」段（`:168-173`）
-   内容重叠，两者都会被注入（`:374` 与 CLAUDE.md）。
+1. ✅ **已修（2026-09 死码清扫）**：`_ISOLATION_CONSTRAINT` 曾**既**被
+   `write_context_md()` 写进每题目录的 `CLAUDE.md`（与 `_CLAUDE_MD` 拼在一起），
+   **又**被 `build_task_prompt()` 直接 append 进 prompt —— 同一常量、每次会话
+   白烧 1834 字符。现**只走 CLAUDE.md 一条路**。选它而不是 prompt 一侧，是因为
+   `CLAUDE.md` 是 pi 的项目指令文件：Agent 可随时重读，且**子 Agent 进程**
+   （同 cwd 的独立 pi）也会加载它，而父会话的 prompt 不会传给子 Agent。
+2. ⬜ **未修**：`_OFFLINE_CONSTRAINT` 与 `_CLAUDE_MD` 内部的「运行环境约束」段
+   内容重叠，两者都会被注入（prompt 与 CLAUDE.md 各一份）。这两处是**近**逐字
+   而非逐字相同（措辞有差异），删哪一份是判断题，故留待 P1 单源化时一并处理。
 
 这不是"写错了"，是**没有单源**的必然结果：两份文本各自演化，没人能一眼看出重复。
 
@@ -245,14 +250,24 @@ docstring 记录了上一版的教训 —— 框架曾经有一张 `_DOMAIN_SIGN
    没有 compact 分支。现有的三个替代物是：pi 自身的内部压缩、会话轮换（每场换新
    进程）、以及落盘的状态文件（MEMORY.md / `.continuation.json` /
    `tried_commands.md` / `artifacts/` / `_blackboard.json`）。
-2. **`SolverConfig.auto_compact_window` 是一个零消费者的死旋钮**（`adapter/config.py:89`，
-   preset 里填了 786432 / 1000000）。它看起来像"压缩窗口"，实际没人读 ——
-   实施 P1 时别以为调它有用。同类的还有 `ControllerConfig.round_timeboxes` /
-   `ADAPTER_ROUND_TIMEBOXES`（`adapter/config.py:252,287`）。
-3. **`taskprompt.write_memory`（`:257`）没有任何调用点** —— 它在 `orchestrator.py:62`
-   被 import，但 MEMORY.md 实际由 agent 自己写、由 `_merge_memory`（`orchestrator.py:3861`）
-   往受围栏区域合并。§3.6 说"记忆写入路径未受控"，这里要补一句：框架侧那条写入
-   路径**根本没接上**。
+2. **`SolverConfig` 有四个写而不读的字段**（2026-09 死码清扫核实并扩大）：
+   `subagent_model` / `effort_level` / `auto_compact_window` / `api_timeout_ms`
+   （`adapter/config.py:90-93`）都从 env + preset 解析进来，然后**全仓无任何读者** ——
+   `pi_agent` 只读 `max_turns` 与 `session_seconds`。其中后三个在 `deepseek-1m` /
+   `glm-1m` preset 里被显式赋了值（`786432` / `1000000` / `3000000` / `max`），
+   看得出**原本的意图**（1M 上下文模型要给大压缩窗口与长 API 超时）——
+   所以这**不是"死代码"，是"没接线的意图"**：要么接进 pi 的 models.json / 请求参数，
+   要么连同 preset 条目一起删。**实施 P1 前必须先决定**，别以为调它有用。
+
+   ✅ 同类的 `ControllerConfig.round_timeboxes` / `ADAPTER_ROUND_TIMEBOXES`
+   （`adapter/config.py:252,287`）**已删** —— 零读者，且真正的轮次时长算法是
+   `timebox_for_difficulty(难度) × round_factors[轮次]`（`orchestrator.py:6247`）；
+   两者的默认值还对不上（旧常量 `[480,820,1500,2000]` vs 新算法 `3600×[1.0,1.7,3.0,4.0]`）。
+3. ✅ **已删（2026-09 死码清扫）**：`taskprompt.write_memory` 没有任何调用点
+   —— 它在 `orchestrator.py` 被 import 却从未被调用，MEMORY.md 实际由 agent 自己写、
+   由 `_merge_memory`（`orchestrator.py:3861`）往受围栏区域合并。
+   §3.6 说"记忆写入路径未受控"，这里补一句：框架侧那条写入路径**根本没接上**，
+   现已删除。（同批还删了 `adapter/progress.py` 整个模块 —— 同一形态的退役残骸。）
 
 ### 2.2 安全边界写在提示词里，而不是放在动作上
 
@@ -345,9 +360,11 @@ L3 `references/` `scripts/`」，但这份技能库里**零个技能有子目录
 是改善还是劣化（报告 §5.5 的原话：迭代 skill 时你很难分辨"真的改善了"还是"只是改变了
 行为"）。
 
-命名沿用本仓惯例：**面（plane）之间不新增包** —— 三包结构（`contracts` / `ghost` /
-`worker`）是 README 明写的地基，依赖方向由 `tests/contracts/test_purity.py`
-钉住。下面每个"落点"都是包内新增模块或对既有模块的改造。
+命名沿用本仓惯例：**面（plane）之间不新增包** —— 单发行版四模块
+（`contracts` / `control` / `obs` / `worker`）是 README 明写的地基，
+模块间依赖方向由 `tests/architecture/` 的 AST 边界测试钉住
+（`tests/contracts/test_purity.py` 管的是另一件事：contracts 零第三方依赖）。
+下面每个"落点"都是模块内新增文件或对既有模块的改造。
 
 ---
 
@@ -370,11 +387,13 @@ L3 `references/` `scripts/`」，但这份技能库里**零个技能有子目录
 | L3 状态 | MEMORY / 黑板 / 续接块 / 镜像 / 判错账本 | 现上限 4000 字符 | 已有，需纳入统一核算 |
 
 **单源化规则**（这是本节最重要的一条）：**一份内容只允许出现在一处**。
-`_ISOLATION_CONSTRAINT` 现在被 `write_context_md():248` 与 `build_task_prompt():377`
-各注入一次，正确做法是二者引用同一个常量来源，且**只走一条路**（推荐走 CLAUDE.md，
-因为它是 per-challenge 的持久文件，且 pi 会自动加载）。
+`_ISOLATION_CONSTRAINT` 曾同时被 `write_context_md()` 与 `build_task_prompt()`
+注入一次 —— 2026-09 死码清扫已按本条规则收敛到**只走 CLAUDE.md 一条路**
+（理由正是这里写的：它是 per-challenge 的持久文件，且 pi 会自动加载；
+另加一条当时没写的：子 Agent 进程也会加载它，而父会话的 prompt 不会传给子 Agent）。
+剩下 `_OFFLINE_CONSTRAINT` 与 `_CLAUDE_MD` 内部那段的近逐字重叠，按同一条规则处理。
 
-是否把不变量上提到 `ghost_contracts` 需单独论证：contracts 是**零依赖契约包**，
+是否把不变量上提到 `contracts` 需单独论证：contracts 是**零依赖契约包**，
 `test_purity.py` 是红线；prompt 文本是否属于"进程间契约"要看它是否被多个包消费 ——
 当前只有 worker 消费，故**建议先留在 worker 内，抽成 `adapter/rules.py` 单源模块**，
 等真的出现第二个消费方再上提。
@@ -416,7 +435,7 @@ skills-overlay/            ← 本仓所有（新增）
 tools/gen_skill_index.py   ← 生成器（tools/ 已是既有的非镜像工具目录）
 ```
 
-对接层：`ghost_contracts.paths` 需要新增一个与 `skills_root()` 同形态的
+对接层：`contracts.paths` 需要新增一个与 `skills_root()` 同形态的
 `overlay_root()` 解析器（**单源**，不要各调用点自己拼路径 —— 这正是
 `paths.py` docstring 记录的教训："数固定层数的写法搬迁后静默归零"）。
 
@@ -478,7 +497,7 @@ recon-for-sec / api-sec / auth-sec / injection-checking / file-access-vuln / bus
 |---|---|
 | 一次执行的 run 元信息 | `ObsStore.run_row(run_id)` / `list_runs(status=…, worker=…)`（`obs/store.py:580` / `:475`） |
 | 该 run 的原始事件 | `ObsStore.run_events(run_id, after, limit)`（`obs/store.py:590`） |
-| 该 run 的**紧凑时间线** | `ghost_contracts.digest.fold_rows(rows, after=, live=False)`（`contracts/digest.py:242`） |
+| 该 run 的**紧凑时间线** | `contracts.digest.fold_rows(rows, after=, live=False)`（`contracts/digest.py:242`） |
 | 会话边界与提交结果 | 折叠时间线的 `kind=session` / `kind=attempt` 条目；`attach_accepted_flags`（`obs/store.py:499`） |
 | 成本 | 折叠时间线的 `kind=turn` 条目带 `tokens` 字段（`contracts/digest.py` 条目 schema 已含） |
 
@@ -677,7 +696,7 @@ tools:
 | `.hallucination.json` | 框架（`adapter/hallucination.py:35`） | 状态查询 |
 | Heimdall 图 | 观察者 Agent（`adapter/heimdall.py`） | 下一场 prompt（`heimdall_map`） |
 
-**目标形态**：在 `ghost_contracts/paths.py` 里为每个文件声明**路径 + 写者 + 生命周期**
+**目标形态**：在 `contracts/paths.py` 里为每个文件声明**路径 + 写者 + 生命周期**
 （该文件已承担"进程间文件契约的单一来源"，扩展它而不是另起一套）。这与 §3.1 的
 L3 层预算核算共用同一份清单。
 
@@ -694,7 +713,7 @@ L3 层预算核算共用同一份清单。
 | 序 | 差距 | 面 | 为什么排在这 |
 |---|---|---|---|
 | 1 | 无评估面，一切改动无法量化（首段曾落地、2026-09 拆除；模型 grader / macro 聚类从未做） | P3 | 其余五项的前置 |
-| 2 | 静态 prompt 8706 字符且有重复注入 | P1 | 单点 ROI 最高；改动局限在一个模块 |
+| 2 | 静态 prompt 8706 字符且有重复注入（2026-09 死码清扫已消掉其中的**逐字**重复一份 -1834 字符；近逐字的重叠仍在，见 §2.1） | P1 | 单点 ROI 最高；改动局限在一个模块 |
 | 3 | 技能广告面平铺 103 条、无 L3、有重复簇 | P2 | 每一场每一次请求的固定成本 |
 | 4 | 边界在提示词里 | P4 | 风险最高，但报告自己也把它排在 31–60 天 |
 | 5 | subagent 共享可写工作区 | P5 | 结构性风险，改造成本中等 |

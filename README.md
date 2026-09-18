@@ -185,7 +185,7 @@ worker 容器与 compose 的 `restart: on-failure` 靠一组退出码配套（`0
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q                      # 全仓 325
+.venv/bin/python -m pytest -q                      # 全仓 325（passed；另有 2 skipped）
 .venv/bin/python -m pytest -q tests/architecture   # 边界执行点 25
 .venv/bin/python -m pytest -q tests/               # 架构 + 模块 + 竞技场回归
 ```
@@ -262,6 +262,43 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 
 **代价**：失去"把轨迹离线跑判据、量化每次改动"的能力。`TARGET_ARCHITECTURE` 的 P3
 退回未落地，其缺口清单第 1 项（"无评估面，一切改动无法量化"）复现。
+
+---
+
+## 死码清扫（2026-09）
+
+判据只有一条：**零消费者** —— 生产路径不 import、不调用、不构造。分批记：
+
+| 已删 | 曾经是什么 | 判据 |
+|---|---|---|
+| `worker/solver/base.py` 的 `SolveResult` | 框架侧结果模型，带一个 `provider_failure` 判据（0-turn + 报错 = 引擎没跑起来） | 没有任何生产代码构造它；唯一 import 方是它自己的 3 条测试。判据本身**没丢** —— 执行点在编排侧（`orchestrator._is_api_fault` 与 stoploss），原委与该保留的教训写在 `solver/base.py` 的模块 docstring |
+| `adapter/solver/base.py` 的 `CCResult` | `SolveResult` 的"兼容旧名"别名 | 全仓 3 处引用全是定义与再导出，零消费者 |
+| `adapter/progress.py`（整模块，159 行） | 成功侧记忆的退役残骸（`ChallengeProgress` / `extract_progress_from_result`） | 唯一引用是 `orchestrator` 那行 import，两个名字从未被使用。**注意**：删的是残骸，"试过并放弃了成功侧记忆"这条历史教训仍然成立（见选型文档 §3.4） |
+| `contracts/paths.py` 的 `harness_dir()` / `harness_subdir()` | `.harness/` 路径拼装 helper | 真正的消费方都 import 常量 `HARNESS_DIR` 自己 join |
+| `worker/adapter/taskprompt.py` 的 `write_memory()` | 框架侧 MEMORY.md 写入口 | 被 import 却从未被调用；MEMORY.md 实际由 agent 自己写、由 `_merge_memory` 合并。**框架侧那条写入路径从来没接上** |
+| `ControllerConfig.round_timeboxes` + `ADAPTER_ROUND_TIMEBOXES` | "各轮单题访问时长"旋钮 | 零读者。真正的算法是 `timebox_for_difficulty(难度) × round_factors[轮次]`；两者默认值还对不上（旧 `[480,820,1500,2000]` vs 新 `3600×[1.0,1.7,3.0,4.0]`） |
+| 前端 `ctl` / `ADMIN_HEADER` / `adminToken` / `adminAuth` / `setAdminToken` | 控制面 `/api/v1/*` 的 axios 实例与凭据存储 | **上次拆除的漏网**：`fb96614` 删了整页控制台与全部 `/api/v1/*` 路由，却把服务它的底层管线留在了原地 |
+| 28 处未使用 import 中的 10 处 | — | pyflakes；余下 18 处是 `platform_client` / `obs.schema` 的**有意再导出**，已核实保留 |
+
+**提示面去重**：`_ISOLATION_CONSTRAINT`（1834 字符）曾每次会话被**逐字注入两遍**
+（逐题 `CLAUDE.md` 与 prompt 各一份）。现只走 `CLAUDE.md` —— 它是 pi 的项目指令文件，
+Agent 可随时重读，且**子 Agent 进程也会加载它**，而父会话的 prompt 不会传给子 Agent。
+守卫在 [`tests/worker/test_prompt_single_source.py`](tests/worker/test_prompt_single_source.py)
+（已实测：把重复加回去会变红）。
+
+**改名残留**：`ghost → redpilot` 的前端面与若干 docstring 漏网已收尾 —— 侧边栏 HTML 里
+渲染的字面量 `Ghost`、`sessionStorage` 键 `ghost.*`、以及多处指向 `ghost_worker/…`、
+`packages/ghost/ghost/…` 等不存在路径的注释。`web/` 是**提交物**，故随源码重建。
+（`skills/ghost-bits-cast-attack` 是真实攻击技术，与改名无关。）
+
+> **未做**：`SolverConfig` 有四个**写而不读**的字段（`subagent_model` / `effort_level` /
+> `auto_compact_window` / `api_timeout_ms`），其中三个在 `-1m` preset 里被显式赋值。
+> 这不是死代码而是**没接线的意图**（1M 上下文模型本该给大压缩窗口与长超时），
+> 需要先决定"接进 pi"还是"删掉 preset"，故留给 P1 上下文面一并处理。
+> 详见 `TARGET_ARCHITECTURE.md` §2.1。
+
+**覆盖损失记账**：删 `provider_failure` 三条用例（-3），新增提示面单源守卫三条（+3），
+全仓 325 passed / 2 skipped 不变。
 
 ---
 

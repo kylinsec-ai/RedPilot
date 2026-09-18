@@ -252,7 +252,12 @@ class ControllerConfig:
     use_hints: bool
     skeptic_votes: int
     min_request_interval: float
-    round_timeboxes: list
+    # 沿革（2026-09 死码清扫）：这里有 `round_timeboxes: list`（由
+    # `ADAPTER_ROUND_TIMEBOXES` 解析而来），**零读者** —— 真正的轮次时长算法是
+    # `timebox_for_difficulty(难度) × round_factors[轮次]`（消费点
+    # `orchestrator.py:6247`，factors 取 `:6212`）。两个默认值还对不上
+    # （旧常量 [480,820,1500,2000] vs 新算法 3600×[1.0,1.7,3.0,4.0]），
+    # 留着只会让人以为改它有用。
     total_seconds: int
     secs_per_turn: float
     keepalive_max: int
@@ -273,10 +278,6 @@ class ControllerConfig:
 
     @classmethod
     def from_env(cls) -> "ControllerConfig":
-        rounds_raw = (_env("ADAPTER_ROUND_TIMEBOXES", "480,820,1500,2000")
-                      or "480,820,1500,2000")
-        timeboxes = [int(x) for x in rounds_raw.split(",")
-                     if x.strip().isdigit()] or [480, 820, 1500, 2000]
         return cls(
             workdir=_env("ADAPTER_WORKDIR", "/work") or "/work",
             max_concurrency=max(1, int(_env("ADAPTER_MAX_CONCURRENCY", "3") or "3")),
@@ -287,7 +288,6 @@ class ControllerConfig:
             use_hints=(_env("ADAPTER_USE_HINTS", "0") == "1"),
             skeptic_votes=max(1, int(_env("SKEPTIC_VOTES", "1") or "1")),
             min_request_interval=float(_env("ADAPTER_MIN_REQUEST_INTERVAL", "0.4") or "0.4"),
-            round_timeboxes=timeboxes,
             total_seconds=int(_env("ADAPTER_TOTAL_SECONDS", "21300") or "21300"),
             secs_per_turn=float(_env("ADAPTER_SECS_PER_TURN", "5") or "5"),
             keepalive_max=max(0, int(_env("ADAPTER_KEEPALIVE_MAX", "2") or "2")),

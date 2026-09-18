@@ -32,7 +32,7 @@ function groupCount(entries: NavEntry[]): number | null {
 <template>
   <div class="sidenav">
     <div class="brand">
-      Ghost<small>平台控制台</small>
+      RedPilot<small>平台控制台</small>
     </div>
 
     <nav class="nav scroll-thin">
